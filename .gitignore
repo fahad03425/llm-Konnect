@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+
+data/storage/
+data/samples/*.csv
+reports/
+chroma/
+*.db
+
+desktop/node_modules/
+desktop/dist/

@@ -1,0 +1,30 @@
+# API
+fastapi
+uvicorn
+pydantic-settings
+
+# Data
+pandas
+openpyxl
+
+# Analytics
+scikit-learn
+statsmodels
+
+# LLM/RAG
+ollama
+sentence-transformers
+chromadb
+
+# Reporting
+matplotlib
+plotly
+jinja2
+reportlab
+
+# Security
+cryptography
+
+# Dev
+pytest
+ruff
