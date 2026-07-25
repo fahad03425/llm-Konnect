@@ -5,10 +5,13 @@ __pycache__/
 .pytest_cache/
 
 data/storage/
-data/samples/*.csv
 reports/
 chroma/
 *.db
+
+# Allow sample data files in data/samples
+!data/samples/*.csv
+!data/samples/*.db
 
 desktop/node_modules/
 desktop/dist/
