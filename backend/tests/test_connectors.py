@@ -22,7 +22,7 @@ def sqlite_sample(tmp_path):
     conn.close()
     
     # Also save one to data/samples for manual testing
-    sample_dir = os.path.join(os.path.dirname(__file__), "..", "data", "samples")
+    sample_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples")
     os.makedirs(sample_dir, exist_ok=True)
     conn2 = sqlite3.connect(os.path.join(sample_dir, "sample_pharmacy.db"))
     conn2.execute("DROP TABLE IF EXISTS inventory")
@@ -34,20 +34,20 @@ def sqlite_sample(tmp_path):
     return str(db_path)
 
 def test_detect_connector():
-    sample_csv = os.path.join(os.path.dirname(__file__), "..", "data", "samples", "sample_pharmacy.csv")
-    sample_json = os.path.join(os.path.dirname(__file__), "..", "data", "samples", "sample_pharmacy.json")
+    sample_csv = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "sample_pharmacy.csv")
+    sample_json = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "sample_pharmacy.json")
     assert isinstance(detect_connector(sample_csv), CSVConnector)
     assert isinstance(detect_connector(sample_json), JSONConnector)
     
 def test_csv_connector():
-    sample_csv = os.path.join(os.path.dirname(__file__), "..", "data", "samples", "sample_pharmacy.csv")
+    sample_csv = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "sample_pharmacy.csv")
     conn = CSVConnector(sample_csv)
     df = conn.fetch()
     assert len(df) == 4
     assert "Panadol 500mg" in df["product name"].values
     
 def test_json_connector():
-    sample_json = os.path.join(os.path.dirname(__file__), "..", "data", "samples", "sample_pharmacy.json")
+    sample_json = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "sample_pharmacy.json")
     conn = JSONConnector(sample_json)
     df = conn.fetch()
     assert len(df) == 1

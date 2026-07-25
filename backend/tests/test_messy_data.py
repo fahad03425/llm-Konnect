@@ -8,7 +8,7 @@ from app.schema.validate import validate
 from app.schema.pharmacy import PharmacyDomainPack
 
 def test_messy_pharmacy_csv():
-    file_path = os.path.join(os.path.dirname(__file__), "..", "data", "samples", "messy_pharmacy.csv")
+    file_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "messy_pharmacy.csv")
     conn = CSVConnector(file_path)
     
     # 1. Fetch
