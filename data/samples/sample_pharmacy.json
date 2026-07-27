@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "product": {
+        "title": "Arinac Forte",
+        "generic": "Ibuprofen + Pseudoephedrine"
+      },
+      "inventory": {
+        "batch": "B-99",
+        "exp": "10/26",
+        "stock": 50
+      },
+      "pricing": {
+        "retail price": 150,
+        "cost price": 120
+      }
+    }
+  ]
+}
