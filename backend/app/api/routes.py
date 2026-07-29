@@ -6,10 +6,11 @@ import os
 import pandas as pd
 
 from app.connectors.base import detect_connector
-from app.schema.mapper import map_headers
-from app.schema.normalize import normalize
+from app.schema.mapper import map_headers, suggest_mapping
+from app.schema.normalize import normalize, apply_mapping
 from app.schema.validate import validate
 from app.schema.domain import get_domain_pack
+from app.schema.profile import find_profile, save_profile, source_signature
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -18,13 +19,22 @@ class PreviewRequest(BaseModel):
     n: int = 5
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
+    domain: str = "pharmacy"
+
+class MappingConfirmRequest(BaseModel):
+    file_path: str
+    mapping: Dict[str, str]
+    domain: str = "pharmacy"
+    sheet_name: Optional[str] = None
+    table_or_query: Optional[str] = None
+    keep_extras: bool = True
+    save_profile: bool = True
 
 class NormalizeRequest(BaseModel):
     file_path: str
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
     domain: str = "pharmacy"
-    # mapping is a dict of raw_header -> canonical_header
     mapping: Optional[Dict[str, str]] = None 
 
 @router.post("/preview")
@@ -42,14 +52,63 @@ def preview_source(req: PreviewRequest):
             kwargs['table_or_query'] = req.table_or_query
             
         df = connector.preview(n=req.n, **kwargs)
-        
-        # Replace NaN with None for JSON serialization
         df = df.where(pd.notnull(df), None)
+        
+        columns = list(df.columns)
+        sample_rows = df.to_dict(orient="records")
+        
+        # Check for saved profile
+        sig = source_signature(columns, connector.__class__.__name__)
+        saved_profile = find_profile(sig)
+        
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+            
+        # Generate mapping proposal
+        proposal = suggest_mapping(columns, sample_rows, domain_pack)
         
         return {
             "connector_description": connector.describe(),
-            "columns": list(df.columns),
-            "data": df.to_dict(orient="records")
+            "columns": columns,
+            "data": sample_rows,
+            "signature": sig,
+            "saved_profile": saved_profile,
+            "mapping_proposal": proposal.dict()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/mapping/confirm")
+def confirm_mapping(req: MappingConfirmRequest):
+    """Confirm a mapping, save profile, and return canonical preview."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    try:
+        connector = detect_connector(req.file_path)
+        kwargs = {}
+        if req.sheet_name:
+            kwargs['sheet_name'] = req.sheet_name
+        if req.table_or_query:
+            kwargs['table_or_query'] = req.table_or_query
+            
+        # Get preview for quick verification
+        df = connector.preview(n=10, **kwargs)
+        
+        if req.save_profile:
+            sig = source_signature(list(df.columns), connector.__class__.__name__)
+            label = f"{connector.__class__.__name__} - {os.path.basename(req.file_path)}"
+            save_profile(sig, req.mapping, label)
+            
+        canonical_df = apply_mapping(df, req.mapping, req.domain, req.keep_extras)
+        canonical_df = canonical_df.where(pd.notnull(canonical_df), None)
+        
+        return {
+            "mapped_columns": list(canonical_df.columns),
+            "data_preview": canonical_df.to_dict(orient="records")
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -70,10 +129,7 @@ def list_sheets(file_path: str = Query(...)):
 
 @router.post("/normalize")
 def normalize_source(req: NormalizeRequest):
-    """
-    Reads the file, optionally auto-maps headers if mapping is not provided,
-    normalizes the data, and runs validation.
-    """
+    """Legacy normalize endpoint."""
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
@@ -94,17 +150,15 @@ def normalize_source(req: NormalizeRequest):
         try:
             domain_pack = get_domain_pack(req.domain)
         except ValueError:
-            pass # fallback to core only
+            pass
             
         mapping = req.mapping
         if mapping is None:
             mapping = map_headers(list(df.columns), domain_pack)
             
-        norm_df = normalize(df, mapping, domain=req.domain)
-        
+        norm_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=False)
         problems = validate(norm_df, domain=req.domain)
         
-        # Replace NaN/NaT for JSON serialization
         norm_df = norm_df.where(pd.notnull(norm_df), None)
         
         return {
@@ -113,6 +167,5 @@ def normalize_source(req: NormalizeRequest):
             "data_preview": norm_df.head(10).to_dict(orient="records"),
             "problems": [p.to_dict() for p in problems]
         }
-        
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
