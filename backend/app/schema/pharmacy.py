@@ -21,20 +21,123 @@ class PharmacyDomainPack(DomainPack):
     @property
     def header_synonyms(self) -> Dict[str, List[str]]:
         return {
-            "expiry_date": ["exp", "exp date", "exp.date", "expiry", "expiry date", "e.date", "میعاد"],
-            "batch_no": ["batch", "batch no", "batch#", "lot", "lot no"],
-            "generic_name": ["generic", "formula", "salt", "molecule", "composition"],
-            "mrp": ["mrp", "retail price", "sale price", "max retail"],
-            "cost": ["trade price", "tp", "purchase price", "cost price", "pp"],
-            "manufacturer": ["company", "mfg", "manufacturer", "made by"],
-            "scheme": ["scheme", "bonus", "deal"],
-            "product_id": ["product name", "item name", "brand name", "medicine"],
-            # Common aliases for core fields
-            "quantity": ["qty", "quantity", "stock", "on hand"],
-            "unit_price": ["price", "rate", "unit price", "rate pkr"],
-            "amount": ["total", "amount", "net amount", "line total", "total amount"],
-            "date": ["date", "txn date", "invoice date"],
-            "invoice_id": ["invoice", "bill no", "receipt no", "invoice no"],
+            # --- Pharmacy-specific fields ---
+            "expiry_date": [
+                "exp", "exp date", "exp.date", "expiry", "expiry date",
+                "e.date", "exp dt", "expdt", "میعاد", "expiry_date",
+            ],
+            "mfg_date": [
+                "mfg date", "mfg dt", "mfgdate", "manufacture date",
+                "manufacturing date", "prod date", "production date",
+            ],
+            "batch_no": [
+                "batch", "batch no", "batch#", "batch number", "batchno",
+                "lot", "lot no", "lot number", "lot#",
+            ],
+            "generic_name": [
+                "generic", "formula", "salt", "molecule", "composition",
+                "generic name", "active ingredient", "ingredient",
+            ],
+            "mrp": [
+                "mrp", "retail price", "sale price", "max retail",
+                "maximum retail price", "retail", "selling price",
+            ],
+            "barcode": [
+                "barcode", "bar code", "ean", "ean13", "upc", "sku",
+                "item code", "product code",
+            ],
+            "pack_size": [
+                "pack size", "packsize", "pack", "packing", "pack qty",
+                "strip size", "tabs per strip",
+            ],
+            "drap_reg_no": [
+                "drap", "drap no", "drap reg", "registration no",
+                "reg no", "reg number", "drug reg", "drug reg no",
+            ],
+            "schedule_flag": [
+                "schedule", "drug schedule", "schedule flag", "controlled",
+            ],
+            "rack_location": [
+                "rack", "location", "rack location", "rack no",
+                "shelf", "bin", "store location",
+            ],
+            "reorder_level": [
+                "reorder", "reorder level", "min stock", "minimum stock",
+                "reorder qty", "reorder quantity",
+            ],
+            "prescription_ref": [
+                "prescription", "rx", "prescription no", "prescription ref",
+                "prescription number", "script",
+            ],
+            "scheme": ["scheme", "bonus", "deal", "offer", "discount scheme"],
+
+            # --- Core fields: pharmacy-specific aliases ---
+            "manufacturer": [
+                "company", "mfg", "manufacturer", "made by", "brand",
+                "pharma company", "lab", "laboratory",
+            ],
+            "product_id": [
+                "product name", "item name", "brand name", "medicine",
+                "product", "drug name", "medicine name", "drug",
+                "item", "name", "product desc",
+            ],
+            "supplier_id": [
+                "supplier", "vendor", "distributor", "supplier name",
+                "vendor name", "distributor name", "party", "party name",
+            ],
+            "customer_id": [
+                "customer", "patient", "client", "customer name",
+                "patient name", "buyer",
+            ],
+            "description": [
+                "desc", "description", "details", "particulars",
+                "item desc", "product desc", "narration", "remarks",
+            ],
+            "category": [
+                "category", "cat", "type", "drug type", "product type",
+                "therapeutic class", "class", "group",
+            ],
+            "quantity": [
+                "qty", "quantity", "stock", "on hand", "units",
+                "available qty", "closing stock",
+            ],
+            "unit_price": [
+                "price", "rate", "unit price", "rate pkr",
+                "selling rate", "per unit",
+            ],
+            "amount": [
+                "total", "amount", "net amount", "line total",
+                "total amount", "value", "net value",
+            ],
+            "cost": [
+                "trade price", "tp", "purchase price", "cost price",
+                "pp", "cost", "landed cost",
+            ],
+            "date": [
+                "date", "txn date", "invoice date", "transaction date",
+                "posting date", "voucher date",
+            ],
+            "invoice_id": [
+                "invoice", "bill no", "receipt no", "invoice no",
+                "invoice number", "bill number", "voucher no",
+                "challan no", "order no",
+            ],
+            "discount": [
+                "discount", "disc", "disc%", "discount%",
+                "trade discount", "special discount",
+            ],
+            "tax": [
+                "tax", "gst", "vat", "sales tax", "st",
+                "withholding tax", "wht",
+            ],
+            "payment_method": [
+                "payment", "payment method", "mode of payment",
+                "pay mode", "payment mode",
+            ],
+            "txn_type": [
+                "type", "txn type", "transaction type", "voucher type",
+                "entry type",
+            ],
         }
 
     def validate_row(self, row: dict, index: int) -> List[Problem]:
