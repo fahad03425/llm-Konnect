@@ -8,7 +8,7 @@ import pandas as pd
 from app.connectors.base import detect_connector
 from app.schema.mapper import map_headers, suggest_mapping
 from app.schema.normalize import normalize, apply_mapping
-from app.schema.validate import validate
+from app.schema.validate import validate, clean
 from app.schema.domain import get_domain_pack
 from app.schema.profile import find_profile, save_profile, source_signature
 
@@ -36,6 +36,22 @@ class NormalizeRequest(BaseModel):
     table_or_query: Optional[str] = None
     domain: str = "pharmacy"
     mapping: Optional[Dict[str, str]] = None 
+
+class ValidateRequest(BaseModel):
+    file_path: str
+    mapping: Optional[Dict[str, str]] = None
+    domain: str = "pharmacy"
+    table_kind: str = "auto"
+    sheet_name: Optional[str] = None
+    table_or_query: Optional[str] = None
+
+class CleanRequest(BaseModel):
+    file_path: str
+    mapping: Optional[Dict[str, str]] = None
+    domain: str = "pharmacy"
+    sheet_name: Optional[str] = None
+    table_or_query: Optional[str] = None
+    options: Optional[Dict[str, Any]] = None
 
 @router.post("/preview")
 def preview_source(req: PreviewRequest):
@@ -157,7 +173,7 @@ def normalize_source(req: NormalizeRequest):
             mapping = map_headers(list(df.columns), domain_pack)
             
         norm_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=False)
-        problems = validate(norm_df, domain=req.domain)
+        report = validate(norm_df, domain=req.domain)
         
         norm_df = norm_df.where(pd.notnull(norm_df), None)
         
@@ -165,7 +181,82 @@ def normalize_source(req: NormalizeRequest):
             "mapped_columns": list(norm_df.columns),
             "mapping_used": mapping,
             "data_preview": norm_df.head(10).to_dict(orient="records"),
-            "problems": [p.to_dict() for p in problems]
+            "problems": [p.to_dict() for p in report.problems],
+            "validation_report": report.to_dict()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/validate")
+def validate_source(req: ValidateRequest):
+    """Run mapping + validation on a connected source file and return the ValidationReport."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        connector = detect_connector(req.file_path)
+        kwargs = {}
+        if req.sheet_name:
+            kwargs["sheet_name"] = req.sheet_name
+        if req.table_or_query:
+            kwargs["table_or_query"] = req.table_or_query
+
+        df = connector.fetch(**kwargs)
+        if df.empty:
+            from app.schema.validate import ValidationReport
+            return ValidationReport(
+                total_rows=0, error_rows=0, warning_rows=0, null_counts={}, verdict="not_usable", problems=[]
+            ).to_dict()
+
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+
+        mapping = req.mapping
+        if mapping is None:
+            mapping = map_headers(list(df.columns), domain_pack)
+
+        canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
+        report = validate(canonical_df, domain=req.domain, table_kind=req.table_kind)
+        return report.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/clean")
+def clean_source(req: CleanRequest):
+    """Run opt-in cleaning pass on a connected source file."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        connector = detect_connector(req.file_path)
+        kwargs = {}
+        if req.sheet_name:
+            kwargs["sheet_name"] = req.sheet_name
+        if req.table_or_query:
+            kwargs["table_or_query"] = req.table_or_query
+
+        df = connector.fetch(**kwargs)
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+
+        mapping = req.mapping
+        if mapping is None:
+            mapping = map_headers(list(df.columns), domain_pack)
+
+        canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
+        cleaned_df, summary = clean(canonical_df, options=req.options)
+
+        cleaned_df = cleaned_df.where(pd.notnull(cleaned_df), None)
+
+        return {
+            "cleaned_preview": cleaned_df.head(10).to_dict(orient="records"),
+            "cleaning_summary": summary.to_dict()
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -186,6 +186,7 @@ def suggest_mapping(
     columns: List[str],
     sample_rows: List[Dict[str, Any]],
     domain_pack: Optional[DomainPack] = None,
+    resolve_conflicts: bool = True,
 ) -> MappingProposal:
     """
     Auto-suggest a canonical mapping for the given source columns.
@@ -197,13 +198,14 @@ def suggest_mapping(
          Threshold: ≥0.75 ratio. Ties broken by score then alpha order.
       4. Value-based inference on sample_rows as a last resort.
 
-    One canonical field is assigned to at most one source column.
+    One canonical field is assigned to at most one source column (if resolve_conflicts=True).
     Confidence < 0.5 → suggestion is None (safer than a wrong guess).
 
     Args:
-        columns:     Raw column names from the source.
-        sample_rows: Small preview rows ({col: value}). Used for inference.
-        domain_pack: Active domain pack (e.g. PharmacyDomainPack). None = core only.
+        columns:           Raw column names from the source.
+        sample_rows:       Small preview rows ({col: value}). Used for inference.
+        domain_pack:       Active domain pack (e.g. PharmacyDomainPack). None = core only.
+        resolve_conflicts: Whether to enforce 1-to-1 canonical field mapping (default: True).
 
     Returns:
         MappingProposal with per-column suggestions + metadata.
@@ -304,7 +306,8 @@ def suggest_mapping(
         )
 
     # --- Conflict resolution ---
-    _resolve_conflicts(suggestions_map)
+    if resolve_conflicts:
+        _resolve_conflicts(suggestions_map)
 
     suggestions = list(suggestions_map.values())
     mapped_canonical = {s.canonical_field for s in suggestions if s.canonical_field}
@@ -337,9 +340,10 @@ def map_headers(
     that receive ANY confident suggestion (not just exact matches).
     Retained for backward compatibility with the /normalize endpoint.
     """
-    proposal = suggest_mapping(raw_headers, [], domain_pack)
+    proposal = suggest_mapping(raw_headers, [], domain_pack, resolve_conflicts=False)
     return {
         s.source_column: s.canonical_field
         for s in proposal.suggestions
         if s.canonical_field is not None
     }
+
