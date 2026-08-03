@@ -1,0 +1,31 @@
+Item Name,Generic,Batch No,Exp Date,MFG Dt,Pack Size,Rack,Reorder,Barcode,Stock,TP,MRP,Company,DRAP No,Schedule
+Panadol 500mg Tab (30s),Paracetamol,B2201,06/27,Jan-25,30,A1-01,50,8901234567890,245,14.00,20.00,GSK Pakistan,DRAP-1234,OTC
+Augmentin 625mg Tab (14s),Amoxicillin + Clav,C4401,12/26,Mar-25,14,B2-03,20,8901234567891,85,180.00,250.00,GSK Pakistan,DRAP-2345,Rx
+Brufen 400mg Tab (20s),Ibuprofen,D5501,03/27,Feb-25,20,A1-05,100,8901234567892,420,9.00,15.00,Abbott Laboratories,DRAP-3456,OTC
+Nexium 40mg Cap (14s),Esomeprazole,E6601,08/27,Apr-25,14,C3-02,15,8901234567893,60,155.00,200.00,AstraZeneca,DRAP-4567,OTC
+Glucophage 500mg Tab (30s),Metformin HCl,F7701,11/25,May-24,30,D4-01,80,8901234567894,310,6.50,10.00,Merck,,OTC
+Lantus SoloStar 3ml,Insulin Glargine,G8801,09/26,Jun-25,1,E5-01,5,8901234567895,18,3100.00,4000.00,Sanofi,DRAP-6789,Rx
+Crestor 10mg Tab (28s),Rosuvastatin,H9901,11/26,Jan-25,28,C3-04,20,8901234567896,95,120.00,160.00,AstraZeneca,DRAP-7890,Rx
+Plavix 75mg Tab (28s),Clopidogrel,I1101,05/27,Mar-25,28,C3-05,15,8901234567897,72,160.00,200.00,Sanofi,DRAP-8901,Rx
+Amoxil 500mg Cap (24s),Amoxicillin,J2201,NOT-VALID,Aug-24,24,A1-09,30,8901234567898,138,35.00,50.00,GSK Pakistan,DRAP-9012,Rx
+Ciproxin 500mg Tab (10s),Ciprofloxacin,K3301,03/25,Nov-24,10,B2-07,25,8901234567899,42,80.00,110.00,Bayer,DRAP-0123,Rx
+Ventolin Inhaler 100mcg,Salbutamol,L4401,06/27,Feb-25,1,F6-01,8,8901234567900,34,380.00,500.00,GSK Pakistan,DRAP-1235,OTC
+Seretide Accuhaler 50/500,Fluticasone + Salmeterol,M5501,09/26,Mar-25,1,F6-02,5,8901234567901,22,1600.00,2000.00,GSK Pakistan,DRAP-2346,Rx
+Metoprolol 50mg Tab (30s),Metoprolol Tartrate,N6601,12/27,Apr-25,30,C3-08,40,8901234567902,180,18.00,25.00,Novartis,DRAP-3457,Rx
+Amlodipine 5mg Tab (14s),Amlodipine Besylate,O7701,06/27,Jan-25,14,C3-09,60,8901234567903,290,6.00,10.00,Pfizer,DRAP-4568,Rx
+Lipitor 20mg Tab (30s),Atorvastatin Calcium,P8801,03/27,Dec-24,30,C3-10,25,8901234567904,110,135.00,140.00,Pfizer,DRAP-5679,Rx
+Omeprazole 20mg Cap (14s),Omeprazole,,07/27,Feb-25,14,D4-06,35,8901234567905,195,9.00,14.00,ICI Pakistan,,OTC
+Diclofenac 50mg Tab (30s),Diclofenac Sodium,R0011,02/24,Jan-22,30,A1-15,50,8901234567906,0,5.00,8.00,Novartis,DRAP-7891,OTC
+Voltaren Gel 50g,Diclofenac Sodium,S1121,08/27,Mar-25,1,A1-16,10,8901234567907,48,155.00,200.00,Novartis,DRAP-8902,OTC
+Flagyl 400mg Tab (30s),Metronidazole,T2231,11/26,Jun-25,30,B2-11,30,8901234567908,165,14.00,20.00,Sanofi,DRAP-9013,Rx
+Panadol CF Tab (30s),Paracetamol + Caffeine,U3341,06/27,Apr-25,30,A1-18,60,8901234567909,380,19.00,28.00,GSK Pakistan,DRAP-0124,OTC
+Clexane 40mg Inj,Enoxaparin,V4451,04/27,Feb-25,1,G7-01,5,8901234567910,30,780.00,900.00,Sanofi,DRAP-1236,Rx
+Meronem 1g Inj,Meropenem,W5561,12/26,Mar-25,1,G7-02,3,8901234567911,18,1100.00,1400.00,AstraZeneca,DRAP-2347,Rx
+Zithromax 250mg Tab (6s),Azithromycin,X6671,03/27,Dec-24,6,B2-15,20,8901234567912,95,120.00,160.00,Pfizer,DRAP-3458,Rx
+Dexamethasone 4mg Inj,Dexamethasone,Y7781,09/27,Jan-25,1,G7-03,10,8901234567913,55,38.00,50.00,GSK Pakistan,DRAP-4569,Rx
+Insulin Mixtard 30,Insulin Human Biphasic,,06/27,Apr-25,1,E5-02,5,8901234567914,22,1600.00,2000.00,Novo Nordisk,DRAP-5680,Rx
+Glucovance 500mg Tab (30s),Metformin + Glibenclamide,A1001,6/2027,May-25,30,D4-10,25,8901234567915,120,28.00,40.00,Merck,DRAP-6790,Rx
+Amikacin 500mg Inj,Amikacin,B2002,08/25,Aug-24,1,G7-04,5,8901234567916,12,160.00,210.00,Otsuka,DRAP-7892,Rx
+Vancomycin 500mg Inj,Vancomycin,C3003,12/27,Sep-25,1,G7-05,3,8901234567917,10,750.00,920.00,Pfizer,DRAP-8903,Rx
+Risperidone 2mg Tab (30s),Risperidone,D4004,06/27,Feb-25,30,H8-01,15,8901234567918,80,22.00,32.00,J&J Pakistan,DRAP-9014,Rx
+Olanzapine 5mg Tab (28s),Olanzapine,E5005,03/27,Jan-25,28,H8-02,12,8901234567919,55,55.00,75.00,Eli Lilly,DRAP-0125,Rx
