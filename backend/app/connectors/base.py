@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 import pandas as pd
 from typing import Any, Dict
 import os
-
 class Connector(ABC):
     """
     Abstract base class for all data connectors.
