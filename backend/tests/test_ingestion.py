@@ -126,14 +126,17 @@ def test_pharmacy_row_to_text():
         "invoice_id": "INV-1001",
     }
     text = pack.row_to_text(row)
-    assert "Sale on 2026-01-05" in text
-    assert "20 units of Panadol 500mg Tablet" in text
-    assert "generic Paracetamol" in text
-    assert "batch B1234" in text
-    assert "mfg GSK" in text
-    assert "at Rs 18.0 each" in text
-    assert "total Rs 360" in text
-    assert "invoice INV-1001" in text
+    assert "Transaction type: Sale." in text
+    assert "Date: 2026-01-05." in text
+    assert "Product: Panadol 500mg Tablet." in text
+    assert "Generic: Paracetamol." in text
+    assert "Batch: B1234." in text
+    assert "Manufacturer: GSK." in text
+    assert "Quantity: 20." in text
+    assert "Unit price: Rs 18.0." in text
+    assert "Total amount: Rs 360." in text
+    assert "Invoice: INV-1001." in text
+    assert "Supplier:" not in text  # Absent field omitted
 
 
 def test_add_dataframe_and_search(fake_kb):
