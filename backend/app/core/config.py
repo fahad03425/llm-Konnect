@@ -7,8 +7,12 @@ class Settings(BaseSettings):
     
     # Ollama
     ollama_host: str = "http://127.0.0.1:11434"
-    llm_model: str = "qwen2.5:3b-instruct-q4_K_M"
+    llm_model: str = "llama3:latest"
     llm_keep_alive: str = "0"  # frees VRAM after each request
+    llm_keep_alive_chat: str = "5m"  # keeps model in VRAM for interactive chat
+    llm_num_predict: int = 256
+    llm_chat_history_size: int = 3
+    llm_temperature: float = 0.2
     
     # Embeddings/vector store
     embedding_model: str = "intfloat/multilingual-e5-small"

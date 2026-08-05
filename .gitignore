@@ -1,3 +1,5 @@
+# temporary local RAG test UI — do not commit
+_local_test_ui/
 __pycache__/
 *.pyc
 .venv/
@@ -5,9 +7,12 @@ __pycache__/
 .pytest_cache/
 
 data/storage/
+backend/data/storage/
 reports/
 chroma/
 *.db
+
+debug.json
 
 # Allow sample data files in data/samples
 !data/samples/*.csv
