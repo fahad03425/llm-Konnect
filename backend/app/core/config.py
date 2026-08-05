@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # Embeddings/vector store
     embedding_model: str = "intfloat/multilingual-e5-small"
     chroma_dir: str = "chroma"
+    collection_name: str = "llm_konnect_kb"
+    chunk_size: int = 512
+    chunk_overlap: float = 0.15
+    retrieval_top_k: int = 5
     
     # Paths
     storage_dir: str = "data/storage"

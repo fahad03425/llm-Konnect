@@ -181,6 +181,29 @@ class DomainPack(ABC):
         """
         pass
 
+    @property
+    def searchable_fields(self) -> List[str]:
+        """Fields that should be included in the generated natural language chunk text."""
+        return []
+
+    @property
+    def filter_metadata_fields(self) -> List[str]:
+        """Fields that should be stored as Chroma metadata for exact filtering."""
+        return []
+
+    def row_to_text(self, row: dict) -> str:
+        """
+        Convert a canonical row into a natural-language sentence for semantic search.
+        Default implementation just dumps the searchable fields.
+        """
+        parts = []
+        for f in self.searchable_fields:
+            if f in row and pd.notna(row[f]) and row[f] != "":
+                parts.append(f"{f}: {row[f]}")
+        if not parts:
+            return "Empty record"
+        return ", ".join(parts) + "."
+
     def validate_row(self, row: dict, index: int) -> List[Problem]:
         """
         Legacy row-by-row validation rule runner.

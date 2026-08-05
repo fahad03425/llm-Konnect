@@ -1,0 +1,31 @@
+Invoice No,TXN Date,Medicine Name,Generic / Salt,Batch#,Exp Dt,MFG Date,Qty,Rate PKR,Line Total,Trade Price,MRP,Manufacturer,Supplier,Patient,Schedule,DRAP Reg,Payment,Discount%,GST
+INV-3001,05-01-2026,Panadol 500mg Tab,Paracetamol,B2201,06/27,Jan-25,50,18.00,900.00,14.00,20.00,GSK Pakistan,MedLine Dist,Walk-in,OTC,DRAP-1234,Cash,5,0
+INV-3001,05-01-2026,Augmentin 625mg Tab,Amoxicillin/Clavulanate,C4401,12/26,Mar-25,30,220.00,6600.00,180.00,250.00,GSK Pakistan,MedLine Dist,Walk-in,Rx,DRAP-2345,Cash,0,0
+INV-3002,07/01/2026,Brufen 400mg Tab,Ibuprofen,D5501,03-2027,Feb-25,100,12.50,1250.00,9.00,15.00,Abbott Labs,PharmaCo Dist,Ahmed Khan,OTC,DRAP-3456,Credit,10,0
+INV-3002,07/01/2026,Nexium 40mg Cap,Esomeprazole,E6601,08/27,Apr-25,20,185.00,3700.00,155.00,200.00,AstraZeneca,PharmaCo Dist,Ahmed Khan,OTC,DRAP-4567,Credit,0,0
+INV-3003,2026-01-09,Glucophage 500mg Tab,Metformin,F7701,45289,May-24,200,8.50,1700.00,6.50,10.00,Merck,HealthPlus Dist,Diabetic Clinic,OTC,,Cash,0,0
+INV-3003,2026-01-09,Lantus SoloStar,Insulin Glargine,G8801,2026-09-30,Jun-25,5,3500.00,17500.00,3100.00,4000.00,Sanofi,HealthPlus Dist,Diabetic Clinic,Rx,DRAP-6789,Cash,0,0
+INV-3004,10-Jan-2026,Crestor 10mg Tab,Rosuvastatin,H9901,11/26,Jan-25,60,145.00,8700.00,120.00,160.00,AstraZeneca,CityMed Supply,Cardiac Ward,Rx,DRAP-7890,Cheque,2,0
+INV-3004,10-Jan-2026,Plavix 75mg Tab,Clopidogrel,I1101,05/27,Mar-25,90,185.50,16695.00,160.00,200.00,Sanofi,CityMed Supply,Cardiac Ward,Rx,DRAP-8901,Cheque,0,0
+INV-3005,12/01/2026,Amoxil 500mg Cap,Amoxicillin,J2201,NOT-A-DATE,Aug-24,40,45.00,1800.00,35.00,50.00,GSK Pakistan,Express Pharma,Ali Hassan,Rx,DRAP-9012,Cash,0,0
+INV-3005,12/01/2026,Ciproxin 500mg Tab,Ciprofloxacin,K3301,03/25,Nov-24,25,95.00,2375.00,80.00,110.00,Bayer,Express Pharma,Ali Hassan,Rx,DRAP-0123,Cash,0,0
+INV-3006,15-01-2026,Ventolin Inhaler,Salbutamol,L4401,06/27,Feb-25,15,450.00,6750.00,380.00,500.00,GSK Pakistan,MedLine Dist,Asthma Clinic,OTC,DRAP-1235,Cash,0,0
+INV-3006,15-01-2026,Seretide Accuhaler,Fluticasone/Salmeterol,M5501,09/26,Mar-25,8,1850.00,14800.00,1600.00,2000.00,GSK Pakistan,MedLine Dist,Asthma Clinic,Rx,DRAP-2346,Cash,0,0
+INV-3007,۱۶-۰۱-۲۰۲۶,Metoprolol 50mg,Metoprolol,N6601,12/27,Apr-25,120,22.00,2640.00,18.00,25.00,Novartis,PharmaCo Dist,BP Clinic,Rx,DRAP-3457,Credit,0,0
+INV-3007,۱۶-۰۱-۲۰۲۶,Amlodipine 5mg Tab,Amlodipine,O7701,06/27,Jan-25,200,8.00,1600.00,6.00,10.00,Pfizer,PharmaCo Dist,BP Clinic,Rx,DRAP-4568,Credit,0,0
+INV-3008,17-01-2026,Lipitor 20mg Tab,Atorvastatin,P8801,03/27,Dec-24,45,165.00,7425.00,135.00,140.00,Pfizer,HealthPlus Dist,General,Rx,DRAP-5679,Cash,0,0
+INV-3008,17-01-2026,Omeprazole 20mg Cap,Omeprazole,,07/27,Feb-25,80,12.00,960.00,9.00,14.00,ICI Pakistan,HealthPlus Dist,General,OTC,,Cash,0,0
+INV-3009,20/01/2026,Diclofenac 50mg Tab,Diclofenac Sodium,R0011,02/24,Jan-22,150,6.50,975.00,5.00,8.00,Novartis,CityMed Supply,Walk-in,OTC,DRAP-7891,Cash,0,0
+INV-3009,20/01/2026,Voltaren Gel 50g,Diclofenac Sodium,S1121,08/27,Mar-25,20,185.00,3700.00,155.00,200.00,Novartis,CityMed Supply,Walk-in,OTC,DRAP-8902,Cash,0,0
+INV-3010,22-01-2026,Flagyl 400mg Tab,Metronidazole,T2231,11/26,Jun-25,60,18.00,1080.00,14.00,20.00,Sanofi,Express Pharma,Surgery Ward,Rx,DRAP-9013,Cash,0,0
+INV-3010,22-01-2026,Panadol CF Tab,Paracetamol+Caffeine,U3341,06/27,Apr-25,100,25.00,2000.00,19.00,28.00,GSK Pakistan,Express Pharma,Surgery Ward,OTC,DRAP-0124,Cash,0,0
+INV-3011,25/01/2026,Clexane 40mg Inj,Enoxaparin,V4451,04/27,Feb-25,10,850.00,8500.00,780.00,900.00,Sanofi,MedLine Dist,ICU,Rx,DRAP-1236,Cash,0,0
+INV-3011,25/01/2026,Meronem 1g Inj,Meropenem,W5561,12/26,Mar-25,5,1250.00,6250.00,1100.00,1400.00,AstraZeneca,MedLine Dist,ICU,Rx,DRAP-2347,Cash,0,0
+INV-3012,28-01-2026,Zithromax 250mg Tab,Azithromycin,X6671,03/27,Dec-24,30,145.00,4350.00,120.00,160.00,Pfizer,PharmaCo Dist,Walk-in,Rx,DRAP-3458,Cash,0,0
+INV-3012,28-01-2026,Dexamethasone 4mg Inj,Dexamethasone,Y7781,09/27,Jan-25,25,45.00,1125.00,38.00,50.00,GSK Pakistan,PharmaCo Dist,Walk-in,Rx,DRAP-4569,Cash,0,0
+INV-3013,30/01/2026,Insulin Mixtard 30,Insulin Human Biphasic,,06/27,Apr-25,12,1800.00,21600.00,1600.00,2000.00,Novo Nordisk,HealthPlus Dist,Diabetic Ward,Rx,DRAP-5680,Cash,0,0
+INV-3013,30/01/2026,Glucovance 500mg,Metformin+Glibenclamide,A1001,06/2027,May-25,90,35.00,3150.00,28.00,40.00,Merck,HealthPlus Dist,Diabetic Ward,Rx,DRAP-6790,Cash,0,0
+INV-3014,01-02-2026,Amikacin 500mg Inj,Amikacin,B2002,08/25,Aug-24,8,185.00,1480.00,160.00,210.00,Otsuka,CityMed Supply,ICU,Rx,DRAP-7892,Cash,0,0
+INV-3014,01-02-2026,Vancomycin 500mg Inj,Vancomycin,C3003,12/27,Sep-25,6,850.00,5100.00,750.00,920.00,Pfizer,CityMed Supply,ICU,Rx,DRAP-8903,Cash,0,0
+INV-3015,03/02/2026,Risperidone 2mg Tab,Risperidone,D4004,06/27,Feb-25,60,28.00,1680.00,22.00,32.00,J&J Pakistan,Express Pharma,Psych Ward,Rx,DRAP-9014,Cash,0,0
+INV-3015,03/02/2026,Olanzapine 5mg Tab,Olanzapine,E5005,03/27,Jan-25,45,65.00,2925.00,55.00,75.00,Eli Lilly,Express Pharma,Psych Ward,Rx,DRAP-0125,Cash,0,0

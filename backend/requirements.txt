@@ -15,6 +15,7 @@ statsmodels
 ollama
 sentence-transformers
 chromadb
+tiktoken
 
 # Reporting
 matplotlib

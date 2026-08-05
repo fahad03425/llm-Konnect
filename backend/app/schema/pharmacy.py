@@ -19,6 +19,83 @@ class PharmacyDomainPack(DomainPack):
         ]
 
     @property
+    def searchable_fields(self) -> List[str]:
+        return [
+            "product_id", "generic_name", "manufacturer", "batch_no", 
+            "description", "category", "supplier_id", "customer_id", "invoice_id"
+        ]
+
+    @property
+    def filter_metadata_fields(self) -> List[str]:
+        return [
+            "date", "txn_type", "amount", "unit_price", "quantity", 
+            "product_id", "supplier_id", "customer_id", "invoice_id",
+            "generic_name", "manufacturer", "batch_no", "expiry_date", 
+            "mrp", "drap_reg_no", "schedule_flag"
+        ]
+
+    def row_to_text(self, row: dict) -> str:
+        # Build a semantic sentence like:
+        # "Sale on 2026-01-05: 20 units of Panadol 500mg Tablet (generic Paracetamol, batch B1234, mfg GSK) at Rs 18.00 each, total Rs 3,600, invoice INV-1001."
+        
+        def safe_str(val):
+            return str(val) if pd.notna(val) and str(val).strip() != "" else None
+
+        txn_type = safe_str(row.get("txn_type")) or "Record"
+        date_str = safe_str(row.get("date"))
+        
+        parts = []
+        parts.append(f"{txn_type.capitalize()}")
+        if date_str:
+            parts.append(f"on {date_str}")
+            
+        qty = safe_str(row.get("quantity"))
+        prod = safe_str(row.get("product_id"))
+        
+        if qty and prod:
+            parts.append(f": {qty} units of {prod}")
+        elif prod:
+            parts.append(f": {prod}")
+        else:
+            parts.append(":")
+
+        details = []
+        gen = safe_str(row.get("generic_name"))
+        if gen: details.append(f"generic {gen}")
+        batch = safe_str(row.get("batch_no"))
+        if batch: details.append(f"batch {batch}")
+        mfg = safe_str(row.get("manufacturer"))
+        if mfg: details.append(f"mfg {mfg}")
+        
+        if details:
+            parts.append(f"({', '.join(details)})")
+            
+        price = safe_str(row.get("unit_price"))
+        if price:
+            parts.append(f"at Rs {price} each")
+            
+        amt = safe_str(row.get("amount"))
+        if amt:
+            parts.append(f"total Rs {amt}")
+            
+        inv = safe_str(row.get("invoice_id"))
+        if inv:
+            parts.append(f"invoice {inv}")
+            
+        supplier = safe_str(row.get("supplier_id"))
+        if supplier:
+            parts.append(f"from supplier {supplier}")
+            
+        customer = safe_str(row.get("customer_id"))
+        if customer:
+            parts.append(f"to customer {customer}")
+
+        sentence = " ".join(parts).strip().replace(" :", ":")
+        if not sentence.endswith("."):
+            sentence += "."
+        return sentence
+
+    @property
     def header_synonyms(self) -> Dict[str, List[str]]:
         return {
             # --- Pharmacy-specific fields ---
