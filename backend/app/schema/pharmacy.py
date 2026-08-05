@@ -35,64 +35,46 @@ class PharmacyDomainPack(DomainPack):
         ]
 
     def row_to_text(self, row: dict) -> str:
-        # Build a semantic sentence like:
-        # "Sale on 2026-01-05: 20 units of Panadol 500mg Tablet (generic Paracetamol, batch B1234, mfg GSK) at Rs 18.00 each, total Rs 3,600, invoice INV-1001."
-        
+        # Build an explicit, labeled string to ensure reliable field extraction by the LLM.
+        # Required format: "Label: value. Label: value." 
+        # Missing fields are omitted entirely.
+
         def safe_str(val):
-            return str(val) if pd.notna(val) and str(val).strip() != "" else None
+            return str(val).strip() if pd.notna(val) and str(val).strip() != "" else None
 
-        txn_type = safe_str(row.get("txn_type")) or "Record"
-        date_str = safe_str(row.get("date"))
-        
+        # Fixed canonical order, prioritizing identity/relationships before truncation
+        # Format: (key_in_row, Display_Label, optional_prefix)
+        fields = [
+            ("txn_type", "Transaction type", ""),
+            ("date", "Date", ""),
+            ("invoice_id", "Invoice", ""),
+            ("product_id", "Product", ""),
+            ("generic_name", "Generic", ""),
+            ("batch_no", "Batch", ""),
+            ("expiry_date", "Expiry", ""),
+            ("manufacturer", "Manufacturer", ""),
+            ("supplier_id", "Supplier", ""),
+            ("customer_id", "Customer", ""),
+            ("quantity", "Quantity", ""),
+            ("unit_price", "Unit price", "Rs "),
+            ("amount", "Total amount", "Rs "),
+            ("mrp", "MRP", "Rs "),
+            ("payment_method", "Payment", "")
+        ]
+
         parts = []
-        parts.append(f"{txn_type.capitalize()}")
-        if date_str:
-            parts.append(f"on {date_str}")
-            
-        qty = safe_str(row.get("quantity"))
-        prod = safe_str(row.get("product_id"))
-        
-        if qty and prod:
-            parts.append(f": {qty} units of {prod}")
-        elif prod:
-            parts.append(f": {prod}")
-        else:
-            parts.append(":")
+        for key, label, prefix in fields:
+            val = safe_str(row.get(key))
+            if val:
+                # Capitalize txn_type for neatness
+                if key == "txn_type":
+                    val = val.capitalize()
+                parts.append(f"{label}: {prefix}{val}")
 
-        details = []
-        gen = safe_str(row.get("generic_name"))
-        if gen: details.append(f"generic {gen}")
-        batch = safe_str(row.get("batch_no"))
-        if batch: details.append(f"batch {batch}")
-        mfg = safe_str(row.get("manufacturer"))
-        if mfg: details.append(f"mfg {mfg}")
-        
-        if details:
-            parts.append(f"({', '.join(details)})")
-            
-        price = safe_str(row.get("unit_price"))
-        if price:
-            parts.append(f"at Rs {price} each")
-            
-        amt = safe_str(row.get("amount"))
-        if amt:
-            parts.append(f"total Rs {amt}")
-            
-        inv = safe_str(row.get("invoice_id"))
-        if inv:
-            parts.append(f"invoice {inv}")
-            
-        supplier = safe_str(row.get("supplier_id"))
-        if supplier:
-            parts.append(f"from supplier {supplier}")
-            
-        customer = safe_str(row.get("customer_id"))
-        if customer:
-            parts.append(f"to customer {customer}")
-
-        sentence = " ".join(parts).strip().replace(" :", ":")
+        sentence = ". ".join(parts)
         if not sentence.endswith("."):
             sentence += "."
+        
         return sentence
 
     @property
