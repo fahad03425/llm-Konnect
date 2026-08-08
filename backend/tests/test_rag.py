@@ -30,32 +30,36 @@ def test_extract_filters():
     assert extract_filters("what happened in may") == {"month": 5}
     assert extract_filters("sales for yesterday") == {}
 
-def test_analytics_fallback():
+def test_analytics_seam_is_backed_by_the_kpi_engine():
+    """
+    Module 6.6 superseded the temporary in-router pandas fallback: the numeric
+    route now returns real KPIEngine results (keyed by KPI key, with provenance)
+    instead of the old ad-hoc 'total_amount'/'average_amount' aggregates.
+    """
     router = AnalyticsRouter()
-    
+
     records = [
         {"source_row": 1, "amount": 100, "quantity": 10},
         {"source_row": 2, "amount": 250, "quantity": 5},
         {"source_row": 3, "amount": 50,  "quantity": 2},
     ]
-    
-    # total amount
+
+    # total -> total_revenue, computed by the engine
     comp, sources = router.compute("total sales", {}, records)
-    assert comp["total_amount"] == 400.0
+    assert comp["total_revenue"]["value"] == 400.0
+    assert comp["total_revenue"]["status"] == "ok"
+    assert comp["total_revenue"]["provenance"]["rows_used"] == 3
     assert set(sources) == {1, 2, 3}
-    
-    # average
-    comp, sources = router.compute("average amount", {}, records)
-    assert comp["average_amount"] == (400.0 / 3)
-    
-    # expiring
-    records_exp = [
-        {"source_row": 4, "expiry_date": "2026-10-01"},
-        {"source_row": 5, "expiry_date": None},
-        {"source_row": 6, "expiry_date": "2026-12-01"}
-    ]
-    comp, sources = router.compute("how many expiring", {}, records_exp)
-    assert comp["expiring_count"] == 2
+
+    # average -> average_transaction_value (no invoice_id here, so 3 transactions)
+    comp, _ = router.compute("average amount", {}, records)
+    assert comp["average_transaction_value"]["value"] == round(400.0 / 3, 2)
+    assert comp["transaction_count"]["value"] == 3.0
+
+    # Expiry analytics are pharmacy-specific and deliberately NOT part of 6.6 core;
+    # a "how many" question resolves to the domain-agnostic transaction count.
+    comp, _ = router.compute("how many transactions", {}, records)
+    assert comp["transaction_count"]["value"] == 3.0
 
 def test_urdu_digit_normalization():
     chat = RAGChat()

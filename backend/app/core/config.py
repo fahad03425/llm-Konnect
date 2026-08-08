@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     chunk_overlap: float = 0.15
     retrieval_top_k: int = 5
     
+    # Analytics / KPI engine (Module 6.6)
+    analytics_currency: str = "PKR"
+    analytics_top_n: int = 10  # rows kept in top-N breakdowns (e.g. revenue by product)
+    analytics_max_provenance_rows: int = 500  # cap on source_row ids stored per KPI result
+
     # Paths
     storage_dir: str = "data/storage"
     reports_dir: str = "reports"
