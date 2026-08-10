@@ -12,11 +12,12 @@ KPIs pass `domain="<pack name>"` and are then included in `compute_all` for that
 domain only. Core code never needs editing to add one.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from app.analytics import forecast as forecast_kpis
 from app.analytics import kpi as core_kpis
 from app.analytics.filters import KPIFilters, apply_filters
 from app.analytics.models import KPIResult, Provenance, unavailable
@@ -87,6 +88,31 @@ _CORE_SPECS: List[KPISpec] = [
     KPISpec("revenue_by_month", "Revenue by Month", "PKR",
             "Sale amount grouped by calendar month. A historical aggregation, not a forecast.",
             core_kpis.revenue_by_month, tags=("breakdown", "time")),
+    # --- trend (Tier 0: measured, predicts nothing) -------------------------
+    KPISpec("revenue_trend", "Revenue Trend", "percent",
+            "Revenue per period with a moving average; headline is period-over-period growth %.",
+            forecast_kpis.revenue_trend, tags=("time", "trend")),
+    KPISpec("units_trend", "Units Sold Trend", "percent",
+            "Units sold per period with a moving average; headline is period-over-period growth %.",
+            forecast_kpis.units_trend, tags=("time", "trend")),
+    KPISpec("top_rising_products", "Top Rising Products", "PKR",
+            "Products whose revenue grew most between the last two windows.",
+            forecast_kpis.top_rising_products, tags=("time", "trend", "breakdown")),
+    KPISpec("top_declining_products", "Top Declining Products", "PKR",
+            "Products whose revenue fell most between the last two windows.",
+            forecast_kpis.top_declining_products, tags=("time", "trend", "breakdown")),
+    # --- forecast (estimates, always reported as a range) -------------------
+    KPISpec("revenue_forecast", "Revenue Forecast", "PKR",
+            "Estimated revenue for the next N periods, with an uncertainty band. "
+            "Refuses to estimate when history is too short or too gappy.",
+            forecast_kpis.revenue_forecast, tags=("time", "forecast")),
+    KPISpec("demand_forecast", "Demand Forecast (units)", "count",
+            "Estimated units sold for the next N periods, with an uncertainty band.",
+            forecast_kpis.demand_forecast, tags=("time", "forecast")),
+    KPISpec("product_demand_forecast", "Product Demand Forecast (units)", "count",
+            "Estimated units for ONE product (requires a product_id filter), from that "
+            "product's own history. Sparse sellers return insufficient-history.",
+            forecast_kpis.product_demand_forecast, tags=("time", "forecast")),
 ]
 
 
@@ -102,11 +128,32 @@ class KPIEngine:
     def __init__(self, register_core: bool = True) -> None:
         self._specs: Dict[str, KPISpec] = {}
         self._order: List[str] = []
+        self._domains_loaded: set = set()
         if register_core:
             for spec in _CORE_SPECS:
                 self.register(spec)
 
     # -- registry ---------------------------------------------------------
+
+    def ensure_domain(self, domain: Optional[str]) -> None:
+        """
+        Lazily attach a domain pack's KPIs, once per domain.
+
+        This is the hook that keeps domain KPIs out of core: the engine asks the
+        pack to register itself the first time work is requested for that domain.
+        An unknown domain is simply a no-op — core KPIs still compute. A pack that
+        raises while registering is NOT swallowed: a broken pack should be loud.
+        """
+        if not domain or domain in self._domains_loaded:
+            return
+        self._domains_loaded.add(domain)
+        try:
+            from app.schema.domain import get_domain_pack
+
+            pack = get_domain_pack(domain)
+        except (ImportError, ValueError):
+            return  # no such domain pack; core KPIs still apply
+        pack.register_kpis(self)
 
     def register(self, spec: KPISpec, replace: bool = False) -> None:
         """
@@ -124,16 +171,19 @@ class KPIEngine:
         Registered KPIs in registration order: core KPIs always, plus the ones
         registered for `domain` when given.
         """
+        self.ensure_domain(domain)
         return [
             self._specs[k]
             for k in self._order
             if self._specs[k].domain is None or (domain is not None and self._specs[k].domain == domain)
         ]
 
-    def has(self, key: str) -> bool:
+    def has(self, key: str, domain: Optional[str] = None) -> bool:
+        self.ensure_domain(domain)
         return key in self._specs
 
-    def get_spec(self, key: str) -> Optional[KPISpec]:
+    def get_spec(self, key: str, domain: Optional[str] = None) -> Optional[KPISpec]:
+        self.ensure_domain(domain)
         return self._specs.get(key)
 
     # -- computation ------------------------------------------------------
@@ -162,6 +212,7 @@ class KPIEngine:
         zero denominator all come back as `status="unavailable"` with a reason.
         An unregistered key is a programming error and does raise KeyError.
         """
+        self.ensure_domain(domain)
         spec = self._specs.get(key)
         if spec is None:
             raise KeyError(f"Unknown KPI key '{key}'. Registered: {sorted(self._specs)}")
@@ -191,22 +242,9 @@ class KPIEngine:
             for note in filter_notes:
                 if note not in merged:
                     merged.append(note)
-            result = KPIResult(
-                key=result.key, name=result.name, value=result.value, unit=result.unit,
-                formula=result.formula,
-                provenance=Provenance(
-                    filters=result.provenance.filters,
-                    filter_description=result.provenance.filter_description,
-                    row_count=result.provenance.row_count,
-                    source_rows=result.provenance.source_rows,
-                    source_rows_truncated=result.provenance.source_rows_truncated,
-                    sources=result.provenance.sources,
-                    columns_used=result.provenance.columns_used,
-                    assumptions=merged,
-                ),
-                status=result.status, reason=result.reason, period=result.period,
-                breakdown=result.breakdown, breakdown_columns=result.breakdown_columns,
-            )
+            # `replace` rather than a field-by-field rebuild, so new KPIResult
+            # fields can never be silently dropped here.
+            result = replace(result, provenance=replace(result.provenance, assumptions=merged))
         return result
 
     def compute_all(

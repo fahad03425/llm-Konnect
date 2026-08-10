@@ -102,6 +102,14 @@ class KPIResult:
     period: Optional[Period] = None
     breakdown: Optional[List[Dict[str, Any]]] = None
     breakdown_columns: Optional[List[str]] = None
+    # --- time-series payloads (used by trend and forecast results) -----------
+    # `method` names the technique behind the number, so a reader always knows
+    # whether a figure was measured or estimated. `series` is observed history;
+    # `forecast` is estimated future points, each with a lower/upper band. A
+    # forecast is a RANGE, never a bare number.
+    method: Optional[str] = None
+    series: Optional[List[Dict[str, Any]]] = None
+    forecast: Optional[List[Dict[str, Any]]] = None
 
     @property
     def is_available(self) -> bool:
@@ -120,6 +128,9 @@ class KPIResult:
             "period": self.period.to_dict() if self.period else None,
             "breakdown": self.breakdown,
             "breakdown_columns": self.breakdown_columns,
+            "method": self.method,
+            "series": self.series,
+            "forecast": self.forecast,
             "provenance": self.provenance.to_dict(),
         }
 
