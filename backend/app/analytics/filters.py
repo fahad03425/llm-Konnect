@@ -8,7 +8,7 @@ each result's provenance.
 Deterministic, LLM-free, offline. Domain-agnostic: no domain vocabulary here.
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -22,6 +22,13 @@ _FIELD_COLUMNS = {
     "txn_type": "txn_type",
 }
 
+# Fields that actually select rows. `as_of` and `options` are carried alongside them
+# (and shown in provenance) but never filter anything by themselves.
+_ROW_FILTER_FIELDS = (
+    "date_from", "date_to", "month", "year",
+    "category", "product_id", "supplier_id", "customer_id", "txn_type",
+)
+
 
 @dataclass(frozen=True)
 class KPIFilters:
@@ -31,6 +38,17 @@ class KPIFilters:
     All fields are optional; an all-None instance means "every row". Date filters
     are inclusive on both ends. `month`/`year` are convenience filters (the chatbot
     seam extracts a month from questions like "total sales in January").
+
+    Two fields are not row selectors:
+
+    `as_of` is the reference date a KPI computes "now" against, injected rather
+    than read from the clock inside a KPI, so results are reproducible and a user
+    can ask "as of month-end". Defaults to today when a KPI needs it and it is None.
+
+    `options` is a free-form bag of KPI-specific computation options (for example a
+    value basis). It stays domain-agnostic here: core never inspects its contents,
+    but it is echoed into provenance so any option that changed a number is on the
+    record.
     """
 
     date_from: Optional[str] = None
@@ -42,6 +60,8 @@ class KPIFilters:
     supplier_id: Optional[str] = None
     customer_id: Optional[str] = None
     txn_type: Optional[str] = None
+    as_of: Optional[str] = None
+    options: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "KPIFilters":
@@ -52,11 +72,20 @@ class KPIFilters:
         return cls(**known)
 
     def is_empty(self) -> bool:
-        return all(v is None for v in asdict(self).values())
+        """True when nothing selects rows. `as_of`/`options` do not select rows."""
+        return all(getattr(self, f) is None for f in _ROW_FILTER_FIELDS)
+
+    def option(self, name: str, default: Any = None) -> Any:
+        """Read a KPI-specific option from the bag."""
+        return self.options.get(name, default) if self.options else default
 
     def as_dict(self) -> Dict[str, Any]:
         """Only the fields that are actually set, in stable field order."""
-        return {k: v for k, v in asdict(self).items() if v is not None}
+        return {
+            k: v
+            for k, v in asdict(self).items()
+            if v is not None and not (k == "options" and not v)
+        }
 
     def describe(self) -> str:
         """Human-readable rendering, stable ordering — goes into provenance."""

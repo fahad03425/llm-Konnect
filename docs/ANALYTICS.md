@@ -200,32 +200,299 @@ the engine. All arithmetic lives in `app/analytics/`.
 
 ---
 
+## 5a. Trend & forecasting
+
+Domain-agnostic, registered as ordinary core KPIs. Built on the same series machinery
+as `revenue_by_month`, in `app/analytics/timeseries.py` (descriptive) and
+`app/analytics/forecast.py` (estimates).
+
+### The honesty stance
+
+A small business's data is short and noisy, and **a confident wrong forecast is worse
+than no forecast**. So this module deliberately:
+
+- prefers simple, explainable methods and only climbs to a statistical model when
+  there is genuinely enough regular history;
+- always returns a **range**, never a bare number;
+- **refuses to forecast** when history is too short or too gappy, saying exactly how
+  much data exists versus how much is needed;
+- names the method and tier behind every number, so nothing looks more certain than it is.
+
+`KPIResult` gained three optional fields for this: `method` (what produced the number),
+`series` (observed history) and `forecast` (estimated future points, each with
+`lower`/`upper`). A measured fact has `series` but no `forecast`.
+
+### The tier ladder
+
+| Tier | Method | When | Predicts? |
+|---|---|---|---|
+| 0 | Descriptive trend — period totals, moving average, growth %, movers | always | **no** |
+| 1 | Moving-average baseline — mean of the last `w` periods | default forecast | yes |
+| 2 | Exponential smoothing (Holt, level + additive trend, statsmodels) | ample regular history | yes |
+
+**Auto-selection is deterministic**: take the highest tier whose data requirement is
+met, else drop down; below the Tier-1 minimum, refuse. A Tier-2 fit that raises or
+returns non-finite values **falls back to Tier 1 with a note** — never to a crash and
+never to silence. Prophet and ML frameworks are out of scope (too heavy and fragile for
+this data and hardware); a test asserts they are not imported.
+
+> Tier 2 is import-guarded. `statsmodels` is declared in `requirements.txt`, but if it
+> is not installed and history would have justified it, the result says so in
+> `provenance.assumptions` and Tier 1 is used instead.
+
+### The two gates before any forecast
+
+1. **Enough periods** — `forecast_tier1_min_periods` (default 4).
+2. **Enough of them observed** — `forecast_min_observed_ratio` (default 0.6).
+
+The second gate is the important one. The shipped sales fixture has January, February
+and September only: zero-filling the six-month hole would produce nine "periods" and a
+plausible-looking average. Instead it is refused:
+
+> *history is too gappy to forecast: only 3 of 9 monthly periods contain any
+> transactions (33%), below the 60% minimum. The gaps are more likely to be missing
+> records than genuine zero-sales periods.*
+
+The same data at **weekly** granularity over Jan–Feb is contiguous and forecasts fine.
+
+### Missing periods
+
+A calendar period with no transactions is materialised as `0` — a month with no sales
+genuinely earned nothing — but **only between the first and last observed period**. The
+series is never extended past the data. Each point carries `observed: true|false`, and
+the observed ratio drives gate 2 above.
+
+### The uncertainty band
+
+`lower/upper = value ± multiplier × spread × sqrt(steps ahead)`
+
+- `spread` is the **RMSE of the method's own past errors**, measured about zero rather
+  than about the mean error. This matters: on a steadily rising series a flat baseline
+  is wrong by a similar amount every period, so those errors have almost no *scatter* —
+  a standard deviation would report near-zero uncertainty for a forecast that is
+  reliably too low. RMSE counts that systematic bias as the error it is.
+- `sqrt(steps ahead)` widens the band the further out the estimate goes.
+- The lower bound is **clamped at zero**; negative sales are not a thing.
+- A **floor of `forecast_min_band_ratio`** (default 5% of the estimate) always applies.
+  In-sample residuals systematically understate out-of-sample error: exponential
+  smoothing fits a clean linear series almost perfectly, so its residuals are near zero
+  and the band would otherwise collapse to zero width — total certainty about the future
+  from a dozen data points. The floor makes that impossible.
+
+This is a **volatility band, not a rigorous prediction interval**, and the `method`
+string says so.
+
+### The KPIs
+
+| Key | Tier | Unit | What |
+|---|---|---|---|
+| `revenue_trend` | 0 | percent | Revenue per period + moving average; headline is period-over-period growth % |
+| `units_trend` | 0 | percent | Same over quantity |
+| `top_rising_products` | 0 | PKR | Biggest growers, recent window vs the one before |
+| `top_declining_products` | 0 | PKR | Biggest fallers |
+| `revenue_forecast` | 1–2 | PKR | Next N periods with bands |
+| `demand_forecast` | 1–2 | count | Next N periods of units |
+| `product_demand_forecast` | 1–2 | count | One product, from its own history (**requires `product_id`**) |
+
+Growth % is undefined (not infinite) when the previous period was zero, and says so.
+Movers report `change_pct: null` for a product with no prior-window sales — a new
+seller, not an infinite riser — and sort by absolute change so ordering stays defined.
+
+### Reference date
+
+Injected via `KPIFilters.as_of`, exactly like the expiry pack: history is truncated
+there, so trends, "recent vs prior" windows and forecasts are all reproducible.
+`now()` is never read inside the maths.
+
+### API
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/analytics/trend` | Descriptive only: series, moving average, growth |
+| `POST /api/analytics/forecast` | Series + forecast points + bands + method |
+
+Both accept `metric` (`revenue`/`units`), `granularity`, `horizon`, `product_id` and
+`as_of`. Passing `product_id` to `/forecast` selects the per-product forecast.
+
+### Chatbot
+
+Trend/forecast intents live in the engine's core rules (they are domain-agnostic):
+"forecast", "predict", "next month", "trend", "growth", "rising", "declining",
+"how many will I sell", "kitni sale hogi". The pharmacy pack adds its own per-item
+demand framing ("demand", "kitna mangwana", "reorder"), which routes to the
+per-product forecast first.
+
+Which product a question names is resolved **from the data**, not guessed: a question
+word must match a whole word of a real `product_id` and carry at least four letters, so
+"500mg" or "tab" can never match. Longest match wins, ties break alphabetically.
+
+The analytics system prompt requires the LLM to present anything with
+`"is_estimate": true` as a range ("roughly X, likely between A and B"), never to narrow
+it, and to state the reason verbatim when a figure is `unavailable`. The number always
+comes from code.
+
+### Config
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `forecast_granularity` / `forecast_granularities` | `monthly` / daily,weekly,monthly | Period size |
+| `forecast_horizon` | `3` | Periods ahead |
+| `forecast_tier1_min_periods` | `4` | Below this: refuse |
+| `forecast_tier2_min_periods` | `12` | Above this: try statsmodels |
+| `forecast_min_observed_ratio` | `0.6` | Gappy-history gate |
+| `forecast_baseline_window` | `3` | Periods averaged for the Tier-1 level |
+| `forecast_band_multiplier` | `1.96` | Band width |
+| `forecast_min_band_ratio` | `0.05` | Floor: band is never narrower than ±5% of the estimate |
+| `forecast_enable_tier2` | `true` | Gate for the optional tier |
+| `trend_moving_average_window` | `3` | Smoothing window |
+| `trend_movers_window` / `trend_movers_top_n` | `1` / `5` | Movers comparison |
+
+---
+
+## 6a. Pharmacy expiry analytics (domain pack)
+
+The first domain KPI pack, registered onto the same engine via
+`PharmacyDomainPack.register_kpis`. Lives in `app/analytics/domains/pharmacy.py` —
+**not** in engine core, which stays grep-clean of domain words (enforced by
+`test_engine_core_has_no_pharmacy_vocabulary`). Only the `pharmacy` domain sees these.
+
+### Subject rows
+
+These read a **stock-on-hand / inventory** table. A row contributes only when it has
+a usable `expiry_date`, a `quantity` greater than zero, and a value basis. Stock with
+zero quantity is not "at risk" and is excluded (its value is zero anyway).
+
+If the frame carries `invoice_id`, it looks like transactions rather than shelf stock,
+and an assumption note says so — the figures then describe the rows present, which may
+not be current stock.
+
+### Value basis
+
+Stock value is `quantity x unit_value`.
+
+| Basis | Meaning | Default |
+|---|---|---|
+| `cost` | Money the pharmacy actually loses | ✅ |
+| `mrp` | Revenue foregone | opt-in |
+
+Set per call via `filters.options = {"value_basis": "mrp"}`, or globally with
+`expiry_value_basis`. The basis in force appears in every result's `formula`. If the
+configured basis column is absent or entirely empty, the other is used and the
+substitution is recorded in `assumptions`.
+
+### Bucket banding — **banded, not cumulative**
+
+Each item falls in exactly one bucket, so a pharmacist can act on "these expire first".
+With the default `expiry_buckets_days = [30, 60, 90]`:
+
+| Key | Window | Unit |
+|---|---|---|
+| `expired_stock_value` | `days_to_expiry < 0` | PKR |
+| `expiring_value_30d` | `0 <= days <= 30` | PKR |
+| `expiring_value_60d` | `31 <= days <= 60` | PKR |
+| `expiring_value_90d` | `61 <= days <= 90` | PKR |
+| `near_expiry_total` | `0 <= days <= 90` — **cumulative** headline | PKR |
+| `near_expiry_item_count` | distinct product/batch pairs, `0..90` | count |
+| `expired_item_count` | distinct product/batch pairs, already expired | count |
+| `expiry_by_manufacturer` | near-expiry value grouped by manufacturer/supplier | PKR |
+
+The bucket keys are generated from config: setting `expiry_buckets_days = [15, 45]`
+registers `expiring_value_15d` and `expiring_value_45d` instead.
+
+**Boundaries** are inclusive at the top of each band: exactly 30 days is in the 30-day
+bucket, exactly 60 in the 60-day bucket. Stock expiring **today** (0 days) counts as
+near-expiry, not expired. The three buckets are disjoint and sum to `near_expiry_total`.
+
+### Reference date
+
+"Today" is injected through `KPIFilters.as_of` (`YYYY-MM-DD`) and defaults to the
+current date. `datetime.now()` is never read inside the maths, so tests pin a date and
+a user can ask "as of month-end". The date used appears in each result's `formula` and
+in `provenance.filters`. An unparseable `as_of` falls back to today **with a note**.
+
+### Expiry parsing and exclusions
+
+`expiry_date` is consumed **already normalized** by the schema pipeline (which handles
+`mm/yy`, `mm-yyyy` → last day of month, day-first strings, Excel serials). No formats
+are re-parsed here.
+
+Rows dropped for a missing/unparseable expiry, a missing or non-positive quantity, or a
+missing unit value are **counted and reported** in `provenance.assumptions` — so a total
+is never silently understated. An empty window over good data is a real `0.0` with
+`status="ok"`; a missing `expiry_date` or `quantity` column is `unavailable` with a reason.
+
+### Item breakdown
+
+Every value KPI returns the at-risk items: `product_id`, `batch_no`, `expiry_date`,
+`days_to_expiry`, `quantity`, `unit_value`, `line_value`, `source_row` — sorted **soonest
+expiry first**, then product, then batch (sorted for action, not by value), capped at
+`expiry_breakdown_top_n`.
+
+### API and chatbot
+
+`POST /api/analytics/expiry-report` returns every expiry KPI in one call, accepting
+`as_of` and `value_basis`. Individual KPIs work through the normal
+`POST /api/analytics/kpi/{key}`.
+
+Expiry questions route to these KPIs through `PharmacyDomainPack.kpi_question_rules`,
+checked **before** the core rules. English and Roman-Urdu triggers are supported
+("expiring", "near expiry", "already expired", "kitna stock expire ho raha hai",
+"khatam ho raha"). The vocabulary lives on the pack, so the chatbot and the KPI core
+never learn domain nouns. As always the number comes from the KPI; the LLM only narrates it.
+
+### Config
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `expiry_buckets_days` | `[30, 60, 90]` | Bucket edges; drives the registered keys. |
+| `expiry_value_basis` | `cost` | Default valuation basis. |
+| `expiry_breakdown_top_n` | `25` | At-risk items listed per breakdown. |
+
+---
+
 ## 7. Registering a new KPI
 
-Adding a KPI is **additive** — core code is never edited. This is the hook the pharmacy
-expiry KPIs and the forecasting module will use.
+Adding a KPI is **additive** — core code is never edited. This is the hook the expiry
+pack uses today and the forecasting module will use next.
+
+A domain pack implements `register_kpis`, which the engine calls **lazily**, once, the
+first time it is asked for work in that domain:
 
 ```python
-from app.analytics import engine, KPISpec, KPIResult, KPIFilters
-from app.analytics.kpi import build_provenance
+# app/schema/<yourdomain>.py
+class GroceryDomainPack(DomainPack):
+    def register_kpis(self, engine) -> None:
+        from app.analytics.domains.grocery import register
+        register(engine, domain=self.name)
 
-def near_expiry_value(df, filters: KPIFilters, domain: str = "") -> KPIResult:
+# app/analytics/domains/grocery.py
+from app.analytics.engine import KPISpec
+from app.analytics.kpi import build_provenance   # provenance helper
+
+def wastage_value(df, filters: KPIFilters, domain: str = "") -> KPIResult:
     ...  # pure pandas; return a KPIResult with real provenance
-    
-engine.register(KPISpec(
-    key="near_expiry_stock_value",
-    name="Near-Expiry Stock Value",
-    unit="PKR",
-    definition="Value of stock expiring within the threshold window.",
-    fn=near_expiry_value,
-    domain="pharmacy",     # omit (None) for a core, domain-agnostic KPI
-    tags=("money", "risk"),
-))
+
+def register(engine, domain="grocery"):
+    engine.register(KPISpec(
+        key="wastage_value", name="Wastage Value", unit="PKR",
+        definition="Value of stock written off.",
+        fn=wastage_value, domain=domain, tags=("money", "risk"),
+    ), replace=True)
 ```
 
-A spec with `domain="pharmacy"` is returned by `list_kpis("pharmacy")` and included in
-`compute_all(df, domain="pharmacy")` — and is invisible to every other domain. Re-registering
-an existing key raises unless `replace=True`.
+A spec with a `domain` is returned by `list_kpis(domain)` and included in
+`compute_all(df, domain=...)` — and is invisible to every other domain. Re-registering an
+existing key raises unless `replace=True` (domain packs pass `replace=True` so reloading
+is idempotent).
+
+Add question vocabulary by overriding `kpi_question_rules` on the pack; it is consulted
+before the engine's core rules, so a domain can claim its own words without any edit to
+the chatbot or the engine.
+
+Available helpers: `build_provenance`, `_amount_series`, `_cogs_series`, and
+`classify_transactions` in `app/analytics/kpi.py`. Use `filters.as_of` for a reference
+date and `filters.option("name")` for KPI-specific options — both land in provenance
+automatically.
 
 Helpers available to a new KPI: `build_provenance`, `_amount_series`, `_cogs_series`, and
 `classify_transactions` in `app/analytics/kpi.py`.
@@ -246,11 +513,12 @@ In `app/core/config.py` (env prefix `KONNECT_`):
 
 ## 9. Scope boundary
 
-**In 6.6:** the framework (result contract, provenance, registry, filtering, engine, seam,
-API) plus the core domain-agnostic KPIs above.
+**Built:** the framework (result contract, provenance, registry, filtering, engine, seam,
+API), the core domain-agnostic KPIs, trend & forecasting (§5a), and the pharmacy expiry
+pack (§6a) attached through the domain hook with no core edit.
 
-**Deliberately NOT in 6.6**, and designed to slot in additively via `register`:
+**Deliberately out of scope**, by design rather than omission:
 
-- Pharmacy-specific analytics (expiry value, near-expiry stock worth) — separate module.
-- Forecasting and trend prediction — separate module. `revenue_by_month` is an aggregation,
-  not a forecast.
+- Prophet, ARIMA auto-search, and ML forecasting frameworks — too heavy and too fragile
+  for this data volume and this hardware. The tier ladder stops at exponential smoothing.
+- Any forecast on history that fails the two gates in §5a. Refusing is the feature.
