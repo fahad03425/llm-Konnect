@@ -204,6 +204,33 @@ class DomainPack(ABC):
             return "Empty record"
         return ", ".join(parts) + "."
 
+    @property
+    def kpi_question_rules(self) -> List[tuple]:
+        """
+        Domain question vocabulary for the chatbot's numeric route.
+
+        Each entry is (keywords, kpi_keys): if any keyword appears in the question,
+        those domain KPIs answer it. Checked BEFORE the engine's domain-agnostic
+        rules, so a domain can claim its own intents. Keeping this on the pack means
+        no domain vocabulary leaks into the chatbot or the KPI engine core.
+
+        Example: [(("expiring", "expiry"), ("expiring_value_30d",))]
+        """
+        return []
+
+    def register_kpis(self, engine) -> None:
+        """
+        Attach this domain's KPIs to a KPIEngine.
+
+        The engine calls this once, lazily, the first time it is asked for work in
+        this domain. Implementations call `engine.register(KPISpec(..., domain=self.name))`
+        so domain KPIs are additive and the engine core never learns domain vocabulary.
+
+        `engine` is typed loosely to keep `app.schema` independent of `app.analytics`.
+        Default: a domain contributes no KPIs.
+        """
+        return None
+
     def validate_row(self, row: dict, index: int) -> List[Problem]:
         """
         Legacy row-by-row validation rule runner.

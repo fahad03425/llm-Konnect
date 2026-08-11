@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from app.core.config import settings
 
 import app.schema  # ensures all domain packs (pharmacy, etc.) register on startup
-from app.api import routes, kb, chat
+from app.api import routes, kb, chat, analytics
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,6 +18,7 @@ app.add_middleware(
 app.include_router(routes.router)
 app.include_router(kb.router)
 app.include_router(chat.router)
+app.include_router(analytics.router)
 
 @app.get("/")
 def read_root():

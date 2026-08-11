@@ -28,11 +28,32 @@ class PharmacyDomainPack(DomainPack):
     @property
     def filter_metadata_fields(self) -> List[str]:
         return [
-            "date", "txn_type", "amount", "unit_price", "quantity", 
+            "date", "txn_type", "amount", "unit_price", "quantity",
             "product_id", "supplier_id", "customer_id", "invoice_id",
-            "generic_name", "manufacturer", "batch_no", "expiry_date", 
+            "generic_name", "manufacturer", "batch_no", "expiry_date",
             "mrp", "drap_reg_no", "schedule_flag"
         ]
+
+    @property
+    def kpi_question_rules(self) -> List[tuple]:
+        """
+        Expiry question vocabulary (English + Roman-Urdu) for the chatbot's numeric
+        route. Kept on the pack so no pharmacy words reach the chatbot or KPI core.
+        """
+        from app.analytics.domains.pharmacy import PHARMACY_QUESTION_RULES
+
+        return list(PHARMACY_QUESTION_RULES)
+
+    def register_kpis(self, engine) -> None:
+        """
+        Attach the pharmacy expiry KPIs to the Module 6.6 KPI engine.
+
+        Imported lazily: `app.schema` must not depend on `app.analytics` at import
+        time, and the engine only calls this when it first does pharmacy work.
+        """
+        from app.analytics.domains.pharmacy import register as register_expiry_kpis
+
+        register_expiry_kpis(engine, domain=self.name)
 
     def row_to_text(self, row: dict) -> str:
         # Build an explicit, labeled string to ensure reliable field extraction by the LLM.

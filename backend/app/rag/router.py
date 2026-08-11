@@ -1,7 +1,12 @@
 import re
-from typing import Dict, Any, Tuple, Optional
-import pandas as pd
+from typing import Dict, Any
 from app.schema.domain import get_domain_pack
+
+# Module 6.6 supersedes the temporary in-module pandas fallback that used to live
+# here: the numeric route is now backed by the real KPI engine, which computes
+# every figure deterministically and returns it with provenance. Re-exported under
+# the original name so existing call sites (app/rag/chat.py) are unchanged.
+from app.analytics.seam import AnalyticsRouter  # noqa: F401  (public re-export)
 
 class RouteType:
     RAG = "rag"
@@ -71,73 +76,3 @@ def extract_filters(question: str, domain: str = "pharmacy") -> Dict[str, Any]:
         pass
         
     return filters
-
-class AnalyticsRouter:
-    """
-    Seam for Module 6.6 (Analytics Engine).
-    Provides a deterministic pandas fallback for common aggregates to ensure the LLM
-    never computes numbers itself.
-    """
-    def compute(self, question: str, filters: Dict[str, Any], kb_records: list) -> Tuple[Optional[Dict[str, Any]], list]:
-        """
-        TODO (Module 6.6): Replace this fallback with the real Analytics Engine that queries
-        the canonical DataFrame directly, rather than relying on Chroma metadata.
-        
-        For now, this fallback loads the metadata from the retrieved chunks (or a passed list of records)
-        into a DataFrame and computes simple aggregates.
-        
-        Returns:
-            computed_values: dict of computed aggregates
-            sources: list of source_row indices used
-        """
-        if not kb_records:
-            return None, []
-            
-        df = pd.DataFrame(kb_records)
-        computed = {}
-        sources = df.get("source_row", pd.Series(dtype=int)).dropna().astype(int).tolist()
-        
-        q_lower = question.lower()
-        
-        # Simple fallback logic based on keywords
-        if "total" in q_lower or "sum" in q_lower or "kitna" in q_lower:
-            if "amount" in df.columns:
-                computed["total_amount"] = float(df["amount"].sum())
-            elif "quantity" in df.columns:
-                computed["total_quantity"] = float(df["quantity"].sum())
-                
-        elif "average" in q_lower:
-            if "amount" in df.columns:
-                computed["average_amount"] = float(df["amount"].mean())
-                
-        elif "expiring" in q_lower or "expire" in q_lower:
-            if "expiry_date" in df.columns:
-                # Count how many records have an expiry date
-                computed["expiring_count"] = int(df["expiry_date"].notna().sum())
-                
-        elif any(w in q_lower for w in ["mehngi", "expensive", "highest", "max"]):
-            price_cols = [c for c in df.columns if c.lower() in ["mrp", "price", "amount", "tp"]]
-            if price_cols:
-                p_col = price_cols[0]
-                df[p_col] = pd.to_numeric(df[p_col], errors='coerce')
-                max_idx = df[p_col].idxmax()
-                max_val = df.loc[max_idx, p_col]
-                name_col = next((c for c in df.columns if "name" in c.lower() or "product" in c.lower()), None)
-                item_name = df.loc[max_idx, name_col] if name_col else "Item"
-                computed["most_expensive"] = f"{item_name} (Price: {max_val})"
-
-        elif any(w in q_lower for w in ["sasti", "cheap", "lowest", "min"]):
-            price_cols = [c for c in df.columns if c.lower() in ["mrp", "price", "amount", "tp"]]
-            if price_cols:
-                p_col = price_cols[0]
-                df[p_col] = pd.to_numeric(df[p_col], errors='coerce')
-                min_idx = df[p_col].idxmin()
-                min_val = df.loc[min_idx, p_col]
-                name_col = next((c for c in df.columns if "name" in c.lower() or "product" in c.lower()), None)
-                item_name = df.loc[min_idx, name_col] if name_col else "Item"
-                computed["cheapest"] = f"{item_name} (Price: {min_val})"
-
-        if not computed and len(df) > 0:
-            computed["record_count"] = len(df)
-            
-        return computed, sources

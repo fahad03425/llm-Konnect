@@ -49,10 +49,16 @@ class RAGChat:
         elif route == RouteType.ANALYTICS:
             base_prompt += (
                 "CRITICAL: The user asked a numeric or aggregate question. "
-                "The answer has been calculated and provided in the context below. "
-                "Present this calculated answer naturally to the user. "
-                "Do NOT mention internal terms like 'Analytics Engine' or 'Computed Values'. "
-                "Do NOT explain what data is missing or how it was calculated. Just give the final answer."
+                "The actual answer has been calculated by the Analytics Engine and provided as 'Computed Values'. "
+                "You MUST NARRATE the Computed Values exactly as provided. "
+                "Do NOT recalculate or guess numbers.\n"
+                "If a value has \"is_estimate\": true, it is a FORECAST, not a measured fact. "
+                "Say so plainly and give the range from \"estimate_range\" "
+                "(for example: 'roughly X, likely between A and B'). "
+                "Never present a forecast as a certainty and never narrow the range.\n"
+                "If a value has \"status\": \"unavailable\", the figure could NOT be computed. "
+                "Tell the user it cannot be determined and give the \"reason\" verbatim in plain words. "
+                "Do NOT substitute an estimate of your own, and do NOT treat it as zero."
             )
         elif route == RouteType.CHITCHAT:
             base_prompt += (
@@ -105,8 +111,12 @@ class RAGChat:
             chunks = self.kb.search(question, top_k=20, filters=filters, domain=request.domain)
             records = [c.metadata for c in chunks]
             
-            # 2. Compute using fallback
-            computed_values, source_rows = self.analytics_router.compute(question, filters, records)
+            # 2. Compute deterministically via the Module 6.6 KPI engine.
+            #    `domain` is passed so domain-pack KPIs (e.g. pharmacy expiry) and
+            #    their question vocabulary apply.
+            computed_values, source_rows = self.analytics_router.compute(
+                question, filters, records, request.domain
+            )
             if computed_values:
                 context_text = "Computed Values from Analytics Engine:\n" + json.dumps(computed_values, indent=2)
                 if chunks:
@@ -179,7 +189,9 @@ class RAGChat:
          elif route == RouteType.ANALYTICS:
              chunks = self.kb.search(question, top_k=20, filters=filters, domain=request.domain)
              records = [c.metadata for c in chunks]
-             computed_values, source_rows = self.analytics_router.compute(question, filters, records)
+             computed_values, source_rows = self.analytics_router.compute(
+                 question, filters, records, request.domain
+             )
              if computed_values:
                  context_text = "Computed Values from Analytics Engine:\n" + json.dumps(computed_values, indent=2)
                  if chunks:
