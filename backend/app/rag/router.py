@@ -31,7 +31,9 @@ def classify_route(question: str) -> str:
     analytics_patterns = [
         r"\btotal\b", r"\bhow much\b", r"\bhow many\b", r"\bsum\b",
         r"\baverage\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
-        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b"
+        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b",
+        r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
+        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b"
     ]
     for pattern in analytics_patterns:
         if re.search(pattern, q_lower):
@@ -113,6 +115,28 @@ class AnalyticsRouter:
                 # Count how many records have an expiry date
                 computed["expiring_count"] = int(df["expiry_date"].notna().sum())
                 
+        elif any(w in q_lower for w in ["mehngi", "expensive", "highest", "max"]):
+            price_cols = [c for c in df.columns if c.lower() in ["mrp", "price", "amount", "tp"]]
+            if price_cols:
+                p_col = price_cols[0]
+                df[p_col] = pd.to_numeric(df[p_col], errors='coerce')
+                max_idx = df[p_col].idxmax()
+                max_val = df.loc[max_idx, p_col]
+                name_col = next((c for c in df.columns if "name" in c.lower() or "product" in c.lower()), None)
+                item_name = df.loc[max_idx, name_col] if name_col else "Item"
+                computed["most_expensive"] = f"{item_name} (Price: {max_val})"
+
+        elif any(w in q_lower for w in ["sasti", "cheap", "lowest", "min"]):
+            price_cols = [c for c in df.columns if c.lower() in ["mrp", "price", "amount", "tp"]]
+            if price_cols:
+                p_col = price_cols[0]
+                df[p_col] = pd.to_numeric(df[p_col], errors='coerce')
+                min_idx = df[p_col].idxmin()
+                min_val = df.loc[min_idx, p_col]
+                name_col = next((c for c in df.columns if "name" in c.lower() or "product" in c.lower()), None)
+                item_name = df.loc[min_idx, name_col] if name_col else "Item"
+                computed["cheapest"] = f"{item_name} (Price: {min_val})"
+
         if not computed and len(df) > 0:
             computed["record_count"] = len(df)
             

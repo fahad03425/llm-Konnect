@@ -1,8 +1,9 @@
 """Module 1.4 — API routes. Month 2."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os
+import shutil
 import pandas as pd
 
 from app.connectors.base import detect_connector
@@ -13,6 +14,29 @@ from app.schema.domain import get_domain_pack
 from app.schema.profile import find_profile, save_profile, source_signature
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+@router.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """Upload a file to the server for easy testing in Swagger UI."""
+    # Project root (llm-konnect)
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    upload_dir = os.path.join(base_dir, "data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Secure the filename or just use it directly for testing
+    safe_filename = file.filename.replace("/", "").replace("\\", "")
+    file_path = os.path.join(upload_dir, safe_filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # Return with normalized slashes so it can be easily copied to other endpoints
+    normalized_path = file_path.replace("\\", "/")
+    return {
+        "message": "File uploaded successfully",
+        "file_path": normalized_path,
+        "filename": safe_filename
+    }
 
 class PreviewRequest(BaseModel):
     file_path: str
@@ -68,7 +92,7 @@ def preview_source(req: PreviewRequest):
             kwargs['table_or_query'] = req.table_or_query
             
         df = connector.preview(n=req.n, **kwargs)
-        df = df.where(pd.notnull(df), None)
+        df = df.astype(object).where(pd.notnull(df), None)
         
         columns = list(df.columns)
         sample_rows = df.to_dict(orient="records")
@@ -120,7 +144,7 @@ def confirm_mapping(req: MappingConfirmRequest):
             save_profile(sig, req.mapping, label)
             
         canonical_df = apply_mapping(df, req.mapping, req.domain, req.keep_extras)
-        canonical_df = canonical_df.where(pd.notnull(canonical_df), None)
+        canonical_df = canonical_df.astype(object).where(pd.notnull(canonical_df), None)
         
         return {
             "mapped_columns": list(canonical_df.columns),
@@ -175,7 +199,7 @@ def normalize_source(req: NormalizeRequest):
         norm_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=False)
         report = validate(norm_df, domain=req.domain)
         
-        norm_df = norm_df.where(pd.notnull(norm_df), None)
+        norm_df = norm_df.astype(object).where(pd.notnull(norm_df), None)
         
         return {
             "mapped_columns": list(norm_df.columns),
@@ -252,7 +276,7 @@ def clean_source(req: CleanRequest):
         canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
         cleaned_df, summary = clean(canonical_df, options=req.options)
 
-        cleaned_df = cleaned_df.where(pd.notnull(cleaned_df), None)
+        cleaned_df = cleaned_df.astype(object).where(pd.notnull(cleaned_df), None)
 
         return {
             "cleaned_preview": cleaned_df.head(10).to_dict(orient="records"),

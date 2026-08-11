@@ -34,6 +34,7 @@ class RAGChat:
         base_prompt = (
             "You are an offline assistant for LLM-Konnect. "
             "Reply in the language the user used (English, Urdu, or Roman-Urdu). "
+            "When answering in Urdu, transliterate any English terms into Urdu script (e.g. 'Dataset' -> 'ڈیٹا سیٹ') to avoid left-to-right writing style conflicts. "
             "Be concise.\n\n"
         )
         
@@ -48,9 +49,10 @@ class RAGChat:
         elif route == RouteType.ANALYTICS:
             base_prompt += (
                 "CRITICAL: The user asked a numeric or aggregate question. "
-                "The actual answer has been calculated by the Analytics Engine and provided as 'Computed Values'. "
-                "You MUST NARRATE the Computed Values exactly as provided. "
-                "Do NOT recalculate or guess numbers."
+                "The answer has been calculated and provided in the context below. "
+                "Present this calculated answer naturally to the user. "
+                "Do NOT mention internal terms like 'Analytics Engine' or 'Computed Values'. "
+                "Do NOT explain what data is missing or how it was calculated. Just give the final answer."
             )
         elif route == RouteType.CHITCHAT:
             base_prompt += (

@@ -6,6 +6,7 @@ pydantic-settings
 # Data
 pandas
 openpyxl
+chardet
 
 # Analytics
 scikit-learn
