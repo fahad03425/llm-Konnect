@@ -34,6 +34,7 @@ class RAGChat:
         base_prompt = (
             "You are an offline assistant for LLM-Konnect. "
             "Reply in the language the user used (English, Urdu, or Roman-Urdu). "
+            "When answering in Urdu, transliterate any English terms into Urdu script (e.g. 'Dataset' -> 'ڈیٹا سیٹ') to avoid left-to-right writing style conflicts. "
             "Be concise.\n\n"
         )
         

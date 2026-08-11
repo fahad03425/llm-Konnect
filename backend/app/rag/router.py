@@ -36,7 +36,9 @@ def classify_route(question: str) -> str:
     analytics_patterns = [
         r"\btotal\b", r"\bhow much\b", r"\bhow many\b", r"\bsum\b",
         r"\baverage\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
-        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b"
+        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b",
+        r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
+        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b"
     ]
     for pattern in analytics_patterns:
         if re.search(pattern, q_lower):
