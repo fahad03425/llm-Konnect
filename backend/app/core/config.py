@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     
     # Ollama
     ollama_host: str = "http://127.0.0.1:11434"
-    llm_model: str = "llama3:latest"
+    llm_model: str = "qwen2.5:3b-instruct-q4_K_M"
     llm_keep_alive: str = "0"  # frees VRAM after each request
     llm_keep_alive_chat: str = "5m"  # keeps model in VRAM for interactive chat
     llm_num_predict: int = 256
