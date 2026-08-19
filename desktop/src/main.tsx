@@ -2,7 +2,10 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Shell from './Shell'
-import { Dashboard, ConnectSource, Chatbot, ReportExport } from './Pages'
+import Dashboard from './pages/Dashboard'
+import ConnectSource from './pages/ConnectSource'
+import Chatbot from './pages/Chatbot'
+import ReportExport from './pages/ReportExport'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
