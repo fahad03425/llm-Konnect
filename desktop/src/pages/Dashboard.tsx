@@ -6,6 +6,7 @@ import {
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
+import { useFilePath } from '../context/FileContext';
 import './Dashboard.css';
 
 // ----------------------------------------------------------------------
@@ -30,8 +31,6 @@ interface KBStats {
     total_chunks: number;
     collection_name: string;
 }
-
-const HARDCODED_FILE_PATH = "C:/Users/Administrator/Desktop/llm-Konnect/data/uploads/test_pharmacy_small.csv";
 
 // Helper for fetch with timeout
 const fetchWithTimeout = async (url: string, options: RequestInit = {}) => {
@@ -62,6 +61,7 @@ const ChartSkeleton = () => <div className="skeleton skeleton-chart" />;
 // ----------------------------------------------------------------------
 
 export default function Dashboard() {
+    const { activePath } = useFilePath();
     const [kpis, setKpis] = useState<Record<string, KPIValue> | null>(null);
     const [expiry, setExpiry] = useState<Record<string, KPIValue> | null>(null);
     const [trend, setTrend] = useState<TrendDataPoint[] | null>(null);
@@ -76,7 +76,7 @@ export default function Dashboard() {
     useEffect(() => {
         document.title = 'Dashboard — LLM-KONNECT';
         void fetchAllData();
-    }, []);
+    }, [activePath]);
 
     const fetchAllData = async () => {
         setLoadingKpis(true);
@@ -101,12 +101,12 @@ export default function Dashboard() {
             fetchWithTimeout('/api/analytics/kpis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_path: HARDCODED_FILE_PATH, domain: "pharmacy", include_validation: true })
+                body: JSON.stringify({ file_path: activePath, domain: "pharmacy", include_validation: true })
             }).then(r => handleResponse(r, "KPIs")),
             fetchWithTimeout('/api/analytics/expiry-report', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_path: HARDCODED_FILE_PATH, domain: "pharmacy" })
+                body: JSON.stringify({ file_path: activePath, domain: "pharmacy" })
             }).then(r => handleResponse(r, "Expiry"))
         ]).then(([kpiData, expiryData]) => {
             setKpis(kpiData?.kpis || kpiData);
@@ -121,7 +121,7 @@ export default function Dashboard() {
         fetchWithTimeout('/api/analytics/trend', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_path: HARDCODED_FILE_PATH, domain: "pharmacy", filters: {} })
+            body: JSON.stringify({ file_path: activePath, domain: "pharmacy", filters: {} })
         }).then(r => handleResponse(r, "Trend"))
             .then(data => {
                 setTrend(data.monthly || []);
@@ -290,7 +290,7 @@ export default function Dashboard() {
             <div className="bottom-status-bar">
                 <Database size={16} className="status-icon" />
                 Knowledge Base: {kbStats ? kbStats.total_chunks.toLocaleString() : 'N/A'} chunks · {kbStats ? kbStats.collection_name : 'No Collection'} ·
-                <span style={{ color: '#0D7377', fontWeight: 600, marginLeft: '0.25rem' }}>Analyzing: test_pharmacy_small.csv</span>
+                <span style={{ color: '#0D7377', fontWeight: 600, marginLeft: '0.25rem' }}>Analyzing: {activePath.split(/[/\\]/).pop()}</span>
                 <span style={{ color: '#9CA3AF', fontStyle: 'italic', marginLeft: 'auto' }}>All computations are deterministic and traceable to source rows.</span>
             </div>
         </div>

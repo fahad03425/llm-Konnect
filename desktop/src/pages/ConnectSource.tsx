@@ -22,6 +22,7 @@ import { UploadZone } from '../components/connect/UploadZone';
 import { PreviewTable } from '../components/connect/PreviewTable';
 import { MappingTable } from '../components/connect/MappingTable';
 import { KBStatus } from '../components/connect/KBStatus';
+import { useFilePath } from '../context/FileContext';
 import '../Connect.css';
 
 // ---- Types ----
@@ -108,6 +109,7 @@ const ErrorCard = ({ msg, onRetry }: { msg: string; onRetry: () => void }) => (
 // ============================================================
 export default function ConnectSource() {
     const navigate = useNavigate();
+    const { setActivePath } = useFilePath();
 
     // ── Wizard step (0-6, always an integer) ──────────────────────
     const [step, setStep] = useState(0);
@@ -384,6 +386,7 @@ export default function ConnectSource() {
                 }
             } catch { /* it's already a plain string */ }
             setIngestMsg(String(msg));
+            setActivePath(filePath);      // update context with new source
             setIngestSt(idle());
             setStep(6);           // wizard complete
             void fetchKBStats();  // refresh KB stats card
