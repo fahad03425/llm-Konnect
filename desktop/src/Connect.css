@@ -1,0 +1,582 @@
+/* ============================================
+   Connect Source Wizard — premium stylesheet
+   Uses CSS variables from index.css
+   ============================================ */
+
+/* ---------- Page Layout ---------- */
+.connect-page {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    max-width: 900px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+.connect-page-header h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.connect-page-header p {
+    color: #6B7280;
+    font-size: 0.9rem;
+}
+
+/* ---------- Step Progress Indicator ---------- */
+.step-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.step-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
+}
+
+.step-circle {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    border: 2px solid #E5E7EB;
+    color: #9CA3AF;
+    background: white;
+}
+
+.step-circle.active {
+    border-color: var(--accent-teal);
+    background: var(--accent-teal);
+    color: white;
+}
+
+.step-circle.done {
+    border-color: var(--accent-teal);
+    background: var(--accent-teal);
+    color: white;
+}
+
+.step-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #9CA3AF;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.step-label.active {
+    color: var(--accent-teal);
+    font-weight: 600;
+}
+
+.step-label.done {
+    color: var(--accent-teal);
+}
+
+.step-connector {
+    flex: 0 0 24px;
+    height: 2px;
+    background: #E5E7EB;
+    margin: 0 0.25rem;
+    transition: background 0.2s;
+}
+
+.step-connector.done {
+    background: var(--accent-teal);
+}
+
+/* ---------- Cards ---------- */
+.wizard-card {
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.75rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.wizard-card-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* ---------- Upload Zone ---------- */
+.upload-zone {
+    border: 2px dashed var(--border-color);
+    border-radius: 10px;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #FAFAFA;
+    position: relative;
+}
+
+.upload-zone:hover,
+.upload-zone.drag-over {
+    border-color: var(--accent-teal);
+    background: rgba(13, 115, 119, 0.04);
+}
+
+.upload-zone-icon {
+    color: #D1D5DB;
+    margin-bottom: 1rem;
+    transition: color 0.2s;
+}
+
+.upload-zone:hover .upload-zone-icon,
+.upload-zone.drag-over .upload-zone-icon {
+    color: var(--accent-teal);
+}
+
+.upload-zone-text {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 0.375rem;
+}
+
+.upload-zone-hint {
+    font-size: 0.8rem;
+    color: #9CA3AF;
+}
+
+.file-hidden {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+/* File selected state inside zone */
+.file-selected-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    justify-content: center;
+}
+
+.file-icon-badge {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: rgba(13, 115, 119, 0.1);
+    color: var(--accent-teal);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.file-meta {
+    text-align: left;
+}
+
+.file-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.file-size {
+    font-size: 0.78rem;
+    color: #6B7280;
+    margin-top: 0.1rem;
+}
+
+.remove-file-btn {
+    background: none;
+    border: none;
+    color: #9CA3AF;
+    cursor: pointer;
+    padding: 0.25rem;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+    margin-left: auto;
+}
+
+.remove-file-btn:hover {
+    color: #EF4444;
+}
+
+/* ---------- Sheet select ---------- */
+.sheet-select-wrap {
+    margin-top: 1.25rem;
+}
+
+.sheet-select-wrap label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    display: block;
+    margin-bottom: 0.4rem;
+}
+
+.sheet-select {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    outline: none;
+    background: white;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.sheet-select:focus {
+    border-color: var(--accent-teal);
+}
+
+/* ---------- Buttons ---------- */
+.btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--accent-teal);
+    color: white;
+    border: none;
+    padding: 0.7rem 1.5rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s;
+}
+
+.btn-primary:hover:not(:disabled) {
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(13, 115, 119, 0.25);
+}
+
+.btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: white;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.7rem 1.5rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.18s;
+}
+
+.btn-secondary:hover {
+    border-color: #D1D5DB;
+    background: #F9FAFB;
+}
+
+.btn-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #F59E0B;
+    color: white;
+    border: none;
+    padding: 0.7rem 1.5rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s;
+}
+
+.btn-warn:hover {
+    opacity: 0.9;
+}
+
+.btn-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+}
+
+/* ---------- Preview Table ---------- */
+.preview-scroll {
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    margin-bottom: 1rem;
+}
+
+.preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.83rem;
+    white-space: nowrap;
+}
+
+.preview-table th {
+    background: #F3F4F6;
+    padding: 0.6rem 0.875rem;
+    text-align: left;
+    font-weight: 600;
+    color: #374151;
+    border-bottom: 1px solid var(--border-color);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+}
+
+.preview-table td {
+    padding: 0.55rem 0.875rem;
+    border-bottom: 1px solid #F3F4F6;
+    color: var(--text-primary);
+}
+
+.preview-table tr:last-child td {
+    border-bottom: none;
+}
+
+.preview-table tr:hover td {
+    background: #F9FAFB;
+}
+
+.preview-meta {
+    font-size: 0.82rem;
+    color: #6B7280;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+/* ---------- Mapping Table ---------- */
+.mapping-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.mapping-table th {
+    text-align: left;
+    padding: 0.6rem 1rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6B7280;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.mapping-table td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #F3F4F6;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+}
+
+.mapping-table tr:last-child td {
+    border-bottom: none;
+}
+
+.mapping-arrow {
+    color: #9CA3AF;
+    padding: 0 0.25rem;
+}
+
+/* ---------- Status / Verdict Badges ---------- */
+.verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+}
+
+.verdict-badge.ok {
+    background: #ECFDF5;
+    color: #065F46;
+    border: 1px solid #6EE7B7;
+}
+
+.verdict-badge.warn {
+    background: #FFFBEB;
+    color: #92400E;
+    border: 1px solid #FCD34D;
+}
+
+.verdict-badge.fail {
+    background: #FEF2F2;
+    color: #991B1B;
+    border: 1px solid #FCA5A5;
+}
+
+.problems-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.problems-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: #374151;
+    padding: 0.5rem 0.75rem;
+    background: #FFF7ED;
+    border-radius: 6px;
+}
+
+/* ---------- Error Card ---------- */
+.error-card {
+    background: #FEF2F2;
+    border: 1px solid #FCA5A5;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    color: #991B1B;
+    font-size: 0.88rem;
+}
+
+/* ---------- Success Card ---------- */
+.success-card {
+    background: #ECFDF5;
+    border: 1px solid #6EE7B7;
+    border-radius: 12px;
+    padding: 1.75rem;
+    text-align: center;
+}
+
+.success-card-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: #D1FAE5;
+    color: #065F46;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+}
+
+.success-card h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #065F46;
+    margin-bottom: 0.375rem;
+}
+
+.success-card p {
+    font-size: 0.88rem;
+    color: #047857;
+    margin-bottom: 1.25rem;
+}
+
+/* ---------- Inline Spinner ---------- */
+.spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: inline-block;
+}
+
+.spinner.dark {
+    border-color: rgba(13, 115, 119, 0.2);
+    border-top-color: var(--accent-teal);
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---------- KB Status Card ---------- */
+.kb-status-card {
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.875rem 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.kb-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.kb-dot.active {
+    background: #10B981;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+
+.kb-dot.empty {
+    background: #D1D5DB;
+}
+
+.kb-status-text {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.kb-status-sub {
+    color: #6B7280;
+    font-size: 0.8rem;
+}
+
+/* ---------- Normalize / generic info card ---------- */
+.info-card {
+    background: #EFF6FF;
+    border: 1px solid #BFDBFE;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: #1D4ED8;
+    font-size: 0.88rem;
+    font-weight: 500;
+}

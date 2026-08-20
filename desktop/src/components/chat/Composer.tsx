@@ -1,3 +1,4 @@
+import React from 'react';
 import { Send, Lock, ShieldCheck, Zap } from 'lucide-react';
 
 interface ComposerProps {
