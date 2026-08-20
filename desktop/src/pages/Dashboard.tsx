@@ -74,6 +74,7 @@ export default function Dashboard() {
     const [errorTrend, setErrorTrend] = useState<string | null>(null);
 
     useEffect(() => {
+        document.title = 'Dashboard — LLM-KONNECT';
         void fetchAllData();
     }, []);
 
@@ -289,6 +290,7 @@ export default function Dashboard() {
             <div className="bottom-status-bar">
                 <Database size={16} className="status-icon" />
                 Knowledge Base: {kbStats ? kbStats.total_chunks.toLocaleString() : 'N/A'} chunks · {kbStats ? kbStats.collection_name : 'No Collection'} ·
+                <span style={{ color: '#0D7377', fontWeight: 600, marginLeft: '0.25rem' }}>Analyzing: test_pharmacy_small.csv</span>
                 <span style={{ color: '#9CA3AF', fontStyle: 'italic', marginLeft: 'auto' }}>All computations are deterministic and traceable to source rows.</span>
             </div>
         </div>

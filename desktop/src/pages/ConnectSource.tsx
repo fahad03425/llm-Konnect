@@ -132,7 +132,10 @@ export default function ConnectSource() {
     const [ingestSt, setIngestSt] = useState<StepState>(idle());
 
     // ── Load KB stats on mount ─────────────────────────────────────
-    useEffect(() => { void fetchKBStats(); }, []);
+    useEffect(() => {
+        document.title = 'Connect Source — LLM-KONNECT';
+        void fetchKBStats();
+    }, []);
 
     const fetchKBStats = async () => {
         try {
@@ -627,7 +630,10 @@ export default function ConnectSource() {
                                         {validateResult.problems.length > 0 && (
                                             <ul className="problems-list">
                                                 {validateResult.problems.map((p, i) => (
-                                                    <li key={i}><AlertTriangle size={13} style={{ flexShrink: 0 }} />{p}</li>
+                                                    <li key={i}>
+                                                        <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : JSON.stringify(p)}</span>
+                                                    </li>
                                                 ))}
                                             </ul>
                                         )}
@@ -689,7 +695,7 @@ export default function ConnectSource() {
                             <div className="success-card">
                                 <div className="success-card-icon"><CheckCircle size={26} /></div>
                                 <h3>Data Successfully Ingested!</h3>
-                                <p>{ingestMsg || 'Your data is ready. The RAG chatbot is now powered by this dataset.'}</p>
+                                <p>{(typeof ingestMsg === 'string' && ingestMsg && !ingestMsg.startsWith('{')) ? ingestMsg : 'Your data is ready. The RAG chatbot is now powered by this dataset.'}</p>
                                 {kbStats && (
                                     <p style={{ marginBottom: '1.25rem', fontWeight: 600 }}>
                                         Knowledge Base: {kbStats.total_chunks.toLocaleString()} chunks · {kbStats.collection_name}

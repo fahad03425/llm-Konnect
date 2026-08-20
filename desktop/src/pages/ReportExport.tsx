@@ -9,8 +9,10 @@ import {
     ArrowRight
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
 
 export default function ReportExport() {
+    useEffect(() => { document.title = 'Report Export — LLM-KONNECT'; }, []);
     return (
         <div className="report-export-container" style={styles.container}>
             <style>{`

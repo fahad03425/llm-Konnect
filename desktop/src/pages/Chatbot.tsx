@@ -27,6 +27,7 @@ export default function Chatbot() {
     };
 
     useEffect(() => {
+        document.title = 'RAG Chatbot — LLM-KONNECT';
         scrollToBottom();
     }, [messages, isLoading]);
 
@@ -104,6 +105,7 @@ export default function Chatbot() {
                             <Bot size={24} />
                         </div>
                         <h3>Welcome to LLM-KONNECT</h3>
+                        <p style={{ color: '#6B7280', fontSize: '0.875rem', margin: '-0.5rem 0 0.5rem', fontStyle: 'italic' }}>Powered by local AI · All data stays on your machine</p>
                         <p>Ask a question about your pharmacy data to get started.</p>
                         <SuggestionChips onSelect={handleSuggestionClick} />
                     </div>

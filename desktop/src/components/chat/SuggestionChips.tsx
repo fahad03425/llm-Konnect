@@ -3,14 +3,14 @@ export const SuggestionChips = ({ onSelect }: { onSelect: (text: string) => void
         <button className="suggestion-card" onClick={() => onSelect("What is my total revenue?")}>
             What is my total revenue?
         </button>
-        <button className="suggestion-card" onClick={() => onSelect("Which medicines are expiring soon?")}>
-            Which medicines are expiring soon?
+        <button className="suggestion-card" onClick={() => onSelect("Which medicines expire soon?")}>
+            Which medicines expire soon?
         </button>
-        <button className="suggestion-card" onClick={() => onSelect("Show me revenue by month")}>
-            Show me revenue by month
+        <button className="suggestion-card" onClick={() => onSelect("Tell me about Brufen in my data")}>
+            Tell me about Brufen in my data
         </button>
-        <button className="suggestion-card" onClick={() => onSelect("Give me a summary of my pharmacy data")}>
-            Give me a summary of my pharmacy data
+        <button className="suggestion-card" onClick={() => onSelect("Which supplier has the most invoices?")}>
+            Which supplier has the most invoices?
         </button>
     </div>
 );
