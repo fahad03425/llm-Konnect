@@ -284,3 +284,64 @@ def clean_source(req: CleanRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+class SQLConnectRequest(BaseModel):
+    connection_string: str
+    db_type: str = "sqlite"
+    table_or_query: str
+    n: int = 5
+    watermark_column: Optional[str] = None
+    watermark_value: Optional[Any] = None
+    domain: str = "pharmacy"
+
+class WatcherConfigRequest(BaseModel):
+    watch_dir: str
+    file_pattern: str = "*.*"
+    domain: str = "pharmacy"
+
+@router.get("/domains")
+def list_available_domains():
+    from app.schema.domain import registry
+    return {"domains": registry.available_domains()}
+
+@router.post("/sql/preview")
+def preview_sql_source(req: SQLConnectRequest):
+    try:
+        from app.connectors.sql import SQLConnector
+        connector = SQLConnector(connection_string=req.connection_string, db_type=req.db_type)
+        df = connector.preview(n=req.n, table_or_query=req.table_or_query)
+        df = df.astype(object).where(pd.notnull(df), None)
+        
+        columns = list(df.columns)
+        sample_rows = df.to_dict(orient="records")
+        
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+            
+        proposal = suggest_mapping(columns, sample_rows, domain_pack)
+        
+        return {
+            "connector_description": connector.describe(),
+            "columns": columns,
+            "data": sample_rows,
+            "mapping_proposal": proposal.dict()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/watcher/list")
+def list_watcher_files(req: WatcherConfigRequest):
+    try:
+        from app.connectors.watcher import DirectoryWatcherConnector
+        watcher = DirectoryWatcherConnector(watch_dir=req.watch_dir, file_pattern=req.file_pattern)
+        pending = watcher.list_pending_files()
+        return {
+            "watch_dir": req.watch_dir,
+            "pending_files": [f.replace("\\", "/") for f in pending]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

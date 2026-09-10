@@ -8,8 +8,11 @@ import {
     Shield,
     Lock
 } from 'lucide-react';
+import { useUser } from '../context/UserContext';
 
 const Sidebar = () => {
+    const { openSettings, activeDomainMeta } = useUser();
+
     return (
         <aside className="sidebar">
             <div className="brand">
@@ -40,17 +43,25 @@ const Sidebar = () => {
             </nav>
 
             <div className="sidebar-bottom">
-                <button className="nav-item" style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer' }}>
+                <button
+                    className="nav-item"
+                    onClick={openSettings}
+                    style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer' }}
+                >
                     <Settings size={18} />
                     <span>Settings</span>
                 </button>
-                <button className="nav-item" style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer', marginBottom: '1rem' }}>
+                <button
+                    className="nav-item"
+                    onClick={openSettings}
+                    style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer', marginBottom: '1rem' }}
+                >
                     <Shield size={18} />
-                    <span>Security</span>
+                    <span>Domain: {activeDomainMeta.name}</span>
                 </button>
-                <button className="btn-lock">
+                <button className="btn-lock" onClick={openSettings}>
                     <Lock size={16} />
-                    Lock System
+                    Account & Lock
                 </button>
             </div>
         </aside>

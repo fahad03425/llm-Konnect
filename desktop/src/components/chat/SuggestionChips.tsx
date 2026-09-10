@@ -1,16 +1,30 @@
-export const SuggestionChips = ({ onSelect }: { onSelect: (text: string) => void }) => (
-    <div className="suggestions-grid">
-        <button className="suggestion-card" onClick={() => onSelect("What is my total revenue?")}>
-            What is my total revenue?
-        </button>
-        <button className="suggestion-card" onClick={() => onSelect("Which medicines expire soon?")}>
-            Which medicines expire soon?
-        </button>
-        <button className="suggestion-card" onClick={() => onSelect("Tell me about Brufen in my data")}>
-            Tell me about Brufen in my data
-        </button>
-        <button className="suggestion-card" onClick={() => onSelect("Which supplier has the most invoices?")}>
-            Which supplier has the most invoices?
-        </button>
-    </div>
-);
+export const SuggestionChips = ({
+    onSelect,
+    chips
+}: {
+    onSelect: (text: string) => void;
+    chips?: string[];
+}) => {
+    const defaultChips = [
+        "What is my total revenue?",
+        "Which items need immediate attention?",
+        "Summarize recent transactions and top categories",
+        "Which supplier / vendor has the highest volume?"
+    ];
+
+    const displayChips = chips && chips.length > 0 ? chips : defaultChips;
+
+    return (
+        <div className="suggestions-grid">
+            {displayChips.map((chip, idx) => (
+                <button
+                    key={idx}
+                    className="suggestion-card"
+                    onClick={() => onSelect(chip)}
+                >
+                    {chip}
+                </button>
+            ))}
+        </div>
+    );
+};

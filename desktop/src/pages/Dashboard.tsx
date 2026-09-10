@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
-    Database, Activity, Minus
+    Database, Activity, Minus, ShoppingBag, Briefcase
 } from 'lucide-react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { useFilePath } from '../context/FileContext';
+import { useUser } from '../context/UserContext';
 import './Dashboard.css';
 
 // ----------------------------------------------------------------------
@@ -62,6 +63,7 @@ const ChartSkeleton = () => <div className="skeleton skeleton-chart" />;
 
 export default function Dashboard() {
     const { activePath } = useFilePath();
+    const { user, activeDomainMeta } = useUser();
     const [kpis, setKpis] = useState<Record<string, KPIValue> | null>(null);
     const [expiry, setExpiry] = useState<Record<string, KPIValue> | null>(null);
     const [trend, setTrend] = useState<TrendDataPoint[] | null>(null);
@@ -74,9 +76,9 @@ export default function Dashboard() {
     const [errorTrend, setErrorTrend] = useState<string | null>(null);
 
     useEffect(() => {
-        document.title = 'Dashboard — LLM-KONNECT';
+        document.title = `${activeDomainMeta.name} Dashboard — LLM-KONNECT`;
         void fetchAllData();
-    }, [activePath]);
+    }, [activePath, user.domain]);
 
     const fetchAllData = async () => {
         setLoadingKpis(true);
@@ -96,18 +98,22 @@ export default function Dashboard() {
             return data;
         };
 
+        const domain = user.domain;
+
         // Fetch primary KPIs + Expiry in parallel for efficiency
         Promise.all([
             fetchWithTimeout('/api/analytics/kpis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_path: activePath, domain: "pharmacy", include_validation: true })
+                body: JSON.stringify({ file_path: activePath, domain, include_validation: true })
             }).then(r => handleResponse(r, "KPIs")),
-            fetchWithTimeout('/api/analytics/expiry-report', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_path: activePath, domain: "pharmacy" })
-            }).then(r => handleResponse(r, "Expiry"))
+            domain === 'pharmacy' ? (
+                fetchWithTimeout('/api/analytics/expiry-report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_path: activePath, domain })
+                }).then(r => handleResponse(r, "Expiry"))
+            ) : Promise.resolve(null)
         ]).then(([kpiData, expiryData]) => {
             setKpis(kpiData?.kpis || kpiData);
             setExpiry(expiryData?.kpis || expiryData);
@@ -121,7 +127,7 @@ export default function Dashboard() {
         fetchWithTimeout('/api/analytics/trend', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_path: activePath, domain: "pharmacy", filters: {} })
+            body: JSON.stringify({ file_path: activePath, domain, filters: {} })
         }).then(r => handleResponse(r, "Trend"))
             .then(data => {
                 setTrend(data.monthly || []);
@@ -189,8 +195,8 @@ export default function Dashboard() {
             {/* Header */}
             <div className="dashboard-header">
                 <div className="dashboard-title">
-                    <h1>Financial Overview</h1>
-                    <p>Pharmacy Analytics Dashboard</p>
+                    <h1>{activeDomainMeta.name} Overview</h1>
+                    <p>{user.organization ? `${user.organization} · ` : ''}Executive Analytics Dashboard</p>
                 </div>
                 <div className="dashboard-meta">
                     <div className="status-badge">
@@ -214,12 +220,15 @@ export default function Dashboard() {
                 </div>
             ) : (
                 <div className="kpi-grid">
-                    {renderKPICard("rev", "Total Revenue", <DollarSign size={18} />, "PKR", kpis?.['total_revenue'])}
-                    {renderKPICard("gp", "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['gross_profit'])}
-                    {renderKPICard("gm", "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['gross_margin'])}
-                    {renderKPICard("tx", "Total Transactions", <Receipt size={18} />, "count", kpis?.['transaction_count'])}
-                    {renderKPICard("atv", "Avg Transaction Value", <CreditCard size={18} />, "PKR", kpis?.['avg_transaction_value'])}
-                    {renderKPICard("exp", "Near-Expiry Items", <AlertTriangle size={18} />, "count", expiry?.['near_expiry_item_count'])}
+                    {renderKPICard("rev", user.domain === 'home_finance' ? "Total Inflow / Income" : "Total Revenue", <DollarSign size={18} />, "PKR", kpis?.['total_revenue'] || kpis?.['total_income'])}
+                    {renderKPICard("gp", user.domain === 'home_finance' ? "Net Savings" : "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['gross_profit'] || kpis?.['net_savings'])}
+                    {renderKPICard("gm", user.domain === 'home_finance' ? "Savings Rate" : "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['gross_margin'] || kpis?.['savings_rate'])}
+                    {renderKPICard("tx", user.domain === 'ecommerce' ? "Total Orders" : "Total Transactions", <Receipt size={18} />, "count", kpis?.['transaction_count'] || kpis?.['total_orders'])}
+                    {renderKPICard("atv", user.domain === 'ecommerce' ? "Avg Order Value (AOV)" : "Avg Transaction Value", <CreditCard size={18} />, "PKR", kpis?.['avg_transaction_value'] || kpis?.['avg_order_value'])}
+                    {user.domain === 'pharmacy' && renderKPICard("exp", "Near-Expiry Items", <AlertTriangle size={18} />, "count", expiry?.['near_expiry_item_count'])}
+                    {user.domain === 'ecommerce' && renderKPICard("skus", "Active SKUs / Products", <ShoppingBag size={18} />, "count", kpis?.['active_skus'] || kpis?.['total_products'])}
+                    {user.domain === 'finance' && renderKPICard("ebitda", "Operating Balance", <Briefcase size={18} />, "PKR", kpis?.['operating_balance'] || kpis?.['ebitda'])}
+                    {user.domain === 'home_finance' && renderKPICard("expenses", "Monthly Expenses", <AlertTriangle size={18} />, "PKR", kpis?.['total_expenses'])}
                 </div>
             )}
 

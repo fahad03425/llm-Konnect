@@ -7,21 +7,24 @@ import ConnectSource from './pages/ConnectSource'
 import Chatbot from './pages/Chatbot'
 import ReportExport from './pages/ReportExport'
 import { FileProvider } from './context/FileContext'
+import { UserProvider } from './context/UserContext'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <FileProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Shell />}>
-            <Route index element={<Dashboard />} />
-            <Route path="connect" element={<ConnectSource />} />
-            <Route path="chat" element={<Chatbot />} />
-            <Route path="reports" element={<ReportExport />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </FileProvider>
+    <UserProvider>
+      <FileProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Shell />}>
+              <Route index element={<Dashboard />} />
+              <Route path="connect" element={<ConnectSource />} />
+              <Route path="chat" element={<Chatbot />} />
+              <Route path="reports" element={<ReportExport />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </FileProvider>
+    </UserProvider>
   </React.StrictMode>,
 )

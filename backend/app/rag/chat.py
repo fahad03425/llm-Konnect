@@ -80,14 +80,16 @@ class RAGChat:
             elif "date" in meta:
                 label_parts.append(f"Date {meta['date']}")
             
-            label = ", ".join(label_parts) if label_parts else f"Record {c.source_row}"
+            row_idx = c.source_row if c.source_row is not None else meta.get("source_row")
+            label = ", ".join(label_parts) if label_parts else f"Record {row_idx}"
             
             sources.append(SourceReference(
                 source_file=meta.get("source_file", "unknown"),
-                source_row=c.source_row,
+                source_row=row_idx,
                 label=label
             ))
         return sources
+
 
     def ask(self, request: ChatRequest) -> ChatResponse:
         """End-to-end non-streaming RAG pipeline."""

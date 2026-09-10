@@ -580,3 +580,191 @@
     font-size: 0.88rem;
     font-weight: 500;
 }
+
+/* ---------- Proceed Mode Toggle ---------- */
+.connect-page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.proceed-mode-container {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+}
+
+.mode-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6B7280;
+}
+
+.proceed-mode-toggle {
+    display: inline-flex;
+    background: #F3F4F6;
+    padding: 0.25rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: #6B7280;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.mode-btn:hover {
+    color: var(--text-primary);
+}
+
+.mode-btn.active {
+    background: white;
+    color: var(--accent-teal);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.auto-proceed-banner {
+    background: linear-gradient(135deg, rgba(13, 115, 119, 0.08) 0%, rgba(13, 115, 119, 0.02) 100%);
+    border: 1px solid rgba(13, 115, 119, 0.25);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--accent-teal);
+    font-size: 0.85rem;
+}
+
+/* ---------- Niche / Domain Selector Grid ---------- */
+.niche-selector-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.875rem;
+    margin-bottom: 1.25rem;
+}
+
+.niche-card {
+    background: white;
+    border: 2px solid var(--border-color);
+    border-radius: 10px;
+    padding: 1rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.niche-card:hover {
+    border-color: #CBD5E1;
+    transform: translateY(-1px);
+}
+
+.niche-card.active {
+    border-color: var(--accent-teal);
+    background: rgba(13, 115, 119, 0.03);
+    box-shadow: 0 2px 8px rgba(13, 115, 119, 0.12);
+}
+
+.niche-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.niche-icon {
+    font-size: 1.25rem;
+}
+
+.niche-card-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.niche-card-desc {
+    font-size: 0.76rem;
+    color: #6B7280;
+    line-height: 1.3;
+}
+
+/* ---------- Connector Source Type Tabs ---------- */
+.source-tabs {
+    display: flex;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.source-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: #F3F4F6;
+    font-size: 0.83rem;
+    font-weight: 500;
+    color: #4B5563;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.source-tab-btn:hover {
+    background: #E5E7EB;
+    color: var(--text-primary);
+}
+
+.source-tab-btn.active {
+    background: var(--accent-teal);
+    color: white;
+    font-weight: 600;
+}
+
+/* ---------- Form Input Styling ---------- */
+.sql-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
+}
+
+.sql-form-group label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.sql-form-input {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    outline: none;
+    background: white;
+    transition: border-color 0.2s;
+}
+
+.sql-form-input:focus {
+    border-color: var(--accent-teal);
+}
+

@@ -4,6 +4,7 @@ import { MessageBubble } from '../components/chat/MessageBubble';
 import { TypingIndicator } from '../components/chat/TypingIndicator';
 import { SuggestionChips } from '../components/chat/SuggestionChips';
 import { Composer } from '../components/chat/Composer';
+import { useUser } from '../context/UserContext';
 import '../Chat.css';
 
 interface Message {
@@ -16,6 +17,7 @@ interface Message {
 }
 
 export default function Chatbot() {
+    const { user, activeDomainMeta } = useUser();
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -27,9 +29,9 @@ export default function Chatbot() {
     };
 
     useEffect(() => {
-        document.title = 'RAG Chatbot — LLM-KONNECT';
+        document.title = `${activeDomainMeta.name} RAG Chatbot — LLM-KONNECT`;
         scrollToBottom();
-    }, [messages, isLoading]);
+    }, [messages, isLoading, activeDomainMeta.name]);
 
     const handleSend = async (text: string = input) => {
         if (!text.trim() || isLoading) return;
@@ -43,7 +45,7 @@ export default function Chatbot() {
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: userMsg, session_id: sessionId, domain: 'pharmacy' })
+                body: JSON.stringify({ question: userMsg, session_id: sessionId, domain: user.domain })
             });
 
             if (!res.ok) throw new Error('Network response was not ok');
@@ -86,6 +88,9 @@ export default function Chatbot() {
             <div className="chat-header">
                 <div className="chat-header-title">
                     <h2>RAG Chatbot</h2>
+                    <span className="monospaced model-chip" style={{ background: 'rgba(16, 185, 129, 0.12)', color: 'var(--accent-teal)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                        {activeDomainMeta.icon} {activeDomainMeta.name}
+                    </span>
                     <span className="monospaced model-chip">[Model: Local Qwen]</span>
                 </div>
                 <div className="chat-actions">
@@ -104,10 +109,15 @@ export default function Chatbot() {
                         <div className="empty-state-icon">
                             <Bot size={24} />
                         </div>
-                        <h3>Welcome to LLM-KONNECT</h3>
-                        <p style={{ color: '#6B7280', fontSize: '0.875rem', margin: '-0.5rem 0 0.5rem', fontStyle: 'italic' }}>Powered by local AI · All data stays on your machine</p>
-                        <p>Ask a question about your pharmacy data to get started.</p>
-                        <SuggestionChips onSelect={handleSuggestionClick} />
+                        <h3>Welcome to {activeDomainMeta.name} Intelligence</h3>
+                        <p style={{ color: '#6B7280', fontSize: '0.875rem', margin: '-0.5rem 0 0.5rem', fontStyle: 'italic' }}>
+                            Powered by local AI · All {activeDomainMeta.name} data stays private on your machine
+                        </p>
+                        <p>Ask a question about your {activeDomainMeta.name} datasets to get deterministic answers.</p>
+                        <SuggestionChips
+                            chips={activeDomainMeta.suggestedQueries}
+                            onSelect={handleSuggestionClick}
+                        />
                     </div>
                 ) : (
                     messages.map((msg, index) => (

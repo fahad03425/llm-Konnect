@@ -15,7 +15,8 @@ import { useState, useEffect, Component, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     Upload, Eye, GitMerge, Wrench, ShieldCheck, Database,
-    AlertCircle, CheckCircle, AlertTriangle, ArrowRight, RefreshCw
+    AlertCircle, CheckCircle, AlertTriangle, ArrowRight, RefreshCw,
+    Zap, Play, Folder, HardDrive, FileText
 } from 'lucide-react';
 import { StepIndicator } from '../components/connect/StepIndicator';
 import { UploadZone } from '../components/connect/UploadZone';
@@ -23,10 +24,12 @@ import { PreviewTable } from '../components/connect/PreviewTable';
 import { MappingTable } from '../components/connect/MappingTable';
 import { KBStatus } from '../components/connect/KBStatus';
 import { useFilePath } from '../context/FileContext';
+import { useUser } from '../context/UserContext';
 import '../Connect.css';
 
 // ---- Types ----
 type Verdict = 'usable' | 'usable_with_warnings' | 'not_usable';
+type SourceType = 'file' | 'sql' | 'watcher';
 
 interface PreviewData {
     columns: string[];
@@ -48,11 +51,11 @@ interface KBStats {
 type StepState = { loading: boolean; error: string | null };
 const idle = (): StepState => ({ loading: false, error: null });
 
-// Safe checking for problems
+// Helper delay for smooth auto-transition between steps
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 // ============================================================
 //  Error Boundary — catches any render crash and shows a card
-//  instead of a blank page
 // ============================================================
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; message: string }> {
     constructor(props: { children: ReactNode }) {
@@ -111,6 +114,13 @@ export default function ConnectSource() {
     const navigate = useNavigate();
     const { setActivePath } = useFilePath();
 
+    const { user, activeDomainMeta, openSettings } = useUser();
+    const domain = user.domain;
+    const [sourceType, setSourceType] = useState<SourceType>('file');
+
+    // ── Execution Mode: Manual vs Automatic ────────────────────────
+    const [autoProceed, setAutoProceed] = useState(false);
+
     // ── Wizard step (0-6, always an integer) ──────────────────────
     const [step, setStep] = useState(0);
 
@@ -124,6 +134,15 @@ export default function ConnectSource() {
     const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
     const [ingestMsg, setIngestMsg] = useState('');
     const [kbStats, setKbStats] = useState<KBStats | null>(null);
+
+    // ── SQL Connection State ───────────────────────────────────────
+    const [dbType, setDbType] = useState('sqlite');
+    const [connString, setConnString] = useState('');
+    const [sqlQuery, setSqlQuery] = useState('');
+
+    // ── Folder Watcher State ───────────────────────────────────────
+    const [watchDir, setWatchDir] = useState('');
+    const [pendingFiles, setPendingFiles] = useState<string[]>([]);
 
     // ── Per-step loading / error ───────────────────────────────────
     const [uploadSt, setUploadSt] = useState<StepState>(idle());
@@ -162,25 +181,25 @@ export default function ConnectSource() {
     };
 
     // ==============================================================
-    //  STEP 1 — UPLOAD
+    //  STEP 1 — UPLOAD FILE
     // ==============================================================
-    const doUpload = async () => {
+    const doUpload = async (overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
         if (!file) return;
         setUploadSt({ loading: true, error: null });
 
         const form = new FormData();
         form.append('file', file);
-        // No Content-Type header: browser sets multipart/form-data + boundary automatically
 
         try {
             const res = await fetch('/api/sources/upload', { method: 'POST', body: form });
             if (!res.ok) throw new Error(await res.text());
 
             const data = await res.json();
-            const fp: string = data.file_path;   // store the returned file path
+            const fp: string = data.file_path;
             setFilePath(fp);
 
-            // Excel: also fetch available sheet names
+            let firstSheet: string | null = null;
             if (/\.(xlsx|xls)$/i.test(file.name)) {
                 try {
                     const sRes = await fetch(
@@ -191,35 +210,117 @@ export default function ConnectSource() {
                         const sData = await sRes.json();
                         const sheetList: string[] = sData.sheets ?? [];
                         setSheets(sheetList);
-                        if (sheetList.length > 0) setSheetName(sheetList[0]);
+                        if (sheetList.length > 0) {
+                            firstSheet = sheetList[0];
+                            setSheetName(firstSheet);
+                        }
                     }
-                } catch { /* non-critical — single-sheet Excel still works */ }
+                } catch { /* non-critical */ }
             }
 
             setUploadSt(idle());
-            setStep(1);   // advance to preview
+            setStep(1);
+
+            if (isAuto) {
+                await delay(400);
+                await doPreview(fp, firstSheet, isAuto);
+            }
         } catch (e: unknown) {
             setUploadSt({ loading: false, error: String((e as Error).message ?? 'Upload failed.') });
         }
     };
 
     // ==============================================================
-    //  STEP 2 — PREVIEW
-    //  FIX: doPreview only loads data, does NOT advance step.
-    //  The user sees the table and then clicks "Confirm Preview" to advance.
+    //  STEP 1B — CONNECT SQL DATABASE
     // ==============================================================
-    const doPreview = async () => {
+    const doConnectSQL = async (overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        if (!connString || !sqlQuery) return;
+        setUploadSt({ loading: true, error: null });
+
+        try {
+            const res = await fetch('/api/sources/sql/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connection_string: connString,
+                    db_type: dbType,
+                    table_or_query: sqlQuery,
+                    domain: domain
+                })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const data = await res.json();
+
+            setPreviewData({
+                columns: data.columns || [],
+                sample_rows: data.data ? data.data.map((r: any) => (data.columns || []).map((c: string) => r[c])) : [],
+                total_rows: data.data ? data.data.length : 0
+            });
+
+            const proposedMap: Record<string, string> = {};
+            if (data.mapping_proposal && data.mapping_proposal.suggestions) {
+                data.mapping_proposal.suggestions.forEach((s: any) => {
+                    if (s.canonical_field) proposedMap[s.source_column] = s.canonical_field;
+                });
+            }
+            if (Object.keys(proposedMap).length > 0) setMapping(proposedMap);
+
+            setUploadSt(idle());
+            setStep(1);
+
+            if (isAuto) {
+                await delay(400);
+                await doMapping(connString, proposedMap, null, isAuto);
+            }
+        } catch (e: unknown) {
+            setUploadSt({ loading: false, error: String((e as Error).message ?? 'SQL connection failed.') });
+        }
+    };
+
+    // ==============================================================
+    //  STEP 1C — FOLDER WATCHER
+    // ==============================================================
+    const doCheckWatcher = async () => {
+        if (!watchDir) return;
+        setUploadSt({ loading: true, error: null });
+        try {
+            const res = await fetch('/api/sources/watcher/list', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ watch_dir: watchDir, domain: domain })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const data = await res.json();
+            const files: string[] = data.pending_files || [];
+            setPendingFiles(files);
+            if (files.length > 0) {
+                setFilePath(files[0]);
+            }
+            setUploadSt(idle());
+        } catch (e: unknown) {
+            setUploadSt({ loading: false, error: String((e as Error).message ?? 'Directory scan failed.') });
+        }
+    };
+
+    // ==============================================================
+    //  STEP 2 — PREVIEW
+    // ==============================================================
+    const doPreview = async (targetFp?: string, targetSheet?: string | null, overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const currentFp = targetFp || filePath;
+        const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+
         setPreviewSt({ loading: true, error: null });
         try {
             const res = await fetch('/api/sources/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_path: filePath, sheet_name: sheetName || null })
+                body: JSON.stringify({ file_path: currentFp, sheet_name: currentSheet || null, domain: domain })
             });
             if (!res.ok) throw new Error(await res.text());
             const data = await res.json();
 
-            // Backend returns data as array of objects, we need array of arrays
             const sampleRows = data.data ? data.data.map((row: any) => (data.columns || []).map((col: string) => row[col])) : [];
 
             setPreviewData({
@@ -228,20 +329,22 @@ export default function ConnectSource() {
                 total_rows: data.data ? data.data.length : 0
             });
 
-            // Extract mapping proposal if available
             const proposedMap: Record<string, string> = {};
             if (data.mapping_proposal && data.mapping_proposal.suggestions) {
                 data.mapping_proposal.suggestions.forEach((s: any) => {
                     if (s.canonical_field) proposedMap[s.source_column] = s.canonical_field;
                 });
             }
-            // Store mapping from preview so we can show it in step 3
             if (Object.keys(proposedMap).length > 0) {
                 setMapping(proposedMap);
             }
 
             setPreviewSt(idle());
-            // Step stays at 1 — user must click "Confirm Preview" to continue
+
+            if (isAuto) {
+                await delay(400);
+                await doMapping(currentFp, proposedMap, currentSheet, isAuto);
+            }
         } catch (e: unknown) {
             setPreviewSt({ loading: false, error: String((e as Error).message ?? 'Preview failed.') });
         }
@@ -249,30 +352,37 @@ export default function ConnectSource() {
 
     // ==============================================================
     //  STEP 3 — MAPPING CONFIRM
-    //  Called when user clicks "Confirm Preview". Advances to step 2
-    //  (mapping loading), then step 3 (mapping ready) when done.
     // ==============================================================
-    const doMapping = async () => {
+    const doMapping = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null, overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const currentFp = targetFp || filePath;
+        const currentMap = targetMap || mapping;
+        const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+
         setMappingSt({ loading: true, error: null });
-        setStep(2);   // show mapping card immediately with spinner
+        setStep(2);
         try {
             const res = await fetch('/api/sources/mapping/confirm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    file_path: filePath,
-                    mapping: mapping,      // USE the proposed mapping we stored in preview!
-                    domain: 'pharmacy',
-                    sheet_name: sheetName || null,
+                    file_path: currentFp,
+                    mapping: currentMap,
+                    domain: domain,
+                    sheet_name: currentSheet || null,
                     table_or_query: null,
                     keep_extras: true,
                     save_profile: true
                 })
             });
             if (!res.ok) throw new Error(await res.text());
-            // Backend maps the columns but we already have `mapping` in state.
             setMappingSt(idle());
-            setStep(3);   // mapping ready — user can now confirm
+            setStep(3);
+
+            if (isAuto) {
+                await delay(400);
+                await doNormalize(currentFp, currentMap, currentSheet, isAuto);
+            }
         } catch (e: unknown) {
             setMappingSt({ loading: false, error: String((e as Error).message ?? 'Mapping failed.') });
         }
@@ -280,30 +390,37 @@ export default function ConnectSource() {
 
     // ==============================================================
     //  STEP 4 — NORMALIZE
-    //  Called when user clicks "Confirm Mapping". Updates file_path.
     // ==============================================================
-    const doNormalize = async () => {
+    const doNormalize = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null, overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const currentFp = targetFp || filePath;
+        const currentMap = targetMap || mapping;
+        const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+
         setNormSt({ loading: true, error: null });
         try {
             const res = await fetch('/api/sources/normalize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    file_path: filePath,
-                    domain: 'pharmacy',
-                    mapping: mapping,          // *** pass stored mapping ***
-                    sheet_name: sheetName || null,
+                    file_path: currentFp,
+                    domain: domain,
+                    mapping: currentMap,
+                    sheet_name: currentSheet || null,
                     table_or_query: null
                 })
             });
             if (!res.ok) throw new Error(await res.text());
             const data = await res.json();
-            // UPDATE to normalized path ONLY if it's provided by backend
-            if (data.file_path) {
-                setFilePath(data.file_path);
-            }
+            const normFp = data.file_path || currentFp;
+            setFilePath(normFp);
             setNormSt(idle());
-            setStep(4);   // advance to validate
+            setStep(4);
+
+            if (isAuto) {
+                await delay(400);
+                await doValidate(normFp, currentMap, currentSheet, isAuto);
+            }
         } catch (e: unknown) {
             setNormSt({ loading: false, error: String((e as Error).message ?? 'Normalize failed.') });
         }
@@ -311,29 +428,30 @@ export default function ConnectSource() {
 
     // ==============================================================
     //  STEP 5 — VALIDATE
-    //  Auto-advances to ingest if verdict === 'usable'.
-    //  Shows "Ingest Anyway" button for 'usable_with_warnings'.
-    //  Blocks ingest for 'not_usable'.
     // ==============================================================
-    const doValidate = async () => {
+    const doValidate = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null, overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const currentFp = targetFp || filePath;
+        const currentMap = targetMap || mapping;
+        const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+
         setValSt({ loading: true, error: null });
         try {
             const res = await fetch('/api/sources/validate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    file_path: filePath,       // normalized path from step 4 (if changed)
-                    mapping: mapping,          // stored mapping from step 3
-                    domain: 'pharmacy',
+                    file_path: currentFp,
+                    mapping: currentMap,
+                    domain: domain,
                     table_kind: 'auto',
-                    sheet_name: sheetName || null,
+                    sheet_name: currentSheet || null,
                     table_or_query: null
                 })
             });
             if (!res.ok) throw new Error(await res.text());
             const data = await res.json();
 
-            // Map problems to strings if they are objects
             const problemStrings = data.problems?.map((p: any) => typeof p === 'string' ? p : p.description) || [];
 
             setValidateResult({
@@ -342,11 +460,14 @@ export default function ConnectSource() {
                 null_counts: data.null_counts || {}
             });
             setValSt(idle());
-            // Auto-advance only when truly usable — user must confirm otherwise
-            if (data.verdict === 'usable') {
-                setStep(5);   // show ingest card
+
+            if (data.verdict === 'usable' || data.verdict === 'usable_with_warnings') {
+                setStep(5);
+                if (isAuto) {
+                    await delay(400);
+                    await doIngest(currentFp, currentMap, currentSheet);
+                }
             }
-            // 'usable_with_warnings' and 'not_usable' stay on step 4 to show verdict
         } catch (e: unknown) {
             setValSt({ loading: false, error: String((e as Error).message ?? 'Validation failed.') });
         }
@@ -354,27 +475,29 @@ export default function ConnectSource() {
 
     // ==============================================================
     //  STEP 6 — INGEST
-    //  Uses normalized file_path and stored mapping.
     // ==============================================================
-    const doIngest = async () => {
+    const doIngest = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null) => {
+        const currentFp = targetFp || filePath;
+        const currentMap = targetMap || mapping;
+        const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+
         setIngestSt({ loading: true, error: null });
-        setStep(5);   // ensure ingest card is visible
+        setStep(5);
         try {
             const res = await fetch('/api/kb/ingest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    file_path: filePath,       // normalized path
-                    domain: 'pharmacy',
+                    file_path: currentFp,
+                    domain: domain,
                     strategy: 'row',
-                    mapping: mapping,          // stored mapping
-                    sheet_name: sheetName || null,
+                    mapping: currentMap,
+                    sheet_name: currentSheet || null,
                     table_or_query: null,
                     merge_key: null
                 })
             });
             if (!res.ok) throw new Error(await res.text());
-            // Ingest returns a plain string OR JSON — handle both
             const raw = await res.text();
             let msg = raw;
             try {
@@ -384,12 +507,12 @@ export default function ConnectSource() {
                 } else {
                     msg = String(parsed);
                 }
-            } catch { /* it's already a plain string */ }
+            } catch { /* plain string */ }
             setIngestMsg(String(msg));
-            setActivePath(filePath);      // update context with new source
+            setActivePath(currentFp);
             setIngestSt(idle());
-            setStep(6);           // wizard complete
-            void fetchKBStats();  // refresh KB stats card
+            setStep(6);
+            void fetchKBStats();
         } catch (e: unknown) {
             setIngestSt({ loading: false, error: String((e as Error).message ?? 'Ingest failed.') });
         }
@@ -405,57 +528,263 @@ export default function ConnectSource() {
         <ErrorBoundary>
             <div className="connect-page">
 
-                {/* ── Header ─────────────────────────────────── */}
+                {/* ── Header with Execution Mode Selector & Active Niche Info ── */}
                 <div className="connect-page-header">
-                    <h2>Connect Your Data Source</h2>
-                    <p>Upload your business data to power AI insights. All processing is local — no data leaves your machine.</p>
+                    <div>
+                        <h2>Connect Your Data Source</h2>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                            <p style={{ margin: 0 }}>Connect data sources (Files, SQL, Folder Watcher) to your knowledge base.</p>
+                            <span
+                                style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.35rem',
+                                    background: 'rgba(16, 185, 129, 0.12)',
+                                    color: 'var(--accent-teal)',
+                                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                                    padding: '0.2rem 0.65rem',
+                                    borderRadius: '12px',
+                                    fontSize: '0.78rem',
+                                    fontWeight: 600
+                                }}
+                            >
+                                <span>{activeDomainMeta.icon}</span> {activeDomainMeta.name} Mode
+                            </span>
+                            <button
+                                type="button"
+                                onClick={openSettings}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '0.76rem',
+                                    textDecoration: 'underline',
+                                    cursor: 'pointer',
+                                    padding: 0
+                                }}
+                            >
+                                Change Domain
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="proceed-mode-container">
+                        <span className="mode-label">Execution Mode</span>
+                        <div className="proceed-mode-toggle">
+                            <button
+                                type="button"
+                                className={`mode-btn ${!autoProceed ? 'active' : ''}`}
+                                onClick={() => setAutoProceed(false)}
+                            >
+                                <Play size={13} /> Manual Proceed
+                            </button>
+                            <button
+                                type="button"
+                                className={`mode-btn ${autoProceed ? 'active' : ''}`}
+                                onClick={() => setAutoProceed(true)}
+                            >
+                                <Zap size={13} /> Automatic Proceed
+                            </button>
+                        </div>
+                    </div>
                 </div>
+
+                {/* ── Auto proceed active banner ──────────────── */}
+                {autoProceed && (
+                    <div className="auto-proceed-banner">
+                        <Zap size={16} />
+                        <span><strong>Automatic Mode Active:</strong> Pipeline steps for <strong>{domain.toUpperCase()}</strong> will execute automatically in sequence.</span>
+                    </div>
+                )}
 
                 {/* ── Progress indicator ─────────────────────── */}
                 <StepIndicator currentStep={indicatorStep} />
 
                 {/* ════════════════════════════════════════════
-                    STEP 1 — UPLOAD
+                    STEP 1 — CONNECT DATA SOURCE
                 ════════════════════════════════════════════ */}
                 <div className="wizard-card">
-                    <div className="wizard-card-title"><Upload size={16} /> Step 1 — Upload File</div>
+                    {/* Source Connection Tabs */}
+                    <div className="source-tabs">
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'file' ? 'active' : ''}`}
+                            onClick={() => setSourceType('file')}
+                        >
+                            <FileText size={14} /> File Upload (CSV / Excel / JSON)
+                        </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'sql' ? 'active' : ''}`}
+                            onClick={() => setSourceType('sql')}
+                        >
+                            <HardDrive size={14} /> SQL Database Connection
+                        </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'watcher' ? 'active' : ''}`}
+                            onClick={() => setSourceType('watcher')}
+                        >
+                            <Folder size={14} /> Folder Auto-Sync Watcher
+                        </button>
+                    </div>
 
-                    {/* Drag-and-drop zone */}
-                    <UploadZone file={file} onFileChange={resetFile} />
+                    <div className="wizard-card-title"><Upload size={16} /> Step 1 — Connect Source ({domain.replace('_', ' ').toUpperCase()})</div>
 
-                    {/* Sheet picker (Excel only, multiple sheets) */}
-                    {sheets.length > 1 && (
-                        <div className="sheet-select-wrap">
-                            <label>Select worksheet:</label>
-                            <select
-                                className="sheet-select"
-                                value={sheetName ?? ''}
-                                onChange={e => setSheetName(e.target.value)}
-                            >
-                                {sheets.map(s => <option key={s} value={s}>{s}</option>)}
-                            </select>
+                    {/* SOURCE 1: FILE UPLOAD */}
+                    {sourceType === 'file' && (
+                        <>
+                            <UploadZone file={file} onFileChange={resetFile} />
+
+                            {sheets.length > 1 && (
+                                <div className="sheet-select-wrap">
+                                    <label>Select worksheet:</label>
+                                    <select
+                                        className="sheet-select"
+                                        value={sheetName ?? ''}
+                                        onChange={e => setSheetName(e.target.value)}
+                                    >
+                                        {sheets.map(s => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doUpload()} />
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions">
+                                    <button
+                                        className="btn-primary"
+                                        onClick={() => doUpload()}
+                                        disabled={!file || uploadSt.loading}
+                                    >
+                                        {uploadSt.loading
+                                            ? <><span className="spinner" /> Uploading…</>
+                                            : autoProceed
+                                                ? <><Zap size={15} /> Upload &amp; Auto Process</>
+                                                : <><Upload size={15} /> Upload &amp; Analyse</>}
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {/* SOURCE 2: SQL DATABASE */}
+                    {sourceType === 'sql' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Database Engine:</label>
+                                <select
+                                    className="sql-form-input"
+                                    value={dbType}
+                                    onChange={e => setDbType(e.target.value)}
+                                >
+                                    <option value="sqlite">SQLite (.db / .sqlite)</option>
+                                    <option value="postgresql">PostgreSQL</option>
+                                    <option value="mysql">MySQL / MariaDB</option>
+                                    <option value="mssql">MS SQL Server</option>
+                                </select>
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Connection String or File Path:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder={dbType === 'sqlite' ? 'C:/data/pharmacy.db' : 'postgresql://user:pass@localhost:5432/mydb'}
+                                    value={connString}
+                                    onChange={e => setConnString(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Table Name or SQL Query:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="SELECT * FROM transactions"
+                                    value={sqlQuery}
+                                    onChange={e => setSqlQuery(e.target.value)}
+                                />
+                            </div>
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectSQL()} />
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions">
+                                    <button
+                                        className="btn-primary"
+                                        onClick={() => doConnectSQL()}
+                                        disabled={!connString || !sqlQuery || uploadSt.loading}
+                                    >
+                                        {uploadSt.loading
+                                            ? <><span className="spinner" /> Connecting…</>
+                                            : autoProceed
+                                                ? <><Zap size={15} /> Connect SQL &amp; Auto Process</>
+                                                : <><HardDrive size={15} /> Connect &amp; Fetch Preview</>}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
 
-                    {/* Error */}
-                    {uploadSt.error && (
-                        <div style={{ marginTop: '1rem' }}>
-                            <ErrorCard msg={uploadSt.error} onRetry={doUpload} />
-                        </div>
-                    )}
+                    {/* SOURCE 3: FOLDER WATCHER */}
+                    {sourceType === 'watcher' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Automated Export Directory Path:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="C:/POS_Exports/"
+                                    value={watchDir}
+                                    onChange={e => setWatchDir(e.target.value)}
+                                />
+                            </div>
 
-                    {/* Upload button — only when on step 0 */}
-                    {step === 0 && (
-                        <div className="btn-actions">
-                            <button
-                                className="btn-primary"
-                                onClick={doUpload}
-                                disabled={!file || uploadSt.loading}
-                            >
-                                {uploadSt.loading
-                                    ? <><span className="spinner" /> Uploading…</>
-                                    : <><Upload size={15} /> Upload &amp; Analyse</>}
-                            </button>
+                            <div className="btn-actions">
+                                <button
+                                    className="btn-secondary"
+                                    onClick={doCheckWatcher}
+                                    disabled={!watchDir || uploadSt.loading}
+                                >
+                                    <Folder size={15} /> Scan Directory
+                                </button>
+                            </div>
+
+                            {pendingFiles.length > 0 && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Detected Pending Files:</label>
+                                    <ul style={{ fontSize: '0.85rem', color: '#374151', margin: '0.5rem 0' }}>
+                                        {pendingFiles.map(f => <li key={f}>📄 {f}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={doCheckWatcher} />
+                                </div>
+                            )}
+
+                            {step === 0 && pendingFiles.length > 0 && (
+                                <div className="btn-actions" style={{ marginTop: '1rem' }}>
+                                    <button
+                                        className="btn-primary"
+                                        onClick={() => doPreview(pendingFiles[0])}
+                                    >
+                                        <ArrowRight size={15} /> Process Latest File ({pendingFiles[0].split('/').pop()})
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -463,40 +792,34 @@ export default function ConnectSource() {
                     {step >= 1 && (
                         <div className="info-card" style={{ marginTop: '1rem' }}>
                             <CheckCircle size={16} />
-                            File uploaded successfully. Path stored for all subsequent steps.
+                            Source connected for domain: <strong>{domain.toUpperCase()}</strong>.
                         </div>
                     )}
                 </div>
 
                 {/* ════════════════════════════════════════════
                     STEP 2 — PREVIEW
-                    Visible from step 1 onward.
-                    FIX: doPreview does NOT advance step.
-                    User clicks "Confirm Preview" to advance.
                 ════════════════════════════════════════════ */}
                 {step >= 1 && (
                     <div className="wizard-card">
-                        <div className="wizard-card-title"><Eye size={16} /> Step 2 — Preview Data</div>
+                        <div className="wizard-card-title"><Eye size={16} /> Step 2 — Preview Data ({domain.toUpperCase()})</div>
 
-                        {previewSt.error && <ErrorCard msg={previewSt.error} onRetry={doPreview} />}
+                        {previewSt.error && <ErrorCard msg={previewSt.error} onRetry={() => doPreview()} />}
 
-                        {/* No data yet → show Load button */}
                         {!previewData && !previewSt.loading && step === 1 && (
                             <div className="btn-actions">
-                                <button className="btn-primary" onClick={doPreview}>
+                                <button className="btn-primary" onClick={() => doPreview()}>
                                     <Eye size={15} /> Load Preview
                                 </button>
                             </div>
                         )}
 
-                        {/* Loading spinner */}
                         {previewSt.loading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
                                 <span className="spinner dark" /> Loading preview…
                             </div>
                         )}
 
-                        {/* Data loaded → show table + confirm button */}
                         {previewData && step === 1 && (
                             <>
                                 <PreviewTable
@@ -505,18 +828,16 @@ export default function ConnectSource() {
                                     totalRows={previewData.total_rows}
                                 />
                                 <div className="btn-actions">
-                                    {/* Confirm Preview: advances to step 2 and auto-triggers mapping */}
-                                    <button className="btn-primary" onClick={doMapping}>
-                                        <ArrowRight size={15} /> Confirm Preview &amp; Load Mapping
+                                    <button className="btn-primary" onClick={() => doMapping()}>
+                                        {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Confirm Preview &amp; Load Mapping
                                     </button>
                                 </div>
                             </>
                         )}
 
-                        {/* Past preview — show completion badge */}
                         {step >= 2 && (
                             <div className="info-card">
-                                <CheckCircle size={16} /> Preview confirmed. Column mapping loaded.
+                                <CheckCircle size={16} /> Preview confirmed. Column mapping loaded for {domain.toUpperCase()}.
                             </div>
                         )}
                     </div>
@@ -524,44 +845,41 @@ export default function ConnectSource() {
 
                 {/* ════════════════════════════════════════════
                     STEP 3 — MAPPING
-                    Visible from step 2 onward.
-                    Auto-loads when user confirms preview.
-                    User clicks "Confirm Mapping" to normalize.
                 ════════════════════════════════════════════ */}
                 {step >= 2 && (
                     <div className="wizard-card">
-                        <div className="wizard-card-title"><GitMerge size={16} /> Step 3 — Column Mapping</div>
+                        <div className="wizard-card-title"><GitMerge size={16} /> Step 3 — Column Mapping ({domain.toUpperCase()})</div>
 
-                        {/* Loading spinner while mapping API runs */}
                         {mappingSt.loading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
-                                <span className="spinner dark" /> Detecting column mapping…
+                                <span className="spinner dark" /> Detecting column mapping for {domain}…
                             </div>
                         )}
 
-                        {mappingSt.error && <ErrorCard msg={mappingSt.error} onRetry={doMapping} />}
+                        {mappingSt.error && <ErrorCard msg={mappingSt.error} onRetry={() => doMapping()} />}
 
-                        {/* Mapping table + confirm button */}
                         {!mappingSt.loading && Object.keys(mapping).length > 0 && (
                             <>
                                 <p style={{ fontSize: '0.875rem', color: '#6B7280', marginBottom: '1rem' }}>
-                                    The system detected the following column mapping. Review and confirm before continuing.
+                                    The system detected the following column mapping for <strong>{domain.toUpperCase()}</strong>.
                                 </p>
                                 <MappingTable mapping={mapping} />
 
                                 {step === 3 && (
                                     <div className="btn-actions">
-                                        <button className="btn-primary" onClick={doNormalize} disabled={normSt.loading}>
+                                        <button className="btn-primary" onClick={() => doNormalize()} disabled={normSt.loading}>
                                             {normSt.loading
                                                 ? <><span className="spinner" /> Normalizing…</>
-                                                : <><ArrowRight size={15} /> Confirm Mapping &amp; Normalize</>}
+                                                : autoProceed
+                                                    ? <><Zap size={15} /> Confirm Mapping &amp; Auto Process</>
+                                                    : <><ArrowRight size={15} /> Confirm Mapping &amp; Normalize</>}
                                         </button>
                                     </div>
                                 )}
 
                                 {normSt.error && (
                                     <div style={{ marginTop: '1rem' }}>
-                                        <ErrorCard msg={normSt.error} onRetry={doNormalize} />
+                                        <ErrorCard msg={normSt.error} onRetry={() => doNormalize()} />
                                     </div>
                                 )}
 
@@ -577,11 +895,10 @@ export default function ConnectSource() {
 
                 {/* ════════════════════════════════════════════
                     STEP 4 — NORMALIZE
-                    Visible from step 4 onward (normalize was triggered in step 3).
                 ════════════════════════════════════════════ */}
                 {step >= 4 && (
                     <div className="wizard-card">
-                        <div className="wizard-card-title"><Wrench size={16} /> Step 4 — Normalize</div>
+                        <div className="wizard-card-title"><Wrench size={16} /> Step 4 — Normalize ({domain.toUpperCase()})</div>
 
                         {normSt.loading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
@@ -589,23 +906,20 @@ export default function ConnectSource() {
                             </div>
                         )}
 
-                        {/* Success: normalize done */}
                         {!normSt.loading && !normSt.error && (
                             <>
                                 <div className="info-card">
-                                    <CheckCircle size={16} /> Data normalized. File path updated for validation and ingestion.
+                                    <CheckCircle size={16} /> Data normalized for {domain.toUpperCase()}. File path updated for validation and ingestion.
                                 </div>
 
-                                {/* Validate button — only show when waiting to validate */}
                                 {step === 4 && !valSt.loading && !validateResult && (
                                     <div className="btn-actions">
-                                        <button className="btn-primary" onClick={doValidate}>
-                                            <ShieldCheck size={15} /> Run Validation
+                                        <button className="btn-primary" onClick={() => doValidate()}>
+                                            {autoProceed ? <Zap size={15} /> : <ShieldCheck size={15} />} Run Validation
                                         </button>
                                     </div>
                                 )}
 
-                                {/* Validate loading */}
                                 {valSt.loading && (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280', marginTop: '1rem' }}>
                                         <span className="spinner dark" /> Validating…
@@ -614,14 +928,12 @@ export default function ConnectSource() {
 
                                 {valSt.error && (
                                     <div style={{ marginTop: '1rem' }}>
-                                        <ErrorCard msg={valSt.error} onRetry={doValidate} />
+                                        <ErrorCard msg={valSt.error} onRetry={() => doValidate()} />
                                     </div>
                                 )}
 
-                                {/* Validate result — shown on step 4 for warnings/fail; step auto-advances to 5 for 'usable' */}
                                 {validateResult && step === 4 && (
                                     <div style={{ marginTop: '1.25rem' }}>
-                                        {/* Verdict badge */}
                                         <div className={`verdict-badge ${validateResult.verdict === 'usable_with_warnings' ? 'warn' : 'fail'
                                             }`}>
                                             {validateResult.verdict === 'usable_with_warnings'
@@ -629,7 +941,6 @@ export default function ConnectSource() {
                                                 : <><AlertCircle size={16} /> Data cannot be ingested</>}
                                         </div>
 
-                                        {/* Problems list */}
                                         {validateResult.problems.length > 0 && (
                                             <ul className="problems-list">
                                                 {validateResult.problems.map((p, i) => (
@@ -649,7 +960,7 @@ export default function ConnectSource() {
 
                                         {validateResult.verdict === 'usable_with_warnings' && (
                                             <div className="btn-actions">
-                                                <button className="btn-warn" onClick={doIngest}>
+                                                <button className="btn-warn" onClick={() => doIngest()}>
                                                     <ArrowRight size={15} /> Ingest Anyway
                                                 </button>
                                             </div>
@@ -663,42 +974,37 @@ export default function ConnectSource() {
 
                 {/* ════════════════════════════════════════════
                     STEP 5 — VALIDATE SUCCESS + INGEST
-                    Visible from step 5 onward.
-                    Shows green verdict + Ingest button (or auto-ingests).
                 ════════════════════════════════════════════ */}
                 {step >= 5 && (
                     <div className="wizard-card">
                         <div className="wizard-card-title"><Database size={16} /> Step 5/6 — Ingest to Knowledge Base</div>
 
-                        {/* Validate: usable badge */}
                         {validateResult && validateResult.verdict === 'usable' && step === 5 && !ingestSt.loading && !ingestMsg && (
                             <>
                                 <div className="verdict-badge ok">
-                                    <CheckCircle size={16} /> Data validated — ready to ingest
+                                    <CheckCircle size={16} /> Data validated — ready to ingest into {domain.toUpperCase()} Knowledge Base
                                 </div>
                                 <div className="btn-actions">
-                                    <button className="btn-primary" onClick={doIngest}>
+                                    <button className="btn-primary" onClick={() => doIngest()}>
                                         <Database size={15} /> Ingest into Knowledge Base
                                     </button>
                                 </div>
                             </>
                         )}
 
-                        {/* Ingest loading */}
                         {ingestSt.loading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
-                                <span className="spinner dark" /> Ingesting data into the knowledge base…
+                                <span className="spinner dark" /> Ingesting data into the {domain.toUpperCase()} knowledge base…
                             </div>
                         )}
 
-                        {ingestSt.error && <ErrorCard msg={ingestSt.error} onRetry={doIngest} />}
+                        {ingestSt.error && <ErrorCard msg={ingestSt.error} onRetry={() => doIngest()} />}
 
-                        {/* Success */}
                         {step >= 6 && !ingestSt.loading && !ingestSt.error && (
                             <div className="success-card">
                                 <div className="success-card-icon"><CheckCircle size={26} /></div>
                                 <h3>Data Successfully Ingested!</h3>
-                                <p>{(typeof ingestMsg === 'string' && ingestMsg && !ingestMsg.startsWith('{')) ? ingestMsg : 'Your data is ready. The RAG chatbot is now powered by this dataset.'}</p>
+                                <p>{(typeof ingestMsg === 'string' && ingestMsg && !ingestMsg.startsWith('{')) ? ingestMsg : `Your ${domain.toUpperCase()} data is ready. The RAG chatbot is now powered by this dataset.`}</p>
                                 {kbStats && (
                                     <p style={{ marginBottom: '1.25rem', fontWeight: 600 }}>
                                         Knowledge Base: {kbStats.total_chunks.toLocaleString()} chunks · {kbStats.collection_name}

@@ -1,6 +1,8 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
+import OnboardingModal from './components/auth/OnboardingModal';
+import SettingsModal from './components/settings/SettingsModal';
 
 const Shell = () => {
     return (
@@ -14,6 +16,12 @@ const Shell = () => {
                     <Outlet />
                 </main>
             </div>
+
+            {/* First-time Account Setup Wizard (triggers if !isSetupComplete) */}
+            <OnboardingModal />
+
+            {/* Global Settings & Domain Switcher */}
+            <SettingsModal />
         </div>
     );
 };
