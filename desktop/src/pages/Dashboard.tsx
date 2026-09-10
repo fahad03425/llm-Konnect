@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
-    Database, Activity, Minus, ShoppingBag, Briefcase
+    Database, Activity, Minus, ShoppingBag, Briefcase, ArrowRight
 } from 'lucide-react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -73,7 +74,6 @@ export default function Dashboard() {
     const [loadingTrend, setLoadingTrend] = useState(true);
 
     const [errorKpis, setErrorKpis] = useState<string | null>(null);
-    const [errorTrend, setErrorTrend] = useState<string | null>(null);
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} Dashboard — LLM-KONNECT`;
@@ -81,20 +81,32 @@ export default function Dashboard() {
     }, [activePath, user.domain]);
 
     const fetchAllData = async () => {
+        setErrorKpis(null);
+
+        // If no file has been connected yet, show clean initial empty state instead of 404 error
+        if (!activePath || activePath.trim() === '') {
+            setLoadingKpis(false);
+            setLoadingTrend(false);
+            setKpis(null);
+            setExpiry(null);
+            setTrend(null);
+            return;
+        }
+
         setLoadingKpis(true);
         setLoadingTrend(true);
-        setErrorKpis(null);
-        setErrorTrend(null);
 
         // Helper to parse responses and log errors
         const handleResponse = async (r: Response, name: string) => {
             if (!r.ok) {
                 const text = await r.text().catch(() => '');
+                if (r.status === 404) {
+                    throw new Error("Data file not found. Please connect a valid dataset in Connect Source.");
+                }
                 console.error(`[${name}] API Error: ${r.status} ${r.statusText}`, text);
                 throw new Error(`${name} fetch failed (Status ${r.status})`);
             }
             const data = await r.json();
-            console.log(`[${name}] Raw Response:`, data);
             return data;
         };
 
@@ -133,8 +145,8 @@ export default function Dashboard() {
                 setTrend(data.monthly || []);
                 setLoadingTrend(false);
             })
-            .catch(err => {
-                setErrorTrend(err.message);
+            .catch(() => {
+                setTrend([]);
                 setLoadingTrend(false);
             });
 
@@ -179,7 +191,7 @@ export default function Dashboard() {
                 </div>
 
                 {isUnavailable ? (
-                    <div className="kpi-unavailable-text">Data unavailable</div>
+                    <div className="kpi-unavailable-text">Data not connected</div>
                 ) : (
                     <div className="kpi-footer">Computed by code · not AI</div>
                 )}
@@ -207,16 +219,60 @@ export default function Dashboard() {
                 </div>
             </div>
 
+            {/* No Data Banner when no file is active */}
+            {(!activePath || errorKpis) && (
+                <div
+                    style={{
+                        background: 'rgba(16, 185, 129, 0.08)',
+                        border: '1px solid rgba(16, 185, 129, 0.25)',
+                        borderRadius: '12px',
+                        padding: '1.25rem 1.5rem',
+                        marginBottom: '1.5rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '1rem'
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                        <div style={{ background: 'rgba(16, 185, 129, 0.2)', padding: '0.6rem', borderRadius: '10px', color: '#10b981', display: 'flex' }}>
+                            <Database size={22} />
+                        </div>
+                        <div>
+                            <div style={{ fontWeight: 700, color: '#ffffff', fontSize: '0.98rem' }}>
+                                Connect your {activeDomainMeta.name} data
+                            </div>
+                            <div style={{ color: '#9ca3af', fontSize: '0.84rem', marginTop: '0.2rem' }}>
+                                {activePath ? errorKpis : `Upload a CSV/Excel file or connect a database to populate live analytics and KPIs for ${activeDomainMeta.name}.`}
+                            </div>
+                        </div>
+                    </div>
+                    <Link
+                        to="/connect"
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            background: '#10b981',
+                            color: '#0f172a',
+                            fontWeight: 700,
+                            padding: '0.6rem 1.15rem',
+                            borderRadius: '8px',
+                            textDecoration: 'none',
+                            fontSize: '0.86rem',
+                            boxShadow: '0 4px 12px rgba(16, 185, 129, 0.25)'
+                        }}
+                    >
+                        Connect Data Source <ArrowRight size={15} />
+                    </Link>
+                </div>
+            )}
+
             {/* KPIs Grid */}
             {loadingKpis ? (
                 <div className="kpi-grid">
                     {[1, 2, 3, 4, 5, 6].map(i => <KPISkeleton key={i} />)}
-                </div>
-            ) : errorKpis ? (
-                <div className="error-card">
-                    <AlertTriangle size={24} />
-                    <strong>Failed to load KPIs</strong>
-                    <p>{errorKpis}</p>
                 </div>
             ) : (
                 <div className="kpi-grid">
@@ -241,67 +297,44 @@ export default function Dashboard() {
 
                 {loadingTrend ? (
                     <ChartSkeleton />
-                ) : errorTrend ? (
-                    <div className="error-card" style={{ height: 350 }}>
-                        <AlertTriangle size={24} />
-                        <strong>Failed to load trend data</strong>
-                        <p>{errorTrend}</p>
-                    </div>
                 ) : !trend || trend.length === 0 ? (
                     <div className="empty-chart">
                         <Activity size={32} />
-                        <p>No trend data available yet.</p>
+                        <p>No dataset connected yet. Connect a data source to generate trends.</p>
                     </div>
                 ) : (
                     <div className="chart-container">
                         <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={trend} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                                 <defs>
-                                    <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="5%" stopColor="#0D7377" stopOpacity={0.8} />
-                                        <stop offset="95%" stopColor="#0D7377" stopOpacity={0} />
+                                    <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.8} />
+                                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                                <XAxis
-                                    dataKey="period"
-                                    tickLine={false}
-                                    axisLine={false}
-                                    tick={{ fill: '#6B7280', fontSize: 12 }}
-                                    dy={10}
-                                />
-                                <YAxis
-                                    tickFormatter={(val) => `Rs. ${(val / 1000).toFixed(0)}k`}
-                                    tickLine={false}
-                                    axisLine={false}
-                                    tick={{ fill: '#6B7280', fontSize: 12 }}
-                                    width={80}
-                                />
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#374151" />
+                                <XAxis dataKey="period" stroke="#9ca3af" tickLine={false} />
+                                <YAxis stroke="#9ca3af" tickLine={false} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
                                 <Tooltip
-                                    formatter={(value: any) => [`PKR ${(value || 0).toLocaleString()}`, 'Revenue']}
-                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}
+                                    contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', borderRadius: '8px', color: '#fff' }}
+                                    formatter={(v: any) => [`PKR ${Number(v).toLocaleString()}`, 'Revenue']}
                                 />
-                                <Area
-                                    type="monotone"
-                                    dataKey="revenue"
-                                    stroke="#0D7377"
-                                    strokeWidth={3}
-                                    fillOpacity={1}
-                                    fill="url(#colorRevenue)"
-                                />
+                                <Area type="monotone" dataKey="revenue" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorRev)" />
                             </AreaChart>
                         </ResponsiveContainer>
                     </div>
                 )}
             </div>
 
-            {/* Bottom Status Bar */}
-            <div className="bottom-status-bar">
-                <Database size={16} className="status-icon" />
-                Knowledge Base: {kbStats ? kbStats.total_chunks.toLocaleString() : 'N/A'} chunks · {kbStats ? kbStats.collection_name : 'No Collection'} ·
-                <span style={{ color: '#0D7377', fontWeight: 600, marginLeft: '0.25rem' }}>Analyzing: {activePath.split(/[/\\]/).pop()}</span>
-                <span style={{ color: '#9CA3AF', fontStyle: 'italic', marginLeft: 'auto' }}>All computations are deterministic and traceable to source rows.</span>
-            </div>
+            {/* Knowledge Base Status Bar */}
+            {kbStats && (
+                <div className="kb-stats-bar">
+                    <div className="kb-stats-info">
+                        <Database size={16} />
+                        <span>Connected to Vector Knowledge Base: <strong>{kbStats.collection_name}</strong> ({kbStats.total_chunks} indexed chunks)</span>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
