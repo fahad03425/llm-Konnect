@@ -10,12 +10,28 @@ locally and the app runs fully offline. For air-gapped installs, point
 import os
 import time
 import hashlib
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import pandas as pd
 
 from app.core.config import settings
 from app.schema.domain import get_domain_pack
 from app.ingestion.models import IngestSummary, RetrievedChunk
+
+import threading
+
+_global_chroma_clients: Dict[str, Any] = {}
+_chroma_init_lock = threading.Lock()
+
+def _get_persistent_chroma_client(chroma_path: str):
+    abs_path = os.path.abspath(chroma_path)
+    if abs_path not in _global_chroma_clients:
+        with _chroma_init_lock:
+            if abs_path not in _global_chroma_clients:
+                import chromadb
+                os.makedirs(abs_path, exist_ok=True)
+                _global_chroma_clients[abs_path] = chromadb.PersistentClient(path=abs_path)
+    return _global_chroma_clients[abs_path]
+
 
 class KnowledgeBase:
     def __init__(self, chroma_dir: Optional[str] = None, collection_name: Optional[str] = None):
@@ -33,21 +49,34 @@ class KnowledgeBase:
         self.passage_prefix = "passage: " if "e5" in self.embedding_model_name.lower() else ""
 
     def _get_chroma(self):
-        if self._chroma_client is None:
-            import chromadb
-            os.makedirs(self.chroma_dir, exist_ok=True)
-            self._chroma_client = chromadb.PersistentClient(path=self.chroma_dir)
-            self._collection = self._chroma_client.get_or_create_collection(
+        if self._collection is None:
+            client = _get_persistent_chroma_client(self.chroma_dir)
+            self._chroma_client = client
+            self._collection = client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
         return self._collection
 
-    def _get_embedder(self):
+    def _get_embedder(self, progress_callback: Optional[Callable[[float, str], None]] = None):
         if self._embedder is None:
+            if progress_callback:
+                progress_callback(32.0, "Loading local neural embedding model...")
+            import torch
             from sentence_transformers import SentenceTransformer
-            # Load on CPU to save VRAM
-            self._embedder = SentenceTransformer(self.embedding_model_name, device="cpu")
+            if not torch.cuda.is_available():
+                try:
+                    num_threads = max(1, min(16, os.cpu_count() or 4))
+                    torch.set_num_threads(num_threads)
+                except Exception:
+                    pass
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                # Try instant offline loading from local cache first
+                self._embedder = SentenceTransformer(self.embedding_model_name, device=device, local_files_only=True)
+            except Exception:
+                # Fall back to online download if not cached yet
+                self._embedder = SentenceTransformer(self.embedding_model_name, device=device)
         return self._embedder
         
     def _sanitize_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,44 +131,44 @@ class KnowledgeBase:
         domain: str = "pharmacy",
         strategy: str = "row",
         merge_key: Optional[str] = None,
+        file_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None
     ) -> IngestSummary:
         """
-        Batched, idempotent upsert of canonical records into Chroma.
+        Batched, idempotent upsert of canonical records into Chroma with live progress reporting.
 
         strategy="row"   (default) — one record = one chunk.
-        strategy="merge" — greedy, token-constrained merge: consecutive rows that
-                           share the same merge_key (e.g. "invoice_id") are
-                           concatenated into one chunk up to settings.chunk_size
-                           tokens. Rows with different keys (or key=None) start a
-                           new chunk. merge_key defaults to "invoice_id" when not
-                           supplied. This is overlap-free by design.
-
-        FIX (BUG 4): strategy="merge" is now implemented instead of silently
-        falling back to "row".
+        strategy="merge" — greedy, token-constrained merge
         """
         start_time = time.time()
+        
+        source_file = source_meta.get("source_file", "unknown")
+        filename = os.path.basename(source_file)
         
         if canonical_df.empty:
             return IngestSummary(
                 total_chunks=0,
-                source_file=source_meta.get("source_file", "unknown"),
+                source_file=source_file,
                 source_connector=source_meta.get("source_connector", "unknown"),
                 domain=domain,
-                time_taken_sec=0.0
+                time_taken_sec=0.0,
+                file_id=file_id
             )
+
+        if progress_callback:
+            progress_callback(35.0, "Preparing records for vectorization...")
 
         pack = get_domain_pack(domain)
         collection = self._get_chroma()
-        embedder = self._get_embedder()
+        embedder = self._get_embedder(progress_callback)
         
         # Clean canonical_df NaNs
         canonical_df = canonical_df.where(pd.notnull(canonical_df), None)
         records = canonical_df.to_dict(orient="records")
+        total_records = len(records)
         
-        batch_size = 64
+        batch_size = 128
         total_chunks = 0
-        
-        source_file = source_meta.get("source_file", "unknown")
         
         # Prepare dates for derived metadata
         if "date" in canonical_df.columns:
@@ -167,6 +196,8 @@ class KnowledgeBase:
                 derived_meta["expiry_year_month"] = str(exp_ym[i])
             base_meta = {
                 "source_file": source_file,
+                "filename": filename,
+                "file_id": file_id or "",
                 "source_connector": source_meta.get("source_connector", "unknown"),
                 "domain": domain,
                 "ingested_at": source_meta.get("ingested_at", pd.Timestamp.now().isoformat()),
@@ -182,23 +213,25 @@ class KnowledgeBase:
         texts: List[str] = []
         metadatas: List[dict] = []
 
-        def _flush():
+        def _flush(current_idx: int = 0):
             nonlocal total_chunks
             if not ids:
                 return
-            embeddings = embedder.encode(texts, batch_size=batch_size, normalize_embeddings=True).tolist()
+            if progress_callback:
+                pct = min(94.0, 35.0 + (58.0 * (current_idx / max(1, total_records))))
+                progress_callback(pct, f"Vectorizing records: {current_idx}/{total_records} ({pct:.0f}%)...")
+            embeddings = embedder.encode(texts, batch_size=batch_size, show_progress_bar=False, normalize_embeddings=True).tolist()
             collection.upsert(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
             total_chunks += len(ids)
             ids.clear(); texts.clear(); metadatas.clear()
 
         if strategy == "merge":
-            # --- Greedy token-constrained merge strategy (FIX BUG 4) ---
+            # --- Greedy token-constrained merge strategy ---
             try:
                 import tiktoken
                 encoding = tiktoken.get_encoding("cl100k_base")
                 count_tokens = lambda t: len(encoding.encode(t))
             except ImportError:
-                # Fallback: rough word count
                 count_tokens = lambda t: len(t.split())
 
             key_field = merge_key or "invoice_id"
@@ -207,7 +240,7 @@ class KnowledgeBase:
             current_texts: List[str] = []
             current_source_rows: List[int] = []
             current_token_count = 0
-            current_group_key = object()  # sentinel
+            current_group_key = object()
             chunk_group_idx = 0
 
             def _emit_merged_chunk():
@@ -215,10 +248,11 @@ class KnowledgeBase:
                 if not current_texts:
                     return
                 merged_text = " | ".join(current_texts)
-                # Use first source_row of the group as the chunk's provenance row
                 first_row_idx = current_source_rows[0]
                 meta = {
                     "source_file": source_file,
+                    "filename": filename,
+                    "file_id": file_id or "",
                     "source_connector": source_meta.get("source_connector", "unknown"),
                     "domain": domain,
                     "ingested_at": source_meta.get("ingested_at", pd.Timestamp.now().isoformat()),
@@ -239,7 +273,6 @@ class KnowledgeBase:
                 group_key = row.get(key_field)
                 source_row_val = int(row.get("source_row", i + 1))
 
-                # Start a new chunk if key changes OR adding would exceed limit
                 if (
                     group_key != current_group_key
                     or (current_token_count + row_tokens) > chunk_limit
@@ -253,12 +286,13 @@ class KnowledgeBase:
                 current_token_count += row_tokens
 
                 if len(ids) >= batch_size:
-                    _flush()
+                    _flush(i + 1)
 
-            _emit_merged_chunk()  # flush last group
+            _emit_merged_chunk()
+            if ids:
+                _flush(total_records)
 
         else:
-            # --- Default: one record = one chunk (strategy="row") ---
             for i, row in enumerate(records):
                 source_row = row.get("source_row", i + 1)
                 clean_meta = _build_row_meta(i, row)
@@ -269,19 +303,24 @@ class KnowledgeBase:
                 metadatas.append(clean_meta)
 
                 if len(ids) >= batch_size:
-                    _flush()
+                    _flush(i + 1)
 
-        _flush()
+            if ids:
+                _flush(total_records)
+
+        if progress_callback:
+            progress_callback(95.0, f"Finalizing {total_chunks} chunks in Knowledge Base...")
 
         return IngestSummary(
             total_chunks=total_chunks,
             source_file=source_file,
             source_connector=source_meta.get("source_connector", "unknown"),
             domain=domain,
-            time_taken_sec=time.time() - start_time
+            time_taken_sec=time.time() - start_time,
+            file_id=file_id
         )
         
-    def add_text_documents(self, docs: List[str], source_meta: dict, domain: str = "pharmacy") -> IngestSummary:
+    def add_text_documents(self, docs: List[str], source_meta: dict, domain: str = "pharmacy", file_id: Optional[str] = None) -> IngestSummary:
         """
         Ingest free-text documents using recursive token splitting.
         """
@@ -296,6 +335,7 @@ class KnowledgeBase:
         chunk_overlap = int(chunk_size * settings.chunk_overlap)
         
         source_file = source_meta.get("source_file", "unknown")
+        filename = os.path.basename(source_file)
         
         ids = []
         texts = []
@@ -319,6 +359,8 @@ class KnowledgeBase:
                 
                 meta = {
                     "source_file": source_file,
+                    "filename": filename,
+                    "file_id": file_id or "",
                     "source_connector": source_meta.get("source_connector", "text"),
                     "domain": domain,
                     "ingested_at": source_meta.get("ingested_at", pd.Timestamp.now().isoformat()),
@@ -365,15 +407,21 @@ class KnowledgeBase:
             source_file=source_file,
             source_connector=source_meta.get("source_connector", "text"),
             domain=domain,
-            time_taken_sec=time.time() - start_time
+            time_taken_sec=time.time() - start_time,
+            file_id=file_id
         )
 
-    def search(self, query: str, top_k: Optional[int] = None, filters: Optional[Dict[str, Any]] = None, domain: str = "pharmacy") -> List[RetrievedChunk]:
+    def search(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        domain: str = "pharmacy",
+        file_ids: Optional[List[str]] = None,
+        source_files: Optional[List[str]] = None
+    ) -> List[RetrievedChunk]:
         """
-        Filtered semantic search over the knowledge base.
-        
-        FIX (BUG 3): clamp top_k to the actual collection count. Chroma raises
-        InvalidArgumentError when n_results > number of items in the index.
+        Filtered semantic search over the knowledge base with optional file scoping.
         """
         top_k = top_k or settings.retrieval_top_k
         collection = self._get_chroma()
@@ -388,45 +436,161 @@ class KnowledgeBase:
         query_text = self.query_prefix + query
         query_embedding = embedder.encode([query_text], normalize_embeddings=True).tolist()[0]
         
-        where_clause = filters if filters else None
+        # Build filter clauses for Chroma metadata
+        clauses = []
+        if filters:
+            if "month" in filters and "date_from" not in filters:
+                try:
+                    clauses.append({"month": int(filters["month"])})
+                except (ValueError, TypeError):
+                    pass
+            if "year" in filters and "date_from" not in filters:
+                try:
+                    clauses.append({"year": int(filters["year"])})
+                except (ValueError, TypeError):
+                    pass
+            
+            for k, v in filters.items():
+                if k not in ("date_from", "date_to", "month", "year"):
+                    if isinstance(v, dict):
+                        clauses.append({k: v})
+                    elif isinstance(v, (str, int, float, bool)):
+                        clauses.append({k: v})
+            
+        if file_ids and len(file_ids) > 0:
+            if len(file_ids) == 1:
+                clauses.append({"file_id": file_ids[0]})
+            else:
+                clauses.append({"file_id": {"$in": file_ids}})
+        elif source_files and len(source_files) > 0:
+            if len(source_files) == 1:
+                clauses.append({"source_file": source_files[0]})
+            else:
+                clauses.append({"source_file": {"$in": source_files}})
+                
+        if len(clauses) == 0:
+            where_clause = None
+        elif len(clauses) == 1:
+            where_clause = clauses[0]
+        else:
+            where_clause = {"$and": clauses}
+
+        # If date range is active, expand query window to retrieve all candidates
+        has_date_range = bool(filters and ("date_from" in filters or "date_to" in filters))
+        query_k = min(count, max(top_k * 4, 30)) if has_date_range else top_k
         
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where_clause,
-            include=["documents", "metadatas", "distances"]
-        )
+        try:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=query_k,
+                where=where_clause,
+                include=["documents", "metadatas", "distances"]
+            )
+        except Exception:
+            # Fallback without filter if filter fails
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=query_k,
+                include=["documents", "metadatas", "distances"]
+            )
         
         retrieved = []
+        seen_chunk_ids = set()
+
+        def _is_date_in_range(meta_dict: dict) -> bool:
+            if not has_date_range or not filters:
+                return True
+            d_val = str(meta_dict.get("date", ""))[:10]
+            if not d_val or d_val in ("nan", "None", "NaT"):
+                return True
+            if "date_from" in filters and d_val < str(filters["date_from"])[:10]:
+                return False
+            if "date_to" in filters and d_val > str(filters["date_to"])[:10]:
+                return False
+            return True
+
         if results and results["documents"] and results["documents"][0]:
             docs = results["documents"][0]
             metas = results["metadatas"][0]
             distances = results["distances"][0]
             
             for doc, meta, dist in zip(docs, metas, distances):
-                # Remove passage prefix if present for clean display
+                if not _is_date_in_range(meta):
+                    continue
+
                 clean_text = doc
                 if self.passage_prefix and clean_text.startswith(self.passage_prefix):
                     clean_text = clean_text[len(self.passage_prefix):]
                     
-                # Cosine distance to similarity (1 - distance)
-                # Ensure sim is between 0 and 1
                 sim = max(0.0, 1.0 - dist)
                 source_row = meta.get("source_row")
+                c_id = f"{meta.get('source_file')}_{source_row}"
+                if c_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(c_id)
                 
                 retrieved.append(RetrievedChunk(
                     text=clean_text,
                     metadata=meta,
                     score=sim,
-                    source_row=source_row
+                    source_row=int(source_row) if source_row is not None else None
                 ))
-                
-        return retrieved
 
-    def delete_source(self, source_file: str):
-        """Remove all chunks from a specific source file."""
+        # If date range is active and semantic search missed any matching records in scoped dataset
+        if has_date_range and len(retrieved) < top_k:
+            try:
+                get_results = collection.get(where=where_clause, include=["documents", "metadatas"])
+                if get_results and get_results.get("documents"):
+                    for g_doc, g_meta in zip(get_results["documents"], get_results["metadatas"]):
+                        if not _is_date_in_range(g_meta):
+                            continue
+                        g_row = g_meta.get("source_row")
+                        g_id = f"{g_meta.get('source_file')}_{g_row}"
+                        if g_id in seen_chunk_ids:
+                            continue
+                        seen_chunk_ids.add(g_id)
+                        
+                        g_text = g_doc
+                        if self.passage_prefix and g_text.startswith(self.passage_prefix):
+                            g_text = g_text[len(self.passage_prefix):]
+
+                        retrieved.append(RetrievedChunk(
+                            text=g_text,
+                            metadata=g_meta,
+                            score=0.95,
+                            source_row=int(g_row) if g_row is not None else None
+                        ))
+            except Exception as e:
+                pass
+
+        return retrieved[:top_k]
+
+    def delete_source(self, source: Optional[str]):
+        """Remove all chunks from a specific source file (by file_id, source_file path, or filename)."""
+        if not source:
+            return
         collection = self._get_chroma()
-        collection.delete(where={"source_file": source_file})
+        if collection.count() == 0:
+            return
+            
+        fname = os.path.basename(source)
+        norm_path = source.replace("\\", "/")
+        
+        # Fast targeted deletion using $or where clause
+        try:
+            collection.delete(where={"$or": [
+                {"file_id": source},
+                {"filename": fname},
+                {"source_file": source},
+                {"source_file": norm_path}
+            ]})
+        except Exception:
+            # Fallback to single field deletion if $or syntax is unsupported
+            for key, val in [("file_id", source), ("filename", fname), ("source_file", norm_path)]:
+                try:
+                    collection.delete(where={key: val})
+                except Exception:
+                    pass
 
     def reset(self):
         """Delete and recreate the collection."""

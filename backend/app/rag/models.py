@@ -10,6 +10,8 @@ class ChatRequest(BaseModel):
     question: str = Field(..., description="The user's question.")
     session_id: str = Field(..., description="The conversation session ID.")
     domain: str = Field("pharmacy", description="The domain context (default pharmacy).")
+    file_ids: Optional[List[str]] = Field(None, description="Optional list of file IDs to scope the answer to.")
+    source_files: Optional[List[str]] = Field(None, description="Optional list of source file paths/names to scope the answer to.")
 
 class ChatResponse(BaseModel):
     answer: str = Field(..., description="The generated or computed answer.")

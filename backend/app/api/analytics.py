@@ -62,10 +62,22 @@ class KPIRequest(BaseModel):
     )
 
 
+_df_cache: Dict[str, Any] = {}
+
 def _load_canonical(req: KPIRequest):
-    """Connector -> mapping -> canonical DataFrame, mirroring /api/sources/validate."""
+    """Connector -> mapping -> canonical DataFrame with in-memory caching."""
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        mtime = os.path.getmtime(req.file_path)
+        mapping_str = str(sorted(req.mapping.items())) if req.mapping else "auto"
+        cache_key = f"{req.file_path}:{mtime}:{req.domain}:{req.sheet_name}:{req.table_or_query}:{mapping_str}"
+        
+        if cache_key in _df_cache:
+            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+    except Exception:
+        cache_key = None
 
     connector = detect_connector(req.file_path)
     kwargs: Dict[str, Any] = {}
@@ -84,7 +96,13 @@ def _load_canonical(req: KPIRequest):
 
     mapping = req.mapping or map_headers(list(raw.columns), domain_pack)
     canonical = apply_mapping(raw, mapping, domain=req.domain, keep_extras=True)
-    return canonical, mapping
+    
+    if cache_key:
+        if len(_df_cache) > 10:
+            _df_cache.pop(next(iter(_df_cache)))
+        _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
+
+    return canonical.copy(), mapping
 
 
 def _filters(req: KPIRequest) -> KPIFilters:

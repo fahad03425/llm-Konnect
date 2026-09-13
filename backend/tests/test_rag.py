@@ -128,3 +128,22 @@ def test_history_windowing():
     assert len(history) == 4
     assert history[0]["content"] == "q2"
     assert history[-1]["content"] == "a3"
+
+def test_row_count_intent_and_analytics_route():
+    q = "how many rows are in this data set"
+    assert classify_route(q) == RouteType.ANALYTICS
+
+    router = AnalyticsRouter()
+    records = [{"source_row": i, "amount": 100, "quantity": 1} for i in range(1, 101)]
+    comp, _ = router.compute(q, {}, records)
+    assert comp["row_count"]["value"] == 100.0
+    assert comp["row_count"]["status"] == "ok"
+    assert comp["row_count"]["provenance"]["rows_used"] == 100
+
+def test_confirmation_followup_route():
+    # When last turn was ANALYTICS, "are you sure" stays ANALYTICS
+    assert classify_route("are you sure", last_route=RouteType.ANALYTICS) == RouteType.ANALYTICS
+    assert classify_route("is that correct?", last_route=RouteType.ANALYTICS) == RouteType.ANALYTICS
+    # Standalone without prior analytics defaults to RAG
+    assert classify_route("are you sure") == RouteType.RAG
+

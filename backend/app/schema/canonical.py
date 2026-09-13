@@ -103,25 +103,28 @@ def validate_core_dataframe(df: pd.DataFrame, table_kind: str = "auto") -> List[
 
     # Determine table kind if auto
     has_date_data = "date" in valid_df.columns and valid_df["date"].notna().any()
-    has_prod_data = ("product_id" in valid_df.columns or "description" in valid_df.columns)
+    item_cols = ["product_id", "description", "medicine_name", "generic_name", "brand_name", "item_name", "manufacturer", "name", "brand", "product"]
+    has_prod_data = any(col in valid_df.columns for col in item_cols)
     
     if table_kind == "auto":
-        if not has_date_data and has_prod_data:
+        if not has_date_data or (has_prod_data and "amount" not in valid_df.columns):
             inferred_kind = "inventory"
         else:
             inferred_kind = "transactions"
     else:
         inferred_kind = table_kind
 
-
     # 3. MISSING_REQUIRED_FIELD (error)
     if inferred_kind == "inventory":
-        # Inventory needs product_id or description
+        # Inventory needs product_id, description, or any recognized item identifier
         has_prod = pd.Series(False, index=valid_df.index)
-        if "product_id" in valid_df.columns:
-            has_prod = valid_df["product_id"].notna() & (valid_df["product_id"].astype(str).str.strip() != "")
-        if "description" in valid_df.columns:
-            has_prod = has_prod | (valid_df["description"].notna() & (valid_df["description"].astype(str).str.strip() != ""))
+        for col_name in item_cols:
+            if col_name in valid_df.columns:
+                has_prod = has_prod | (valid_df[col_name].notna() & (valid_df[col_name].astype(str).str.strip() != ""))
+        
+        if not has_prod.any() and data_cols:
+            # Fallback: if data columns exist, accept rows with non-empty data
+            has_prod = pd.Series(True, index=valid_df.index)
         
         req_missing = ~has_prod
         if req_missing.any():

@@ -8,6 +8,7 @@ class IngestSummary(BaseModel):
     source_connector: str = Field(..., description="The connector used (e.g., CSVConnector).")
     domain: str = Field(..., description="The domain pack used for ingestion.")
     time_taken_sec: float = Field(..., description="Time taken to ingest in seconds.")
+    file_id: Optional[str] = Field(None, description="Unique identifier for the registered source file.")
 
 class RetrievedChunk(BaseModel):
     text: str = Field(..., description="The natural language chunk text.")

@@ -2,10 +2,11 @@
 
 import time
 import json
-from typing import Generator, List, Dict, Any, Optional
+from typing import Generator, List, Dict, Any, Optional, Tuple
 
 from app.core.config import settings
 from app.core.llm import llm
+from app.ingestion.models import RetrievedChunk
 from app.ingestion.store import KnowledgeBase
 from app.rag.models import ChatRequest, ChatResponse, SourceReference
 from app.rag.history import session_manager
@@ -41,6 +42,8 @@ class RAGChat:
         if route == RouteType.RAG:
             base_prompt += (
                 "CRITICAL: Answer ONLY using the provided Context Records. "
+                "Each record in Context Records specifies its dataset/source filename and row (e.g. [Source File: filename.csv, Row: 12]). "
+                "When asked which file, dataset, or source the information comes from, cite these source filenames accurately. "
                 "Do NOT use external knowledge. "
                 "Do NOT perform mathematical calculations (summing, averaging, counting) on the records. "
                 "If the answer requires adding up numbers or is not in the context, explicitly say "
@@ -50,15 +53,14 @@ class RAGChat:
             base_prompt += (
                 "CRITICAL: The user asked a numeric or aggregate question. "
                 "The actual answer has been calculated by the Analytics Engine and provided as 'Computed Values'. "
+                "For any metric with \"status\": \"ok\", state its computed \"value\" and \"unit\" accurately and clearly. "
                 "You MUST NARRATE the Computed Values exactly as provided. "
                 "Do NOT recalculate or guess numbers.\n"
                 "If a value has \"is_estimate\": true, it is a FORECAST, not a measured fact. "
                 "Say so plainly and give the range from \"estimate_range\" "
                 "(for example: 'roughly X, likely between A and B'). "
                 "Never present a forecast as a certainty and never narrow the range.\n"
-                "If a value has \"status\": \"unavailable\", the figure could NOT be computed. "
-                "Tell the user it cannot be determined and give the \"reason\" verbatim in plain words. "
-                "Do NOT substitute an estimate of your own, and do NOT treat it as zero."
+                "ONLY if a metric explicitly has \"status\": \"unavailable\", tell the user that specific metric cannot be determined and state its \"reason\" verbatim."
             )
         elif route == RouteType.CHITCHAT:
             base_prompt += (
@@ -68,7 +70,21 @@ class RAGChat:
             
         return base_prompt
 
+    def _format_context_records(self, chunks) -> str:
+        import os
+        lines = []
+        for c in chunks:
+            raw_src = c.metadata.get("source_file") or c.metadata.get("filename") or ""
+            filename = os.path.basename(raw_src) if raw_src else "dataset"
+            row_idx = c.source_row if c.source_row is not None else c.metadata.get("source_row", "")
+            
+            row_str = f", Row: #{row_idx}" if row_idx != "" else ""
+            meta_tag = f"[Source File: {filename}{row_str}]"
+            lines.append(f"- {meta_tag} {c.text}")
+        return "Context Records:\n" + "\n".join(lines)
+
     def _format_sources(self, retrieved_chunks) -> List[SourceReference]:
+        import os
         sources = []
         for c in retrieved_chunks:
             meta = c.metadata
@@ -83,20 +99,140 @@ class RAGChat:
             row_idx = c.source_row if c.source_row is not None else meta.get("source_row")
             label = ", ".join(label_parts) if label_parts else f"Record {row_idx}"
             
+            raw_src = meta.get("source_file") or meta.get("filename") or "unknown"
+            filename = os.path.basename(raw_src) if raw_src else "unknown"
+            
             sources.append(SourceReference(
-                source_file=meta.get("source_file", "unknown"),
+                source_file=filename,
                 source_row=row_idx,
                 label=label
             ))
         return sources
 
 
+    def _format_computed_values_context(self, computed_values: dict) -> str:
+        lines = ["Computed Values from Analytics Engine:"]
+        for key, item in computed_values.items():
+            name = item.get("name", key)
+            status = item.get("status", "ok")
+            val = item.get("value")
+            unit = item.get("unit", "")
+            if status == "ok" and val is not None:
+                if isinstance(val, (int, float)):
+                    if unit.lower() in ("pkr", "rs", "usd", "eur", "gbp") or unit == "PKR":
+                        formatted_val = f"{val:,.2f} {unit}"
+                    elif unit == "percent":
+                        formatted_val = f"{val:.2f}%"
+                    elif unit == "count":
+                        formatted_val = f"{int(val):,} transactions"
+                    elif unit == "rows":
+                        formatted_val = f"{int(val):,} rows"
+                    else:
+                        formatted_val = f"{int(val):,} {unit}".strip() if isinstance(val, int) or val.is_integer() else f"{val:,.2f} {unit}".strip()
+                else:
+                    formatted_val = f"{val} {unit}".strip()
+                
+                period_str = ""
+                if item.get("period") and isinstance(item["period"], dict):
+                    p = item["period"]
+                    if p.get("start") and p.get("end"):
+                        period_str = f" for period {p.get('start')} to {p.get('end')}"
+                
+                rows = item.get("provenance", {}).get("rows_used", "")
+                rows_str = f" (computed over {rows:,} matching records)" if rows else ""
+                lines.append(f"- {name}: {formatted_val}{period_str}{rows_str}")
+            elif status == "unavailable":
+                reason = item.get("reason", "data unavailable")
+                lines.append(f"- {name}: UNAVAILABLE (Reason: {reason})")
+        return "\n".join(lines)
+
+    def _get_records_for_analytics(
+        self, request: ChatRequest, filters: Dict[str, Any]
+    ) -> Tuple[List[dict], List[RetrievedChunk]]:
+        """
+        Retrieves full dataset records from cached canonical DataFrames for deterministic
+        whole-dataset analytics, plus a small top_k sample of chunks for citation sources.
+        """
+        import os
+        import pandas as pd
+        from app.ingestion.registry import file_registry
+        from app.schema.domain import get_domain_pack
+
+        target_files = []
+        if request.file_ids:
+            for fid in request.file_ids:
+                rec = file_registry.get_file_by_id(fid)
+                if rec and rec.file_path and os.path.exists(rec.file_path):
+                    target_files.append(rec)
+        elif request.source_files:
+            for sf in request.source_files:
+                rec = file_registry.get_file_by_path(sf)
+                if rec and rec.file_path and os.path.exists(rec.file_path):
+                    target_files.append(rec)
+                elif os.path.exists(sf):
+                    target_files.append(type("TempFileRec", (), {"file_path": sf, "domain": request.domain, "filename": os.path.basename(sf)})())
+
+        dfs = []
+        if target_files:
+            for tf in target_files:
+                try:
+                    from app.api.analytics import _load_canonical, KPIRequest
+                    kpi_req = KPIRequest(file_path=tf.file_path, domain=getattr(tf, "domain", request.domain))
+                    df, _ = _load_canonical(kpi_req)
+                    if df is not None and not df.empty:
+                        if "source_row" not in df.columns:
+                            df["source_row"] = df.index + 2
+                        if "source_file" not in df.columns:
+                            df["source_file"] = getattr(tf, "filename", os.path.basename(tf.file_path))
+                        dfs.append(df)
+                except Exception:
+                    continue
+
+        if dfs:
+            combined_df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+            records = combined_df.to_dict(orient="records")
+            
+            # Fast in-memory citation chunks from top matching records
+            sample_rows = combined_df.head(5).to_dict(orient="records")
+            pack = None
+            try:
+                pack = get_domain_pack(request.domain)
+            except Exception:
+                pass
+
+            citation_chunks = [
+                RetrievedChunk(
+                    text=pack.row_to_text(r) if pack else str(r),
+                    metadata=r,
+                    score=1.0,
+                    source_row=r.get("source_row")
+                )
+                for r in sample_rows
+            ]
+            return records, citation_chunks
+
+        # Fallback: if not explicitly scoped or running in mocked test environment, search KB
+        citation_chunks = self.kb.search(
+            request.question,
+            top_k=50,
+            filters=filters,
+            domain=request.domain,
+            file_ids=request.file_ids,
+            source_files=request.source_files
+        )
+        if citation_chunks:
+            return [c.metadata for c in citation_chunks], citation_chunks
+
+        return [], []
+
     def ask(self, request: ChatRequest) -> ChatResponse:
         """End-to-end non-streaming RAG pipeline."""
         start_time = time.time()
         
         question = self._normalize_question(request.question)
-        route = classify_route(question)
+        last_turn = session_manager.get_last_assistant_turn(request.session_id)
+        last_route = last_turn.get("route") if last_turn else None
+        route = classify_route(question, last_route=last_route)
         filters = extract_filters(question, request.domain)
         
         computed_values = None
@@ -108,42 +244,47 @@ class RAGChat:
             pass
             
         elif route == RouteType.ANALYTICS:
-            # 1. Retrieve (to get metadata for the fallback)
-            # In Module 6.6, this will be a direct DB query.
-            chunks = self.kb.search(question, top_k=20, filters=filters, domain=request.domain)
-            records = [c.metadata for c in chunks]
+            records, citation_chunks = self._get_records_for_analytics(request, filters)
             
-            # 2. Compute deterministically via the Module 6.6 KPI engine.
-            #    `domain` is passed so domain-pack KPIs (e.g. pharmacy expiry) and
-            #    their question vocabulary apply.
+            # Compute deterministically via the Module 6.6 KPI engine.
             computed_values, source_rows = self.analytics_router.compute(
                 question, filters, records, request.domain
             )
             if computed_values:
-                context_text = "Computed Values from Analytics Engine:\n" + json.dumps(computed_values, indent=2)
-                if chunks:
-                     # Only keep sources matching the rows used
-                     sources = self._format_sources([c for c in chunks if c.source_row in source_rows])
+                context_text = self._format_computed_values_context(computed_values)
+                if citation_chunks:
+                    matched = [c for c in citation_chunks if c.source_row in source_rows] if source_rows else []
+                    sources = self._format_sources(matched if matched else citation_chunks[:5])
+                else:
+                    sources = []
             else:
-                 context_text = "No records found to compute the answer."
+                context_text = "No records found to compute the answer."
                  
         elif route == RouteType.RAG:
-            # RAG route: strict lookup
-            chunks = self.kb.search(question, top_k=settings.retrieval_top_k, filters=filters, domain=request.domain)
+            # Dynamic retrieval depth: widen when date or category filters are active
+            retrieval_k = 25 if filters else settings.retrieval_top_k
+            chunks = self.kb.search(
+                question,
+                top_k=retrieval_k,
+                filters=filters,
+                domain=request.domain,
+                file_ids=request.file_ids,
+                source_files=request.source_files
+            )
             
             if not chunks:
-                 # Short-circuit without LLM call to save time
-                 return ChatResponse(
-                     answer="I couldn't find anything about that in your data.",
-                     route=route,
-                     sources=[],
-                     computed_values=None,
-                     session_id=request.session_id,
-                     timing=time.time() - start_time
-                 )
+                # Short-circuit without LLM call to save time
+                return ChatResponse(
+                    answer="I couldn't find anything about that in the selected data.",
+                    route=route,
+                    sources=[],
+                    computed_values=None,
+                    session_id=request.session_id,
+                    timing=time.time() - start_time
+                )
                  
             sources = self._format_sources(chunks)
-            context_text = "Context Records:\n" + "\n".join([f"- {c.text}" for c in chunks])
+            context_text = self._format_context_records(chunks)
             
         # Build prompt messages
         system_prompt = self._get_system_prompt(request.domain, route)
@@ -154,18 +295,27 @@ class RAGChat:
         
         user_msg = question
         if context_text:
-             user_msg = f"{context_text}\n\nQuestion: {question}"
+            user_msg = f"{context_text}\n\nQuestion: {question}"
              
         messages.append({"role": "user", "content": user_msg})
         
         # Call LLM
         try:
-             answer = llm.chat(messages=messages)
+            answer = llm.chat(messages=messages)
         except Exception as e:
-             answer = f"Error: LLM unavailable ({str(e)}). I am returning offline results if any."
+            answer = f"Error: LLM unavailable ({str(e)}). I am returning offline results if any."
              
-        session_manager.append_turn(request.session_id, "user", question)
-        session_manager.append_turn(request.session_id, "assistant", answer)
+        timing = round(time.time() - start_time, 2)
+        session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+        session_manager.append_turn(
+            request.session_id,
+            "assistant",
+            answer,
+            domain=request.domain,
+            route=route,
+            sources=[s.dict() if hasattr(s, 'dict') else s for s in sources] if sources else None,
+            timing=timing
+        )
         
         return ChatResponse(
             answer=answer,
@@ -173,76 +323,98 @@ class RAGChat:
             sources=sources,
             computed_values=computed_values,
             session_id=request.session_id,
-            timing=time.time() - start_time
+            timing=timing
         )
         
     def ask_stream(self, request: ChatRequest) -> Generator[str, None, None]:
-         """End-to-end streaming RAG pipeline."""
-         question = self._normalize_question(request.question)
-         route = classify_route(question)
-         filters = extract_filters(question, request.domain)
-         
-         computed_values = None
-         sources = []
-         context_text = ""
-         
-         if route == RouteType.CHITCHAT:
-             pass
-         elif route == RouteType.ANALYTICS:
-             chunks = self.kb.search(question, top_k=20, filters=filters, domain=request.domain)
-             records = [c.metadata for c in chunks]
-             computed_values, source_rows = self.analytics_router.compute(
-                 question, filters, records, request.domain
-             )
-             if computed_values:
-                 context_text = "Computed Values from Analytics Engine:\n" + json.dumps(computed_values, indent=2)
-                 if chunks:
-                     sources = self._format_sources([c for c in chunks if c.source_row in source_rows])
-             else:
-                 context_text = "No records found to compute the answer."
+        """End-to-end streaming RAG pipeline."""
+        start_time = time.time()
+        question = self._normalize_question(request.question)
+        last_turn = session_manager.get_last_assistant_turn(request.session_id)
+        last_route = last_turn.get("route") if last_turn else None
+        route = classify_route(question, last_route=last_route)
+        filters = extract_filters(question, request.domain)
+        
+        computed_values = None
+        sources = []
+        context_text = ""
+        
+        if route == RouteType.CHITCHAT:
+            pass
+        elif route == RouteType.ANALYTICS:
+            records, citation_chunks = self._get_records_for_analytics(request, filters)
+            computed_values, source_rows = self.analytics_router.compute(
+                question, filters, records, request.domain
+            )
+            if computed_values:
+                context_text = self._format_computed_values_context(computed_values)
+                if citation_chunks:
+                    matched = [c for c in citation_chunks if c.source_row in source_rows] if source_rows else []
+                    sources = self._format_sources(matched if matched else citation_chunks[:5])
+                else:
+                    sources = []
+            else:
+                context_text = "No records found to compute the answer."
                  
-         elif route == RouteType.RAG:
-             chunks = self.kb.search(question, top_k=settings.retrieval_top_k, filters=filters, domain=request.domain)
-             if not chunks:
-                  yield json.dumps({
-                      "chunk": "I couldn't find anything about that in your data.",
-                      "route": route,
-                      "sources": [],
-                      "computed_values": None
-                  })
-                  return
-                  
-             sources = self._format_sources(chunks)
-             context_text = "Context Records:\n" + "\n".join([f"- {c.text}" for c in chunks])
+        elif route == RouteType.RAG:
+            retrieval_k = 25 if filters else settings.retrieval_top_k
+            chunks = self.kb.search(
+                question,
+                top_k=retrieval_k,
+                filters=filters,
+                domain=request.domain,
+                file_ids=request.file_ids,
+                source_files=request.source_files
+            )
+            if not chunks:
+                yield json.dumps({
+                    "chunk": "I couldn't find anything about that in the selected data.",
+                    "route": route,
+                    "sources": [],
+                    "computed_values": None
+                }) + "\n"
+                return
+                 
+            sources = self._format_sources(chunks)
+            context_text = self._format_context_records(chunks)
+            
+        system_prompt = self._get_system_prompt(request.domain, route)
+        history = session_manager.get_history(request.session_id)
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        
+        user_msg = question
+        if context_text:
+            user_msg = f"{context_text}\n\nQuestion: {question}"
              
-         system_prompt = self._get_system_prompt(request.domain, route)
-         history = session_manager.get_history(request.session_id)
-         
-         messages = [{"role": "system", "content": system_prompt}]
-         messages.extend(history)
-         
-         user_msg = question
-         if context_text:
-              user_msg = f"{context_text}\n\nQuestion: {question}"
-              
-         messages.append({"role": "user", "content": user_msg})
-         
-         full_answer = ""
-         try:
-             for chunk in llm.chat_stream(messages=messages):
-                 full_answer += chunk
-                 # Yield JSON encoded chunks for SSE
-                 yield json.dumps({
-                     "chunk": chunk,
-                     "route": route,
-                     "sources": [s.dict() for s in sources],
-                     "computed_values": computed_values
-                 }) + "\n"
-         except Exception as e:
-              yield json.dumps({"error": str(e)}) + "\n"
-              return
-              
-         session_manager.append_turn(request.session_id, "user", question)
-         session_manager.append_turn(request.session_id, "assistant", full_answer)
+        messages.append({"role": "user", "content": user_msg})
+        
+        full_answer = ""
+        try:
+            for chunk in llm.chat_stream(messages=messages):
+                full_answer += chunk
+                yield json.dumps({
+                    "chunk": chunk,
+                    "route": route,
+                    "sources": [s.dict() for s in sources],
+                    "computed_values": computed_values
+                }) + "\n"
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+            return
+             
+        timing = round(time.time() - start_time, 2)
+        session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+        session_manager.append_turn(
+            request.session_id,
+            "assistant",
+            full_answer,
+            domain=request.domain,
+            route=route,
+            sources=[s.dict() if hasattr(s, 'dict') else s for s in sources] if sources else None,
+            timing=timing
+        )
 
 rag_chat = RAGChat()
+

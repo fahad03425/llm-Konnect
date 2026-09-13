@@ -10,6 +10,7 @@ const TopBar = () => {
         switch (path) {
             case '/': return `${activeDomainMeta.name} Dashboard`;
             case '/connect': return 'Connect Source';
+            case '/files': return 'Uploaded Files & Datasets';
             case '/chat': return 'RAG Chatbot';
             case '/reports': return 'Report Export';
             default: return 'LLM-KONNECT';

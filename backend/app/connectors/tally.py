@@ -35,9 +35,25 @@ class LocalDBConnector(Connector):
                 f"Failed to connect to MS Access database. Ensure you have the correct Access ODBC drivers installed. Error: {e}"
             )
 
+    def _get_default_sqlite_table(self) -> Optional[str]:
+        """Auto-detect the first user table in a SQLite database."""
+        try:
+            with self._get_sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+                tables = [r[0] for r in cursor.fetchall()]
+                return tables[0] if tables else None
+        except Exception:
+            return None
+
     def fetch(self, table_or_query: Optional[str] = None, **kwargs) -> pd.DataFrame:
         if not table_or_query:
-            raise ValueError("Must provide 'table_or_query' to fetch from DB")
+            if self.db_type == "sqlite":
+                table_or_query = self._get_default_sqlite_table()
+                if not table_or_query:
+                    return pd.DataFrame()
+            else:
+                raise ValueError("Must provide 'table_or_query' to fetch from DB")
             
         if self.db_type == "tally":
             raise NotImplementedError(
@@ -62,7 +78,12 @@ class LocalDBConnector(Connector):
 
     def preview(self, n: int = 5, table_or_query: Optional[str] = None, **kwargs) -> pd.DataFrame:
         if not table_or_query:
-            raise ValueError("Must provide 'table_or_query' to preview from DB")
+            if self.db_type == "sqlite":
+                table_or_query = self._get_default_sqlite_table()
+                if not table_or_query:
+                    return pd.DataFrame()
+            else:
+                raise ValueError("Must provide 'table_or_query' to preview from DB")
             
         if self.db_type == "tally":
             raise NotImplementedError(

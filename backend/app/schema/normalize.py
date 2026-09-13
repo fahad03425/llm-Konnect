@@ -103,7 +103,14 @@ def _clean_date(val: any) -> pd.Timestamp:
         except Exception:
             pass
 
-    # General parse — dayfirst for Pakistani convention
+    # ISO format YYYY-MM-DD or YYYY/MM/DD
+    if re.match(r'^\d{4}[/-]\d{1,2}[/-]\d{1,2}', val_str):
+        try:
+            return pd.to_datetime(val_str, yearfirst=True, dayfirst=False)
+        except Exception:
+            pass
+
+    # General parse — dayfirst for Pakistani convention (DD/MM/YYYY or DD-MM-YYYY)
     try:
         return pd.to_datetime(val_str, dayfirst=True)
     except Exception:

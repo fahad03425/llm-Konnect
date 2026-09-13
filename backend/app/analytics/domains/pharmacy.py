@@ -86,6 +86,10 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
         ("product_demand_forecast", "demand_forecast"),
     ),
     (
+        ("expired or expiring", "expired and expiring", "expired or near", "expired aur expiring"),
+        ("expired_stock_value", "expired_item_count", "near_expiry_total", "near_expiry_item_count"),
+    ),
+    (
         ("expired", "already expired", "dead stock", "expire ho gaya", "expire ho chuka"),
         ("expired_stock_value", "expired_item_count"),
     ),
@@ -96,6 +100,12 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
             "khatam hone", "miyad", "meyad",
         ),
         ("near_expiry_total", "expiring_value_30d", "near_expiry_item_count"),
+    ),
+    (
+        (
+            "schedule", "scheduled", "prescription", "rx", "controlled", "narcotic",
+        ),
+        ("scheduled_transaction_count", "scheduled_units_sold", "scheduled_sales_value"),
     ),
 ]
 
@@ -539,6 +549,124 @@ def _make_bucket_kpi(low: int, high: int):
     return _bucket
 
 
+def _is_scheduled(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip().str.lower()
+    return s.isin(["yes", "true", "1", "y", "schedule", "sched", "rx", "controlled"]) | s.str.startswith("schedule")
+
+
+def scheduled_transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """Distinct transactions for scheduled / prescription medicines."""
+    from app.analytics.kpi import classify_transactions, _no_rows, _period
+    txn = classify_transactions(df)
+    formula = "count of distinct invoice_id over sale rows with schedule_flag"
+    
+    if "schedule_flag" not in df.columns and "prescription_ref" not in df.columns:
+        return unavailable(
+            "scheduled_transaction_count", "Scheduled Medicine Transactions", UNIT_COUNT, formula,
+            "neither 'schedule_flag' nor 'prescription_ref' column is present",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+    
+    sched_mask = pd.Series(False, index=df.index)
+    if "schedule_flag" in df.columns:
+        sched_mask = sched_mask | _is_scheduled(df["schedule_flag"])
+    if "prescription_ref" in df.columns:
+        sched_mask = sched_mask | (df["prescription_ref"].notna() & (df["prescription_ref"].astype(str).str.strip() != ""))
+        
+    contributing = txn.sale & sched_mask
+    columns = [c for c in ["invoice_id", "schedule_flag", "prescription_ref"] if c in df.columns]
+    provenance = build_provenance(df, contributing, filters, columns, list(txn.notes))
+    
+    if "invoice_id" in df.columns:
+        val = float(df.loc[contributing, "invoice_id"].astype(str).nunique())
+    else:
+        val = float(contributing.sum())
+        
+    return KPIResult(
+        key="scheduled_transaction_count", name="Scheduled Medicine Transactions",
+        value=val, unit=UNIT_COUNT, formula=formula, provenance=provenance,
+        period=_period(df, contributing)
+    )
+
+
+def scheduled_units_sold(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """Total units sold for scheduled / prescription medicines."""
+    from app.analytics.kpi import classify_transactions, _no_rows, _period
+    txn = classify_transactions(df)
+    formula = "sum of quantity over sale rows with schedule_flag"
+    
+    if "schedule_flag" not in df.columns and "prescription_ref" not in df.columns:
+        return unavailable(
+            "scheduled_units_sold", "Scheduled Units Sold", UNIT_COUNT, formula,
+            "neither 'schedule_flag' nor 'prescription_ref' column is present",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+        
+    sched_mask = pd.Series(False, index=df.index)
+    if "schedule_flag" in df.columns:
+        sched_mask = sched_mask | _is_scheduled(df["schedule_flag"])
+    if "prescription_ref" in df.columns:
+        sched_mask = sched_mask | (df["prescription_ref"].notna() & (df["prescription_ref"].astype(str).str.strip() != ""))
+        
+    qty = pd.to_numeric(df["quantity"], errors="coerce") if "quantity" in df.columns else None
+    if qty is None:
+        return unavailable(
+            "scheduled_units_sold", "Scheduled Units Sold", UNIT_COUNT, formula,
+            "canonical 'quantity' column is not present",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+        
+    contributing = txn.sale & sched_mask & qty.notna()
+    columns = [c for c in ["quantity", "schedule_flag", "prescription_ref"] if c in df.columns]
+    provenance = build_provenance(df, contributing, filters, columns, list(txn.notes))
+    val = float(qty[contributing].sum()) if contributing.any() else 0.0
+    
+    return KPIResult(
+        key="scheduled_units_sold", name="Scheduled Units Sold",
+        value=val, unit=UNIT_COUNT, formula=formula, provenance=provenance,
+        period=_period(df, contributing)
+    )
+
+
+def scheduled_sales_value(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """Total sales amount for scheduled / prescription medicines."""
+    from app.analytics.kpi import classify_transactions, _amount_series, _no_rows, _period
+    txn = classify_transactions(df)
+    formula = "sum of amount over sale rows with schedule_flag"
+    
+    if "schedule_flag" not in df.columns and "prescription_ref" not in df.columns:
+        return unavailable(
+            "scheduled_sales_value", "Scheduled Sales Value", UNIT_CURRENCY, formula,
+            "neither 'schedule_flag' nor 'prescription_ref' column is present",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+        
+    amounts, cols, notes = _amount_series(df)
+    if amounts is None:
+        return unavailable(
+            "scheduled_sales_value", "Scheduled Sales Value", UNIT_CURRENCY, formula,
+            "no monetary column available: need 'amount', or both 'unit_price' and 'quantity'",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+        
+    sched_mask = pd.Series(False, index=df.index)
+    if "schedule_flag" in df.columns:
+        sched_mask = sched_mask | _is_scheduled(df["schedule_flag"])
+    if "prescription_ref" in df.columns:
+        sched_mask = sched_mask | (df["prescription_ref"].notna() & (df["prescription_ref"].astype(str).str.strip() != ""))
+        
+    contributing = txn.sale & sched_mask & amounts.notna()
+    columns = [c for c in cols + ["schedule_flag", "prescription_ref"] if c in df.columns]
+    provenance = build_provenance(df, contributing, filters, columns, list(txn.notes) + notes)
+    val = float(_round_money(amounts[contributing].sum())) if contributing.any() else 0.0
+    
+    return KPIResult(
+        key="scheduled_sales_value", name="Scheduled Sales Value",
+        value=val, unit=UNIT_CURRENCY, formula=formula, provenance=provenance,
+        period=_period(df, contributing)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -581,6 +709,21 @@ def register(engine, domain: str = "pharmacy") -> None:
             "Near-expiry stock value grouped by manufacturer (or supplier).",
             expiry_by_manufacturer, domain=domain, tags=("risk", "breakdown"),
         ),
+        KPISpec(
+            "scheduled_transaction_count", "Scheduled Medicine Transactions", UNIT_COUNT,
+            "Distinct transactions for scheduled or prescription medicines.",
+            scheduled_transaction_count, domain=domain, tags=("volume", "compliance"),
+        ),
+        KPISpec(
+            "scheduled_units_sold", "Scheduled Units Sold", UNIT_COUNT,
+            "Total units sold for scheduled or prescription medicines.",
+            scheduled_units_sold, domain=domain, tags=("volume", "compliance"),
+        ),
+        KPISpec(
+            "scheduled_sales_value", "Scheduled Sales Value", UNIT_CURRENCY,
+            "Total sales value for scheduled or prescription medicines.",
+            scheduled_sales_value, domain=domain, tags=("money", "compliance"),
+        ),
     ]
 
     for low, high in _bucket_bands():
@@ -595,3 +738,4 @@ def register(engine, domain: str = "pharmacy") -> None:
 
     for spec in specs:
         engine.register(spec, replace=True)
+

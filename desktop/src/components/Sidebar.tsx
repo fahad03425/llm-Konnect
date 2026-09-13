@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import {
     LayoutDashboard,
     Database,
+    Files,
     MessageSquare,
     FileOutput,
     Settings,
@@ -31,6 +32,10 @@ const Sidebar = () => {
                 <NavLink to="/connect" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <Database size={18} />
                     <span>Connect Source</span>
+                </NavLink>
+                <NavLink to="/files" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Files size={18} />
+                    <span>Uploaded Files</span>
                 </NavLink>
                 <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <MessageSquare size={18} />
