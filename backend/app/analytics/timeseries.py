@@ -208,8 +208,20 @@ def build_series(
     totals = grouped["value"].sum()
     counts = grouped["value"].size()
 
+    if totals.empty:
+        return TimeSeries(
+            ok=False,
+            granularity=granularity,
+            metric=metric,
+            unit=unit,
+            reason="no transactions found in the specified date range",
+            notes=tuple(notes),
+            columns_used=tuple(columns + ["date"]),
+        )
+
     # Materialise every calendar period between the first and last observation.
     full_index = pd.period_range(totals.index.min(), totals.index.max(), freq=freq)
+
     filled = totals.reindex(full_index, fill_value=0.0)
     filled_counts = counts.reindex(full_index, fill_value=0)
     observed = tuple(bool(p in set(totals.index)) for p in full_index)
@@ -349,7 +361,7 @@ def movers_rows(table: pd.DataFrame, group_column: str, rising: bool, top_n: int
             "recent": round(float(row["recent"]), 2),
             "prior": round(float(row["prior"]), 2),
             "change": round(float(row["change"]), 2),
-            "change_pct": None if row["change_pct"] is None else float(row["change_pct"]),
+            "change_pct": None if pd.isna(row["change_pct"]) else float(row["change_pct"]),
         }
         for _, row in ordered.head(top_n).iterrows()
     ]

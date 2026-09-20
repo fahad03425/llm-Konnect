@@ -22,3 +22,4 @@ desktop/node_modules/
 desktop/dist/
 
 data/uploads/
+*.log

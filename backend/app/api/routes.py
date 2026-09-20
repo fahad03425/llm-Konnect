@@ -7,6 +7,7 @@ import shutil
 import pandas as pd
 
 from app.connectors.base import detect_connector
+from app.ingestion.registry import file_registry
 from app.schema.mapper import map_headers, suggest_mapping
 from app.schema.normalize import normalize, apply_mapping
 from app.schema.validate import validate, clean
@@ -32,6 +33,18 @@ async def upload_file(file: UploadFile = File(...)):
         
     # Return with normalized slashes so it can be easily copied to other endpoints
     normalized_path = file_path.replace("\\", "/")
+    
+    # Register file immediately so it appears on Uploaded Files page in real-time
+    try:
+        file_registry.set_file_status(
+            file_path=normalized_path,
+            status="processing",
+            progress=20.0,
+            step_text="Step 1: Uploaded (Ready for Preview)"
+        )
+    except Exception:
+        pass
+
     return {
         "message": "File uploaded successfully",
         "file_path": normalized_path,
@@ -83,6 +96,16 @@ def preview_source(req: PreviewRequest):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
+        try:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status="processing",
+                progress=35.0,
+                step_text="Step 2: Preview & Schema Analysis"
+            )
+        except Exception:
+            pass
+
         connector = detect_connector(req.file_path)
         
         kwargs = {}
@@ -128,6 +151,16 @@ def confirm_mapping(req: MappingConfirmRequest):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
+        try:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status="processing",
+                progress=55.0,
+                step_text="Step 3: Headers Mapped"
+            )
+        except Exception:
+            pass
+
         connector = detect_connector(req.file_path)
         kwargs = {}
         if req.sheet_name:
@@ -174,6 +207,16 @@ def normalize_source(req: NormalizeRequest):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
+        try:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status="processing",
+                progress=70.0,
+                step_text="Step 4: Normalizing & Cleaning Data"
+            )
+        except Exception:
+            pass
+
         connector = detect_connector(req.file_path)
         kwargs = {}
         if req.sheet_name:
@@ -218,6 +261,16 @@ def validate_source(req: ValidateRequest):
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
+        try:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status="processing",
+                progress=85.0,
+                step_text="Step 5: Validating Data Quality"
+            )
+        except Exception:
+            pass
+
         connector = detect_connector(req.file_path)
         kwargs = {}
         if req.sheet_name:
@@ -303,6 +356,40 @@ class WatcherConfigRequest(BaseModel):
 def list_available_domains():
     from app.schema.domain import registry
     return {"domains": registry.available_domains()}
+
+class SQLDiscoverRequest(BaseModel):
+    connection_string: str
+    db_type: str = "sqlite"
+    domain: str = "pharmacy"
+    sample_n: int = 5
+
+@router.post("/sql/discover")
+def discover_sql_database(req: SQLDiscoverRequest):
+    """Auto-discover all tables and schema mappings in a connected SQL database."""
+    try:
+        from app.connectors.sql import SQLConnector
+        connector = SQLConnector(connection_string=req.connection_string, db_type=req.db_type)
+        info = connector.inspect_database(sample_n=req.sample_n)
+        
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+            
+        for t in info.get("tables", []):
+            if t.get("columns") and t.get("sample_rows"):
+                try:
+                    proposal = suggest_mapping(t["columns"], t["sample_rows"], domain_pack)
+                    t["mapping_proposal"] = proposal.dict()
+                except Exception:
+                    t["mapping_proposal"] = {"suggestions": [], "confidence": 0.0}
+            else:
+                t["mapping_proposal"] = {"suggestions": [], "confidence": 0.0}
+                
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/sql/preview")
 def preview_sql_source(req: SQLConnectRequest):

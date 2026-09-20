@@ -16,40 +16,33 @@ import { useNavigate } from 'react-router-dom';
 import {
     Upload, Eye, GitMerge, Wrench, ShieldCheck, Database,
     AlertCircle, CheckCircle, AlertTriangle, ArrowRight, RefreshCw,
-    Zap, Play, Folder, HardDrive, FileText
+    Zap, Play, Folder, HardDrive, FileText, XCircle, RotateCcw,
+    CheckSquare, Square, Search, Sparkles
 } from 'lucide-react';
 import { StepIndicator } from '../components/connect/StepIndicator';
 import { UploadZone } from '../components/connect/UploadZone';
 import { PreviewTable } from '../components/connect/PreviewTable';
 import { MappingTable } from '../components/connect/MappingTable';
 import { KBStatus } from '../components/connect/KBStatus';
-import { useFilePath } from '../context/FileContext';
+import { useConnectSession, idleStep as idle } from '../context/FileContext';
 import { useUser } from '../context/UserContext';
 import '../Connect.css';
 
-// ---- Types ----
-type Verdict = 'usable' | 'usable_with_warnings' | 'not_usable';
-type SourceType = 'file' | 'sql' | 'watcher';
-
-interface PreviewData {
+interface DiscoveredTable {
+    table_name: string;
+    row_count: number;
     columns: string[];
-    sample_rows: (string | number | null)[][];
-    total_rows: number;
+    sample_rows: Record<string, any>[];
+    mapping_proposal?: any;
+    error?: string;
 }
 
-interface ValidateResult {
-    verdict: Verdict;
-    problems: string[];
-    null_counts: Record<string, number>;
+interface DatabaseDiscoveryResult {
+    database_name: string;
+    db_type: string;
+    total_tables: number;
+    tables: DiscoveredTable[];
 }
-
-interface KBStats {
-    total_chunks: number;
-    collection_name: string;
-}
-
-type StepState = { loading: boolean; error: string | null };
-const idle = (): StepState => ({ loading: false, error: null });
 
 // Helper delay for smooth auto-transition between steps
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -112,45 +105,52 @@ const ErrorCard = ({ msg, onRetry }: { msg: string; onRetry: () => void }) => (
 // ============================================================
 export default function ConnectSource() {
     const navigate = useNavigate();
-    const { setActivePath } = useFilePath();
+    const {
+        step, setStep,
+        file, setFile,
+        fileName, setFileName,
+        filePath, setFilePath,
+        sourceType, setSourceType,
+        autoProceed, setAutoProceed,
+        sheetName, setSheetName,
+        sheets, setSheets,
+        mapping, setMapping,
+        previewData, setPreviewData,
+        validateResult, setValidateResult,
+        ingestMsg, setIngestMsg,
+        kbStats, setKbStats,
+        uploadSt, setUploadSt,
+        previewSt, setPreviewSt,
+        mappingSt, setMappingSt,
+        normSt, setNormSt,
+        valSt, setValSt,
+        ingestSt, setIngestSt,
+        resetConnectSession,
+        setActivePath
+    } = useConnectSession();
 
     const { user, activeDomainMeta, openSettings } = useUser();
     const domain = user.domain;
-    const [sourceType, setSourceType] = useState<SourceType>('file');
 
-    // ── Execution Mode: Manual vs Automatic ────────────────────────
-    const [autoProceed, setAutoProceed] = useState(false);
-
-    // ── Wizard step (0-6, always an integer) ──────────────────────
-    const [step, setStep] = useState(0);
-
-    // ── Data carried across all steps ─────────────────────────────
-    const [file, setFile] = useState<File | null>(null);
-    const [filePath, setFilePath] = useState('');       // set in step 1, updated in step 4
-    const [sheetName, setSheetName] = useState<string | null>(null);
-    const [sheets, setSheets] = useState<string[]>([]);
-    const [mapping, setMapping] = useState<Record<string, string>>({});  // *** pass to all steps ***
-    const [previewData, setPreviewData] = useState<PreviewData | null>(null);
-    const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
-    const [ingestMsg, setIngestMsg] = useState('');
-    const [kbStats, setKbStats] = useState<KBStats | null>(null);
-
-    // ── SQL Connection State ───────────────────────────────────────
+    // ── SQL Connection State (local to SQL panel) ──────────────────
     const [dbType, setDbType] = useState('sqlite');
     const [connString, setConnString] = useState('');
     const [sqlQuery, setSqlQuery] = useState('');
+    const [sqlMode, setSqlMode] = useState<'all_tables' | 'custom_query'>('all_tables');
+    const [discoveredDb, setDiscoveredDb] = useState<DatabaseDiscoveryResult | null>(null);
+    const [selectedTables, setSelectedTables] = useState<string[]>([]);
+    const [isDiscovering, setIsDiscovering] = useState(false);
+    const [isIngestingDb, setIsIngestingDb] = useState(false);
+    const [dbIngestProgress, setDbIngestProgress] = useState<{ current: number; total: number; currentTable: string } | null>(null);
+    const [dbIngestSummary, setDbIngestSummary] = useState<{
+        successful_tables: number;
+        total_tables: number;
+        table_results: Array<{ table_name: string; status: string; rows: number; chunks: number; error?: string }>;
+    } | null>(null);
 
-    // ── Folder Watcher State ───────────────────────────────────────
+    // ── Folder Watcher State (local to Watcher panel) ──────────────
     const [watchDir, setWatchDir] = useState('');
     const [pendingFiles, setPendingFiles] = useState<string[]>([]);
-
-    // ── Per-step loading / error ───────────────────────────────────
-    const [uploadSt, setUploadSt] = useState<StepState>(idle());
-    const [previewSt, setPreviewSt] = useState<StepState>(idle());
-    const [mappingSt, setMappingSt] = useState<StepState>(idle());
-    const [normSt, setNormSt] = useState<StepState>(idle());
-    const [valSt, setValSt] = useState<StepState>(idle());
-    const [ingestSt, setIngestSt] = useState<StepState>(idle());
 
     // ── Load KB stats on mount ─────────────────────────────────────
     useEffect(() => {
@@ -167,17 +167,11 @@ export default function ConnectSource() {
 
     // ── Helper: reset file and restart wizard ──────────────────────
     const resetFile = (f: File | null) => {
-        setFile(f);
-        setFilePath('');
-        setSheets([]);
-        setSheetName(null);
-        setPreviewData(null);
-        setMapping({});
-        setValidateResult(null);
-        setIngestMsg('');
-        setUploadSt(idle()); setPreviewSt(idle()); setMappingSt(idle());
-        setNormSt(idle()); setValSt(idle()); setIngestSt(idle());
-        setStep(0);
+        resetConnectSession();
+        if (f) {
+            setFile(f);
+            setFileName(f.name);
+        }
     };
 
     // ==============================================================
@@ -231,7 +225,76 @@ export default function ConnectSource() {
     };
 
     // ==============================================================
-    //  STEP 1B — CONNECT SQL DATABASE
+    //  STEP 1B — AUTO-DISCOVER SQL DATABASE (1-CLICK BATCH)
+    // ==============================================================
+    const doDiscoverDatabase = async () => {
+        if (!connString) return;
+        setIsDiscovering(true);
+        setUploadSt({ loading: true, error: null });
+        try {
+            const res = await fetch('/api/sources/sql/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connection_string: connString,
+                    db_type: dbType,
+                    domain: domain,
+                    sample_n: 5
+                })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const data: DatabaseDiscoveryResult = await res.json();
+            setDiscoveredDb(data);
+            const valid = data.tables.filter(t => !t.error).map(t => t.table_name);
+            setSelectedTables(valid);
+            setUploadSt(idle());
+        } catch (e: any) {
+            setUploadSt({ loading: false, error: String(e.message || 'Database discovery failed.') });
+        } finally {
+            setIsDiscovering(false);
+        }
+    };
+
+    const doIngestEntireDatabase = async () => {
+        if (!connString || selectedTables.length === 0) return;
+        setIsIngestingDb(true);
+        setUploadSt({ loading: true, error: null });
+        setDbIngestProgress({ current: 0, total: selectedTables.length, currentTable: selectedTables[0] });
+
+        try {
+            const res = await fetch('/api/kb/ingest-database', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connection_string: connString,
+                    db_type: dbType,
+                    domain: domain,
+                    tables: selectedTables,
+                    strategy: 'merge'
+                })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const data = await res.json();
+
+            setIngestMsg(data.message || `Successfully ingested database '${data.database_name}'`);
+            setDbIngestSummary({
+                successful_tables: data.successful_tables ?? 0,
+                total_tables: data.total_tables ?? selectedTables.length,
+                table_results: data.table_results ?? []
+            });
+            setStep(6);
+            setUploadSt(idle());
+            void fetchKBStats();
+        } catch (e: any) {
+            setUploadSt({ loading: false, error: String(e.message || 'Database ingestion failed.') });
+        } finally {
+            setIsIngestingDb(false);
+            setDbIngestProgress(null);
+        }
+    };
+
+    // ==============================================================
+    //  STEP 1C — CONNECT SINGLE SQL TABLE / QUERY
     // ==============================================================
     const doConnectSQL = async (overrideAuto?: boolean) => {
         const isAuto = overrideAuto ?? autoProceed;
@@ -476,10 +539,13 @@ export default function ConnectSource() {
     // ==============================================================
     //  STEP 6 — INGEST
     // ==============================================================
-    const doIngest = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null) => {
+    const [strategy, setStrategy] = useState<'merge' | 'row'>('merge');
+
+    const doIngest = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null, targetStrategy?: 'merge' | 'row') => {
         const currentFp = targetFp || filePath;
         const currentMap = targetMap || mapping;
         const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
+        const currentStrategy = targetStrategy || strategy;
 
         setIngestSt({ loading: true, error: null });
         setStep(5);
@@ -490,7 +556,7 @@ export default function ConnectSource() {
                 body: JSON.stringify({
                     file_path: currentFp,
                     domain: domain,
-                    strategy: 'row',
+                    strategy: currentStrategy,
                     mapping: currentMap,
                     sheet_name: currentSheet || null,
                     table_or_query: null,
@@ -568,23 +634,81 @@ export default function ConnectSource() {
                         </div>
                     </div>
 
-                    <div className="proceed-mode-container">
-                        <span className="mode-label">Execution Mode</span>
-                        <div className="proceed-mode-toggle">
-                            <button
-                                type="button"
-                                className={`mode-btn ${!autoProceed ? 'active' : ''}`}
-                                onClick={() => setAutoProceed(false)}
-                            >
-                                <Play size={13} /> Manual Proceed
-                            </button>
-                            <button
-                                type="button"
-                                className={`mode-btn ${autoProceed ? 'active' : ''}`}
-                                onClick={() => setAutoProceed(true)}
-                            >
-                                <Zap size={13} /> Automatic Proceed
-                            </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                        {step > 0 && (
+                            <>
+                                <button
+                                    type="button"
+                                    className="btn-danger-outline"
+                                    onClick={() => resetConnectSession('sql')}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.4rem',
+                                        fontSize: '0.82rem',
+                                        padding: '0.45rem 0.85rem',
+                                        borderRadius: '8px'
+                                    }}
+                                    title="Cancel current progress and connect another database"
+                                >
+                                    <HardDrive size={13} /> Cancel &amp; Add DB
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => resetConnectSession('file')}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.4rem',
+                                        fontSize: '0.82rem',
+                                        padding: '0.45rem 0.85rem',
+                                        borderRadius: '8px'
+                                    }}
+                                    title="Cancel current progress and upload a new file"
+                                >
+                                    <Upload size={13} /> Upload File
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => resetConnectSession()}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.4rem',
+                                        fontSize: '0.82rem',
+                                        padding: '0.45rem 0.85rem',
+                                        borderRadius: '8px',
+                                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                                        color: '#ef4444',
+                                        background: 'rgba(239, 68, 68, 0.06)'
+                                    }}
+                                    title="Discard current wizard session"
+                                >
+                                    <XCircle size={13} /> Cancel Session
+                                </button>
+                            </>
+                        )}
+
+                        <div className="proceed-mode-container">
+                            <span className="mode-label">Execution Mode</span>
+                            <div className="proceed-mode-toggle">
+                                <button
+                                    type="button"
+                                    className={`mode-btn ${!autoProceed ? 'active' : ''}`}
+                                    onClick={() => setAutoProceed(false)}
+                                >
+                                    <Play size={13} /> Manual Proceed
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`mode-btn ${autoProceed ? 'active' : ''}`}
+                                    onClick={() => setAutoProceed(true)}
+                                >
+                                    <Zap size={13} /> Automatic Proceed
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -609,21 +733,30 @@ export default function ConnectSource() {
                         <button
                             type="button"
                             className={`source-tab-btn ${sourceType === 'file' ? 'active' : ''}`}
-                            onClick={() => setSourceType('file')}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'file') resetConnectSession('file');
+                                else setSourceType('file');
+                            }}
                         >
                             <FileText size={14} /> File Upload (CSV / Excel / JSON)
                         </button>
                         <button
                             type="button"
                             className={`source-tab-btn ${sourceType === 'sql' ? 'active' : ''}`}
-                            onClick={() => setSourceType('sql')}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'sql') resetConnectSession('sql');
+                                else setSourceType('sql');
+                            }}
                         >
                             <HardDrive size={14} /> SQL Database Connection
                         </button>
                         <button
                             type="button"
                             className={`source-tab-btn ${sourceType === 'watcher' ? 'active' : ''}`}
-                            onClick={() => setSourceType('watcher')}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'watcher') resetConnectSession('watcher');
+                                else setSourceType('watcher');
+                            }}
                         >
                             <Folder size={14} /> Folder Auto-Sync Watcher
                         </button>
@@ -676,6 +809,24 @@ export default function ConnectSource() {
                     {/* SOURCE 2: SQL DATABASE */}
                     {sourceType === 'sql' && (
                         <div style={{ marginTop: '0.5rem' }}>
+                            {/* Sub-mode selector: Auto-Discover All Tables vs Single Query */}
+                            <div className="db-mode-selector">
+                                <button
+                                    type="button"
+                                    className={`db-mode-tab ${sqlMode === 'all_tables' ? 'active' : ''}`}
+                                    onClick={() => setSqlMode('all_tables')}
+                                >
+                                    <Sparkles size={15} /> ⚡ 1-Click Auto-Discover &amp; Ingest All Tables (POS / DB)
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`db-mode-tab ${sqlMode === 'custom_query' ? 'active' : ''}`}
+                                    onClick={() => setSqlMode('custom_query')}
+                                >
+                                    <HardDrive size={15} /> ⚙️ Single Table / Custom Query
+                                </button>
+                            </div>
+
                             <div className="sql-form-group">
                                 <label>Database Engine:</label>
                                 <select
@@ -684,9 +835,9 @@ export default function ConnectSource() {
                                     onChange={e => setDbType(e.target.value)}
                                 >
                                     <option value="sqlite">SQLite (.db / .sqlite)</option>
+                                    <option value="mssql">MS SQL Server (SQL Express / POS)</option>
                                     <option value="postgresql">PostgreSQL</option>
                                     <option value="mysql">MySQL / MariaDB</option>
-                                    <option value="mssql">MS SQL Server</option>
                                 </select>
                             </div>
 
@@ -695,42 +846,200 @@ export default function ConnectSource() {
                                 <input
                                     type="text"
                                     className="sql-form-input"
-                                    placeholder={dbType === 'sqlite' ? 'C:/data/pharmacy.db' : 'postgresql://user:pass@localhost:5432/mydb'}
+                                    placeholder={
+                                        dbType === 'sqlite'
+                                            ? 'C:/POS_Software/pharmacy.db'
+                                            : dbType === 'mssql'
+                                            ? 'mssql+pyodbc://sa:Password123@localhost/PharmacyPOS?driver=ODBC+Driver+17+for+SQL+Server'
+                                            : dbType === 'postgresql'
+                                            ? 'postgresql://postgres:password@localhost:5432/pharmacy_pos'
+                                            : 'mysql+pymysql://root:password@localhost:3306/pharmacy_db'
+                                    }
                                     value={connString}
-                                    onChange={e => setConnString(e.target.value)}
+                                    onChange={e => {
+                                        const val = e.target.value;
+                                        setConnString(val);
+                                        const lower = val.trim().toLowerCase();
+                                        if (lower.startsWith('mssql') || lower.includes('sqlexpress') || lower.includes('driver=')) {
+                                            setDbType('mssql');
+                                        } else if (lower.startsWith('postgres')) {
+                                            setDbType('postgresql');
+                                        } else if (lower.startsWith('mysql') || lower.startsWith('mariadb')) {
+                                            setDbType('mysql');
+                                        } else if (lower.startsWith('sqlite') || lower.endsWith('.db') || lower.endsWith('.sqlite')) {
+                                            setDbType('sqlite');
+                                        }
+                                    }}
                                 />
                             </div>
 
-                            <div className="sql-form-group">
-                                <label>Table Name or SQL Query:</label>
-                                <input
-                                    type="text"
-                                    className="sql-form-input"
-                                    placeholder="SELECT * FROM transactions"
-                                    value={sqlQuery}
-                                    onChange={e => setSqlQuery(e.target.value)}
-                                />
-                            </div>
+                            {/* ── MODE A: 1-CLICK DISCOVERY & INGEST ALL TABLES ── */}
+                            {sqlMode === 'all_tables' && (
+                                <>
+                                    {step === 0 && !discoveredDb && (
+                                        <div className="btn-actions" style={{ marginTop: '1rem' }}>
+                                            <button
+                                                className="btn-primary"
+                                                onClick={doDiscoverDatabase}
+                                                disabled={!connString || isDiscovering || uploadSt.loading}
+                                            >
+                                                {isDiscovering
+                                                    ? <><span className="spinner" /> Scanning Database Schema…</>
+                                                    : <><Search size={15} /> 🔍 Scan &amp; Discover All Tables</>}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {discoveredDb && (
+                                        <div className="db-discovery-card">
+                                            <div className="db-discovery-header">
+                                                <div className="db-title-group">
+                                                    <Database size={20} color="var(--accent-teal, #0D7377)" />
+                                                    <div>
+                                                        <div style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0F172A' }}>
+                                                            Database: <span style={{ color: 'var(--accent-teal, #0D7377)' }}>{discoveredDb.database_name}</span>
+                                                        </div>
+                                                        <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
+                                                            Engine: {discoveredDb.db_type.toUpperCase()} · {discoveredDb.tables.length} tables found
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-secondary"
+                                                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
+                                                        onClick={() => {
+                                                            const all = discoveredDb.tables.filter(t => !t.error).map(t => t.table_name);
+                                                            if (selectedTables.length === all.length) {
+                                                                setSelectedTables([]);
+                                                            } else {
+                                                                setSelectedTables(all);
+                                                            }
+                                                        }}
+                                                    >
+                                                        {selectedTables.length === discoveredDb.tables.filter(t => !t.error).length
+                                                            ? <><Square size={13} /> Deselect All</>
+                                                            : <><CheckSquare size={13} /> Select All ({discoveredDb.tables.length})</>}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-secondary"
+                                                        style={{ padding: '0.35rem 0.65rem', fontSize: '0.78rem' }}
+                                                        onClick={doDiscoverDatabase}
+                                                        title="Re-scan database"
+                                                    >
+                                                        <RefreshCw size={13} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="db-tables-grid">
+                                                {discoveredDb.tables.map(t => {
+                                                    const isChecked = selectedTables.includes(t.table_name);
+                                                    return (
+                                                        <div
+                                                            key={t.table_name}
+                                                            className={`db-table-item ${isChecked ? 'selected' : ''}`}
+                                                            onClick={() => {
+                                                                if (t.error) return;
+                                                                setSelectedTables(prev =>
+                                                                    prev.includes(t.table_name)
+                                                                        ? prev.filter(x => x !== t.table_name)
+                                                                        : [...prev, t.table_name]
+                                                                );
+                                                            }}
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                className="db-table-checkbox"
+                                                                checked={isChecked}
+                                                                disabled={!!t.error}
+                                                                onChange={() => {}} /* Handled by parent div onClick */
+                                                            />
+                                                            <div className="db-table-info">
+                                                                <div className="db-table-name">📊 {t.table_name}</div>
+                                                                <div className="db-table-meta">
+                                                                    {t.error ? (
+                                                                        <span style={{ color: '#EF4444' }}>⚠️ {t.error}</span>
+                                                                    ) : (
+                                                                        <>
+                                                                            <span>{t.row_count.toLocaleString()} rows</span>
+                                                                            <span>·</span>
+                                                                            <span>{t.columns.length} cols</span>
+                                                                        </>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            {isIngestingDb && (
+                                                <div className="batch-progress-box">
+                                                    <span className="spinner" />
+                                                    <span>
+                                                        {dbIngestProgress
+                                                            ? `Ingesting table ${dbIngestProgress.current + 1} of ${dbIngestProgress.total}: '${dbIngestProgress.currentTable}' into KnowledgeBase…`
+                                                            : `Ingesting tables into KnowledgeBase… (${selectedTables.length} tables selected)`}
+                                                    </span>
+                                                </div>
+                                            )}
+
+                                            <div className="btn-actions" style={{ marginTop: '1rem' }}>
+                                                <button
+                                                    className="btn-primary"
+                                                    onClick={doIngestEntireDatabase}
+                                                    disabled={selectedTables.length === 0 || isIngestingDb}
+                                                >
+                                                    {isIngestingDb ? (
+                                                        <><span className="spinner" /> Ingesting Entire Database…</>
+                                                    ) : (
+                                                        <><Zap size={16} /> ⚡ Ingest Entire Database ({selectedTables.length} Tables)</>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            {/* ── MODE B: CUSTOM TABLE / SINGLE QUERY ── */}
+                            {sqlMode === 'custom_query' && (
+                                <>
+                                    <div className="sql-form-group">
+                                        <label>Table Name or SQL Query:</label>
+                                        <input
+                                            type="text"
+                                            className="sql-form-input"
+                                            placeholder="SELECT * FROM transactions"
+                                            value={sqlQuery}
+                                            onChange={e => setSqlQuery(e.target.value)}
+                                        />
+                                    </div>
+
+                                    {step === 0 && (
+                                        <div className="btn-actions">
+                                            <button
+                                                className="btn-primary"
+                                                onClick={() => doConnectSQL()}
+                                                disabled={!connString || !sqlQuery || uploadSt.loading}
+                                            >
+                                                {uploadSt.loading
+                                                    ? <><span className="spinner" /> Connecting…</>
+                                                    : autoProceed
+                                                        ? <><Zap size={15} /> Connect SQL &amp; Auto Process</>
+                                                        : <><HardDrive size={15} /> Connect &amp; Fetch Preview</>}
+                                            </button>
+                                        </div>
+                                    )}
+                                </>
+                            )}
 
                             {uploadSt.error && (
                                 <div style={{ marginTop: '1rem' }}>
-                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectSQL()} />
-                                </div>
-                            )}
-
-                            {step === 0 && (
-                                <div className="btn-actions">
-                                    <button
-                                        className="btn-primary"
-                                        onClick={() => doConnectSQL()}
-                                        disabled={!connString || !sqlQuery || uploadSt.loading}
-                                    >
-                                        {uploadSt.loading
-                                            ? <><span className="spinner" /> Connecting…</>
-                                            : autoProceed
-                                                ? <><Zap size={15} /> Connect SQL &amp; Auto Process</>
-                                                : <><HardDrive size={15} /> Connect &amp; Fetch Preview</>}
-                                    </button>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => sqlMode === 'all_tables' ? doDiscoverDatabase() : doConnectSQL()} />
                                 </div>
                             )}
                         </div>
@@ -788,11 +1097,36 @@ export default function ConnectSource() {
                         </div>
                     )}
 
-                    {/* Success confirmation */}
+                    {/* Success confirmation and Disconnect / Switch options */}
                     {step >= 1 && (
-                        <div className="info-card" style={{ marginTop: '1rem' }}>
-                            <CheckCircle size={16} />
-                            Source connected for domain: <strong>{domain.toUpperCase()}</strong>.
+                        <div className="info-card" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <CheckCircle size={16} />
+                                <span>
+                                    Source connected for domain: <strong>{domain.toUpperCase()}</strong>
+                                    {sourceType === 'sql' ? ` (${dbType.toUpperCase()})` : sourceType === 'file' ? ` (${fileName || 'File'})` : ''}.
+                                </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <button
+                                    type="button"
+                                    className="btn-danger-outline"
+                                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                                    onClick={() => resetConnectSession('sql')}
+                                    title="Cancel current progress and connect a different SQL database"
+                                >
+                                    <RotateCcw size={13} /> Cancel &amp; Add Another DB
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                                    onClick={() => resetConnectSession('file')}
+                                    title="Switch to file upload"
+                                >
+                                    <Upload size={13} /> Switch to File
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -810,6 +1144,14 @@ export default function ConnectSource() {
                             <div className="btn-actions">
                                 <button className="btn-primary" onClick={() => doPreview()}>
                                     <Eye size={15} /> Load Preview
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-danger-outline"
+                                    onClick={() => resetConnectSession('sql')}
+                                    title="Cancel preview and connect another SQL database"
+                                >
+                                    <XCircle size={15} /> Cancel &amp; Add Another DB
                                 </button>
                             </div>
                         )}
@@ -830,6 +1172,22 @@ export default function ConnectSource() {
                                 <div className="btn-actions">
                                     <button className="btn-primary" onClick={() => doMapping()}>
                                         {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Confirm Preview &amp; Load Mapping
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-danger-outline"
+                                        onClick={() => resetConnectSession('sql')}
+                                        title="Cancel preview and connect another SQL database"
+                                    >
+                                        <XCircle size={15} /> Cancel &amp; Add Another DB
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={() => resetConnectSession('file')}
+                                        title="Cancel preview and upload a file instead"
+                                    >
+                                        <Upload size={15} /> Upload File Instead
                                     </button>
                                 </div>
                             </>
@@ -874,6 +1232,22 @@ export default function ConnectSource() {
                                                     ? <><Zap size={15} /> Confirm Mapping &amp; Auto Process</>
                                                     : <><ArrowRight size={15} /> Confirm Mapping &amp; Normalize</>}
                                         </button>
+                                        <button
+                                            type="button"
+                                            className="btn-danger-outline"
+                                            onClick={() => resetConnectSession('sql')}
+                                            title="Cancel mapping and connect another SQL database"
+                                        >
+                                            <XCircle size={15} /> Cancel &amp; Add Another DB
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn-secondary"
+                                            onClick={() => resetConnectSession('file')}
+                                            title="Cancel and switch to file upload"
+                                        >
+                                            <Upload size={15} /> Upload File Instead
+                                        </button>
                                     </div>
                                 )}
 
@@ -917,6 +1291,21 @@ export default function ConnectSource() {
                                         <button className="btn-primary" onClick={() => doValidate()}>
                                             {autoProceed ? <Zap size={15} /> : <ShieldCheck size={15} />} Run Validation
                                         </button>
+                                        <button
+                                            type="button"
+                                            className="btn-danger-outline"
+                                            onClick={() => resetConnectSession('sql')}
+                                            title="Cancel normalization and connect another SQL database"
+                                        >
+                                            <XCircle size={15} /> Cancel &amp; Add Another DB
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn-secondary"
+                                            onClick={() => resetConnectSession('file')}
+                                        >
+                                            <Upload size={15} /> Upload File Instead
+                                        </button>
                                     </div>
                                 )}
 
@@ -953,8 +1342,26 @@ export default function ConnectSource() {
                                         )}
 
                                         {validateResult.verdict === 'not_usable' && (
-                                            <div className="error-card">
-                                                <AlertCircle size={16} /> Please fix your data and upload again.
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                                <div className="error-card">
+                                                    <AlertCircle size={16} /> Please fix your data or connect a different database source.
+                                                </div>
+                                                <div className="btn-actions">
+                                                    <button
+                                                        type="button"
+                                                        className="btn-danger-outline"
+                                                        onClick={() => resetConnectSession('sql')}
+                                                    >
+                                                        <RotateCcw size={15} /> Cancel &amp; Connect Another DB
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-secondary"
+                                                        onClick={() => resetConnectSession('file')}
+                                                    >
+                                                        <Upload size={15} /> Upload File Instead
+                                                    </button>
+                                                </div>
                                             </div>
                                         )}
 
@@ -962,6 +1369,20 @@ export default function ConnectSource() {
                                             <div className="btn-actions">
                                                 <button className="btn-warn" onClick={() => doIngest()}>
                                                     <ArrowRight size={15} /> Ingest Anyway
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn-danger-outline"
+                                                    onClick={() => resetConnectSession('sql')}
+                                                >
+                                                    <XCircle size={15} /> Cancel &amp; Add Another DB
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn-secondary"
+                                                    onClick={() => resetConnectSession('file')}
+                                                >
+                                                    <Upload size={15} /> Upload File Instead
                                                 </button>
                                             </div>
                                         )}
@@ -984,9 +1405,71 @@ export default function ConnectSource() {
                                 <div className="verdict-badge ok">
                                     <CheckCircle size={16} /> Data validated — ready to ingest into {domain.toUpperCase()} Knowledge Base
                                 </div>
+
+                                <div style={{ marginTop: '1.25rem', marginBottom: '1.25rem', background: '#F8FAFC', padding: '1rem', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
+                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.6rem' }}>
+                                        ⚡ Ingestion &amp; Chunking Strategy:
+                                    </label>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                        <div
+                                            onClick={() => setStrategy('merge')}
+                                            style={{
+                                                padding: '0.75rem 1rem',
+                                                borderRadius: '8px',
+                                                border: strategy === 'merge' ? '2px solid #2563EB' : '1px solid #CBD5E1',
+                                                background: strategy === 'merge' ? '#EFF6FF' : '#FFFFFF',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.15s ease'
+                                            }}
+                                        >
+                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'merge' ? '#1D4ED8' : '#1E293B', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                <span>⚡ Merge / Grouping</span>
+                                                <span style={{ fontSize: '0.7rem', background: '#10B981', color: '#FFF', padding: '2px 6px', borderRadius: '10px', fontWeight: 700 }}>5x–10x FASTER</span>
+                                            </div>
+                                            <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.3rem', lineHeight: '1.3' }}>
+                                                Groups rows by invoice/bill number into rich transaction chunks. Superior context &amp; fastest vectorization.
+                                            </div>
+                                        </div>
+
+                                        <div
+                                            onClick={() => setStrategy('row')}
+                                            style={{
+                                                padding: '0.75rem 1rem',
+                                                borderRadius: '8px',
+                                                border: strategy === 'row' ? '2px solid #2563EB' : '1px solid #CBD5E1',
+                                                background: strategy === 'row' ? '#EFF6FF' : '#FFFFFF',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.15s ease'
+                                            }}
+                                        >
+                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'row' ? '#1D4ED8' : '#1E293B' }}>
+                                                📄 Row-by-Row
+                                            </div>
+                                            <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.3rem', lineHeight: '1.3' }}>
+                                                Embeds each row individually. Useful for independent catalog or item inventories.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div className="btn-actions">
                                     <button className="btn-primary" onClick={() => doIngest()}>
                                         <Database size={15} /> Ingest into Knowledge Base
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-danger-outline"
+                                        onClick={() => resetConnectSession('sql')}
+                                        title="Cancel ingestion and connect another SQL database"
+                                    >
+                                        <XCircle size={15} /> Cancel &amp; Add Another DB
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={() => resetConnectSession('file')}
+                                    >
+                                        <Upload size={15} /> Upload File Instead
                                     </button>
                                 </div>
                             </>
@@ -1002,17 +1485,74 @@ export default function ConnectSource() {
 
                         {step >= 6 && !ingestSt.loading && !ingestSt.error && (
                             <div className="success-card">
-                                <div className="success-card-icon"><CheckCircle size={26} /></div>
-                                <h3>Data Successfully Ingested!</h3>
+                                <div className="success-card-icon">
+                                    {dbIngestSummary && dbIngestSummary.successful_tables === 0 ? (
+                                        <AlertTriangle size={26} color="#D97706" />
+                                    ) : (
+                                        <CheckCircle size={26} />
+                                    )}
+                                </div>
+                                <h3>
+                                    {dbIngestSummary && dbIngestSummary.successful_tables === 0
+                                        ? 'Database Ingestion Notice'
+                                        : 'Data Successfully Ingested!'}
+                                </h3>
                                 <p>{(typeof ingestMsg === 'string' && ingestMsg && !ingestMsg.startsWith('{')) ? ingestMsg : `Your ${domain.toUpperCase()} data is ready. The RAG chatbot is now powered by this dataset.`}</p>
+
+                                {dbIngestSummary && dbIngestSummary.table_results && dbIngestSummary.table_results.length > 0 && (
+                                    <div style={{ margin: '1rem 0 1.25rem 0', textAlign: 'left', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '0.75rem', maxHeight: '200px', overflowY: 'auto' }}>
+                                        <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#475569', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                            Table Ingestion Breakdown:
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                            {dbIngestSummary.table_results.map((t, idx) => (
+                                                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', padding: '4px 8px', borderRadius: '4px', background: '#FFFFFF', border: '1px solid #EDF2F7' }}>
+                                                    <span style={{ fontWeight: 600, color: '#1E293B' }}>📊 {t.table_name}</span>
+                                                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <span style={{ color: '#64748B', fontSize: '0.75rem' }}>{t.rows} rows · {t.chunks} chunks</span>
+                                                        <span style={{
+                                                            fontSize: '0.72rem',
+                                                            fontWeight: 600,
+                                                            padding: '2px 7px',
+                                                            borderRadius: '999px',
+                                                            background: t.status === 'success' ? '#DEF7EC' : t.status === 'empty' ? '#F1F5F9' : '#FDE8E8',
+                                                            color: t.status === 'success' ? '#03543F' : t.status === 'empty' ? '#64748B' : '#9B1C1C'
+                                                        }}>
+                                                            {t.status === 'success' ? 'Ingested' : t.status === 'empty' ? 'Empty (0 rows)' : 'Failed'}
+                                                        </span>
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {kbStats && (
                                     <p style={{ marginBottom: '1.25rem', fontWeight: 600 }}>
                                         Knowledge Base: {kbStats.total_chunks.toLocaleString()} chunks · {kbStats.collection_name}
                                     </p>
                                 )}
-                                <button className="btn-primary" onClick={() => navigate('/chat')}>
-                                    Start Chatting <ArrowRight size={15} />
-                                </button>
+                                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                                    <button className="btn-primary" onClick={() => navigate('/chat')}>
+                                        Start Chatting <ArrowRight size={15} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={() => resetConnectSession('sql')}
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                                    >
+                                        <HardDrive size={15} /> Connect Another Database
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={() => resetConnectSession('file')}
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                                    >
+                                        <Upload size={15} /> Upload Another File
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>

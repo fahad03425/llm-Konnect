@@ -1,18 +1,24 @@
+import os
 from typing import List
+
+# Ensure local HuggingFace / Transformers models never hang on internet network checks
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "LLM-Konnect"
     host: str = "127.0.0.1"
-    port: int = 8756
+    port: int = 8760
     
     # Ollama
     ollama_host: str = "http://127.0.0.1:11434"
     llm_model: str = "qwen2.5:3b"
     llm_keep_alive: str = "30m"  # keeps model in VRAM for instant subsequent responses
     llm_keep_alive_chat: str = "30m"  # keeps model in VRAM for interactive chat
-    llm_num_predict: int = 192
+    llm_num_predict: int = 128
     llm_chat_history_size: int = 3
     llm_temperature: float = 0.2
     

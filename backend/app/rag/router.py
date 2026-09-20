@@ -84,26 +84,42 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
             if re.search(pattern, q_lower):
                 return RouteType.ANALYTICS
 
-    # Explicit listing / lookup patterns (prioritized over incidental keyword matches)
+    # Explicit batch/record lookup patterns (prioritized to RAG)
+    if re.search(r"^(list|show|fetch|find|display)\s+(all\s+)?(batches|records|files|data)\b", q_lower):
+        return RouteType.RAG
+
+    # Explicit listing / lookup / informational patterns (prioritized over incidental keyword matches)
     lookup_patterns = [
-        r"^(list|show all|display all|find all|fetch)\b",
+        r"^(list|show|display|find|fetch|which|what|tell)\b",
+        r"\b(what|which|tell)\s+(me\s+)?(the\s+)?(dataset|file|data|source|sources|table|tables|medicine|product|item|name)\b",
+        r"\bnames?\b",
         r"\blist all\b",
         r"\bshow all\b",
+        r"\bdata\s*source\b",
     ]
+    numeric_or_inventory_guard = (
+        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|revenue|"
+        r"expire|expiry|expired|expiring|velocity|reorder|stockout|supply|days supply|days of supply|"
+        r"running below|low stock|dead stock|liquidation|kam stock)\b"
+    )
     for pattern in lookup_patterns:
-        if re.search(pattern, q_lower) and not re.search(r"\b(total|sum|average|avg|how much|how many|count|how many rows)\b", q_lower):
+        if re.search(pattern, q_lower) and not re.search(numeric_or_inventory_guard, q_lower):
             return RouteType.RAG
 
-    # Analytics / Numeric keywords
+    # Analytics / Numeric / Inventory Intelligence keywords
     analytics_patterns = [
         r"\btotal\b", r"\bhow much\b", r"\bhow many\b", r"\bsum\b",
         r"\baverage\b", r"\bavg\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
-        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b", r"\bcount\b",
-        r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
+        r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b", r"\bexpiry\b", r"\bexpired\b",
+        r"\bcount\b", r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
         r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b",
         r"\bforecast\b", r"\bpredict\b", r"\btrend\b", r"\bgrowth\b",
-        r"\brevenue\b", r"\bbreakdown\b", r"\bsales?\b",
-        r"\brow count\b", r"\bdataset size\b", r"\bnumber of rows\b", r"\bnumber of records\b"
+        r"\brevenue\b", r"\bbreakdown\b", r"\btotal sales\b", r"\bsales amount\b", r"\bsales total\b",
+        r"\brow count\b", r"\bdataset size\b", r"\bnumber of rows\b", r"\bnumber of records\b",
+        r"\bvelocity\b", r"\breorder\b", r"\bstockout\b", r"\bliquidat(e|ion)\b",
+        r"\b(day|days) supply\b", r"\b(day|days) of supply\b", r"\brunning below\b",
+        r"\blow stock\b", r"\bkam stock\b", r"\bdead stock\b", r"\bshort expiry\b",
+        r"\bnear expiry\b", r"\bnear-expiry\b", r"\bkhatam hone\b", r"\bstock khatam\b"
     ]
     for pattern in analytics_patterns:
         if re.search(pattern, q_lower):
@@ -113,9 +129,10 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
 
 def extract_filters(question: str, domain: str = "pharmacy") -> Dict[str, Any]:
     """
-    Extract exact-match filters and date intervals from the question.
+    Extract exact-match filters, date intervals, and inventory threshold options from the question.
     """
     filters: Dict[str, Any] = {}
+    options: Dict[str, Any] = {}
     q_lower = question.lower()
     
     # 1. Date range detection e.g. "from 20 jan to 15 feb", "between 1st jan and 31st march", "from 2026-01-20 to 2026-02-15"
@@ -143,5 +160,38 @@ def extract_filters(question: str, domain: str = "pharmacy") -> Dict[str, Any]:
     m_yr = re.search(r'\b(202[0-9])\b', q_lower)
     if m_yr:
         filters["year"] = int(m_yr.group(1))
+
+    # 4. Expiry horizon extraction (e.g., "next 60 days", "in 30 days", "60 days", "60 din")
+    m_exp_days = re.search(r'(\d{1,3})\s*(?:day|days|din|d)\b', q_lower)
+    if m_exp_days and re.search(r'\b(expir|expire|expired|expiring|expiry|near|short|miyad|meyad|liquidat)\b', q_lower):
+        options["expiry_days"] = int(m_exp_days.group(1))
+        options["horizon_days"] = int(m_exp_days.group(1))
+
+    # 5. Days-of-supply threshold extraction (e.g., "below a 3-day supply", "3 days supply", "3-day supply", "< 3 days")
+    m_supply_days = re.search(r'\b(?:below|under|<|less than)?\s*(?:a\s*)?(\d{1,2})(?:-|\s*)(?:day|days|din)\s*(?:of\s*)?supply\b', q_lower)
+    if m_supply_days:
+        options["days_supply_threshold"] = float(m_supply_days.group(1))
+    elif re.search(r'\b(?:below|under|<)\s*(\d{1,2})\s*(?:day|days|din)\b', q_lower):
+        m_simple = re.search(r'\b(?:below|under|<)\s*(\d{1,2})\s*(?:day|days|din)\b', q_lower)
+        if m_simple:
+            options["days_supply_threshold"] = float(m_simple.group(1))
+
+    # 6. Therapeutic category extraction (e.g. cardiac, heart, diabetes, antibiotics, analgesic)
+    cat_keywords = {
+        "cardiac": ["cardiac", "cardio", "heart", "hypertension", "bp", "blood pressure"],
+        "diabetes": ["diabetes", "diabetic", "sugar", "insulin"],
+        "antibiotic": ["antibiotic", "antibiotics", "infection", "anti-infective"],
+        "analgesic": ["analgesic", "pain", "painkiller"],
+        "respiratory": ["respiratory", "asthma"],
+        "gastro": ["gastro", "antacid", "stomach"],
+    }
+    for cat_name, kw_list in cat_keywords.items():
+        if any(re.search(rf"\b{kw}\b", q_lower) for kw in kw_list):
+            filters["category"] = cat_name
+            options["category"] = cat_name
+            break
+
+    if options:
+        filters["options"] = options
 
     return filters

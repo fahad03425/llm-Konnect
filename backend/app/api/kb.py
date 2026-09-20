@@ -35,6 +35,15 @@ class IngestRequest(BaseModel):
     merge_key: Optional[str] = None
     file_id: Optional[str] = None
 
+class IngestDatabaseRequest(BaseModel):
+    connection_string: str
+    db_type: str = "sqlite"
+    domain: str = "pharmacy"
+    tables: Optional[List[str]] = None
+    strategy: str = "merge"
+    merge_key: Optional[str] = None
+    table_mappings: Optional[Dict[str, Dict[str, str]]] = None
+
 class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = None
@@ -187,6 +196,8 @@ def uningest_source_by_id(file_id: str = Path(..., description="The unique file 
             
         # Delete from SQLite registry
         file_registry.delete_file(file_id)
+        if target_path:
+            file_registry.delete_file(target_path)
         
         return {
             "status": "success",
@@ -205,3 +216,277 @@ def delete_source(source_file: str = Query(...)):
         return {"status": "success", "message": f"Deleted chunks for {source_file}"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/ingest-database")
+def ingest_sql_database(req: IngestDatabaseRequest):
+    """Batch ingest all discovered or selected tables from a database in a single step."""
+    from app.connectors.sql import SQLConnector
+    try:
+        connector = SQLConnector(connection_string=req.connection_string, db_type=req.db_type)
+        database_name = connector.extract_db_name()
+        
+        tables_to_ingest = req.tables
+        if not tables_to_ingest:
+            tables_to_ingest = connector.list_tables()
+            
+        if not tables_to_ingest:
+            raise ValueError(f"No user tables found in database '{database_name}'.")
+
+        domain_pack = None
+        try:
+            domain_pack = get_domain_pack(req.domain)
+        except ValueError:
+            pass
+
+        total_chunks = 0
+        total_rows = 0
+        table_results = []
+        total_tables = len(tables_to_ingest)
+        
+        for idx, table_name in enumerate(tables_to_ingest):
+            table_path = f"sql://{database_name}/{table_name}"
+            file_id = f"db_{database_name}_{table_name}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
+            
+            # Update progress in registry
+            progress_pct = round((idx / total_tables) * 100, 1)
+            file_registry.set_file_status(
+                file_path=table_path,
+                file_id=file_id,
+                domain=req.domain,
+                strategy=req.strategy,
+                progress=progress_pct,
+                step_text=f"Ingesting table {idx+1}/{total_tables}: {table_name}",
+                group_name=database_name,
+                source_type="database",
+                table_name=table_name,
+                filename_override=f"{database_name} — {table_name}",
+                status="processing"
+            )
+            
+            try:
+                df = connector.fetch(table_or_query=table_name)
+                if df.empty:
+                    table_results.append({
+                        "table_name": table_name,
+                        "status": "empty",
+                        "rows": 0,
+                        "chunks": 0
+                    })
+                    file_registry.register_or_update(
+                        file_path=table_path,
+                        chunk_count=0,
+                        domain=req.domain,
+                        strategy=req.strategy,
+                        file_id=file_id,
+                        group_name=database_name,
+                        source_type="database",
+                        table_name=table_name,
+                        filename_override=f"{database_name} — {table_name}"
+                    )
+                    continue
+
+                # Mapping
+                mapping = None
+                if req.table_mappings and table_name in req.table_mappings:
+                    mapping = req.table_mappings[table_name]
+                if mapping is None:
+                    mapping = map_headers(list(df.columns), domain_pack)
+
+                canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
+                
+                # Delete old chunks for this table if re-ingesting
+                _kb.delete_source(file_id)
+                _kb.delete_source(table_path)
+
+                source_meta = {
+                    "source_file": table_path,
+                    "filename": f"{database_name} — {table_name}",
+                    "source_connector": f"sql_{req.db_type}",
+                    "database_name": database_name,
+                    "table_name": table_name,
+                    "group_name": database_name,
+                    "source_type": "database"
+                }
+
+                summary = _kb.add_dataframe(
+                    canonical_df,
+                    source_meta=source_meta,
+                    domain=req.domain,
+                    strategy=req.strategy,
+                    merge_key=req.merge_key,
+                    file_id=file_id
+                )
+
+                file_registry.register_or_update(
+                    file_path=table_path,
+                    chunk_count=summary.total_chunks,
+                    domain=req.domain,
+                    strategy=req.strategy,
+                    file_id=file_id,
+                    group_name=database_name,
+                    source_type="database",
+                    table_name=table_name,
+                    filename_override=f"{database_name} — {table_name}"
+                )
+
+                total_chunks += summary.total_chunks
+                total_rows += len(df)
+                table_results.append({
+                    "table_name": table_name,
+                    "status": "success",
+                    "rows": len(df),
+                    "chunks": summary.total_chunks
+                })
+            except Exception as table_err:
+                import traceback
+                err_details = traceback.format_exc()
+                file_registry.set_file_status(
+                    file_path=table_path,
+                    file_id=file_id,
+                    status="failed",
+                    error_message=str(table_err),
+                    domain=req.domain,
+                    group_name=database_name,
+                    source_type="database",
+                    table_name=table_name,
+                    filename_override=f"{database_name} — {table_name}"
+                )
+                table_results.append({
+                    "table_name": table_name,
+                    "status": "error",
+                    "error": str(table_err),
+                    "traceback": err_details,
+                    "rows": 0,
+                    "chunks": 0
+                })
+
+        successful_tables = [t for t in table_results if t["status"] == "success"]
+        empty_tables = [t for t in table_results if t["status"] == "empty"]
+        error_tables = [t for t in table_results if t["status"] == "error"]
+
+        if len(successful_tables) > 0:
+            msg = f"Successfully ingested {len(successful_tables)} tables ({total_chunks} chunks, {total_rows} rows) from database '{database_name}'."
+            if empty_tables:
+                msg += f" ({len(empty_tables)} empty tables skipped)."
+            # Automatically save connection for continuous background auto-sync (<2ms DMV check)
+            file_registry.save_db_connection(
+                database_name=database_name,
+                connection_string=req.connection_string,
+                db_type=req.db_type,
+                domain=req.domain,
+                strategy=req.strategy,
+                auto_sync=1,
+                sync_interval_sec=15,
+                table_count=len(successful_tables),
+                row_count=total_rows
+            )
+        elif len(error_tables) > 0:
+            msg = f"0 tables ingested from database '{database_name}'. {len(error_tables)} tables encountered errors."
+        else:
+            msg = f"0 tables ingested: all {len(empty_tables)} selected tables in database '{database_name}' contain 0 rows."
+
+        return {
+            "success": len(successful_tables) > 0 or len(error_tables) == 0,
+            "database_name": database_name,
+            "db_type": req.db_type,
+            "total_tables": len(tables_to_ingest),
+            "successful_tables": len(successful_tables),
+            "empty_tables": len(empty_tables),
+            "error_tables": len(error_tables),
+            "total_rows": total_rows,
+            "total_chunks": total_chunks,
+            "table_results": table_results,
+            "message": msg
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/database/{database_name}")
+def delete_database_group(database_name: str = Path(..., description="The database group name to delete")):
+    """Delete all tables belonging to a database group from Chroma and registry."""
+    try:
+        # Find all files belonging to this group
+        records = [f for f in file_registry.list_files(include_all=True) if f.group_name and f.group_name.lower() == database_name.lower()]
+        for r in records:
+            _kb.delete_source(r.file_id)
+            _kb.delete_source(r.file_path)
+        
+        deleted_count = file_registry.delete_group(database_name)
+        file_registry.delete_db_connection(database_name)
+        return {
+            "status": "success",
+            "message": f"Successfully deleted database group '{database_name}' ({deleted_count} tables removed).",
+            "deleted_tables": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/sync-database/{database_name}")
+def sync_database_on_demand(database_name: str = Path(..., description="Database name to sync")):
+    """Manually trigger immediate sync of all tables for a specific database."""
+    from app.ingestion.sync_worker import sync_worker
+    try:
+        res = sync_worker.sync_database_now(database_name)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/database-connections")
+def list_database_connections():
+    """List all registered database connections and their auto-sync status."""
+    try:
+        conns = file_registry.list_db_connections()
+        return {"connections": [c.model_dump() for c in conns]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class UpdateDBConnectionRequest(BaseModel):
+    auto_sync: Optional[bool] = None
+    sync_interval_sec: Optional[int] = None
+
+@router.patch("/database-connections/{database_name}")
+def update_database_connection(database_name: str, req: UpdateDBConnectionRequest):
+    """Update auto-sync settings for a database connection."""
+    conn = file_registry.get_db_connection(database_name)
+    if not conn:
+        raise HTTPException(status_code=404, detail=f"Database '{database_name}' connection not found")
+    auto_sync_val = (1 if req.auto_sync else 0) if req.auto_sync is not None else conn.auto_sync
+    interval_val = req.sync_interval_sec if req.sync_interval_sec is not None else conn.sync_interval_sec
+    file_registry.save_db_connection(
+        database_name=conn.database_name,
+        connection_string=conn.connection_string,
+        db_type=conn.db_type,
+        domain=conn.domain,
+        strategy=conn.strategy,
+        auto_sync=auto_sync_val,
+        sync_interval_sec=interval_val
+    )
+    return {"status": "success", "message": f"Updated settings for {database_name}", "auto_sync": bool(auto_sync_val)}
+
+@router.post("/sync-event")
+def receive_sync_event(event: Dict[str, Any]):
+    """Receive a real-time row change event (INSERT/UPDATE/DELETE) and enqueue for micro-batch sync."""
+    from app.ingestion.sync_worker import sync_worker, ChangeEvent
+    try:
+        event_obj = ChangeEvent(**event)
+        return sync_worker.push_event(event_obj)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/sync-batch")
+def receive_sync_batch(events: List[Dict[str, Any]]):
+    """Receive a batch of real-time row change events and enqueue for micro-batch sync."""
+    from app.ingestion.sync_worker import sync_worker, ChangeEvent
+    try:
+        event_objs = [ChangeEvent(**e) for e in events]
+        return sync_worker.push_batch(event_objs)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/sync-status")
+def get_sync_status():
+    """Get the current health, metrics, and queue status of the real-time sync worker."""
+    from app.ingestion.sync_worker import sync_worker
+    return sync_worker.get_status()
+
+

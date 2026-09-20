@@ -218,6 +218,14 @@ class DomainPack(ABC):
         """
         return []
 
+    @property
+    def report_sections(self) -> List[str]:
+        """
+        List of extra report section identifiers contributed by this domain pack
+        (e.g., ['expiry_risk'] for pharmacy).
+        """
+        return []
+
     def register_kpis(self, engine) -> None:
         """
         Attach this domain's KPIs to a KPIEngine.

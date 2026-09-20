@@ -13,8 +13,9 @@ class DirectoryWatcherConnector(Connector):
         self.watch_dir = watch_dir
         self.file_pattern = file_pattern
 
-    def get_latest_file(() -> Optional[str]:
-        pass  # Helper method
+    def get_latest_file(self) -> Optional[str]:
+        pending = self.list_pending_files()
+        return pending[0] if pending else None
 
     def list_pending_files(self) -> List[str]:
         if not os.path.exists(self.watch_dir):

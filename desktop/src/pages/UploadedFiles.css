@@ -416,6 +416,25 @@
     color: #ef4444;
 }
 
+.processing-actions-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.btn-file-action.cancel {
+    background: #fef2f2;
+    color: #dc2626;
+    border-color: #fecaca;
+}
+
+.btn-file-action.cancel:hover {
+    background: #fee2e2;
+    color: #b91c1c;
+    border-color: #fca5a5;
+    box-shadow: 0 1px 4px rgba(220, 38, 38, 0.15);
+}
+
 /* Active Ingestion Live Tracker Banner */
 .active-ingestion-banner {
     background: linear-gradient(135deg, #0d7377 0%, #14919b 100%);
@@ -497,6 +516,35 @@
     font-weight: 700;
     color: #a7f3d0;
     font-size: 0.84rem;
+}
+
+.btn-cancel-task {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.22rem 0.65rem;
+    border-radius: 6px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    background: rgba(239, 68, 68, 0.25);
+    color: #ffffff;
+    border: 1px solid rgba(254, 202, 202, 0.4);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    backdrop-filter: blur(4px);
+    line-height: 1.2;
+}
+
+.btn-cancel-task:hover {
+    background: #ef4444;
+    border-color: #ef4444;
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.45);
+    transform: translateY(-1px);
+}
+
+.btn-cancel-task:active {
+    transform: translateY(0);
 }
 
 .task-progress-track {
@@ -683,6 +731,96 @@
 .files-toast.error { background: #991b1b; color: #ffffff; }
 .files-toast.info { background: #1e293b; color: #ffffff; }
 
+/* Database Grouping Styles */
+.db-groups-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.db-group-card {
+    background: #ffffff;
+    border: 1.5px solid #cbd5e1;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+    transition: border-color 0.2s;
+}
+
+.db-group-card:hover {
+    border-color: #94a3b8;
+}
+
+.db-group-header {
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 0.9rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.db-group-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.db-group-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: #eff6ff;
+    color: #2563eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.db-group-name {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.db-group-meta {
+    font-size: 0.76rem;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.db-group-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.db-group-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.db-badge-pill {
+    font-size: 0.74rem;
+    font-weight: 600;
+    padding: 0.2rem 0.55rem;
+    border-radius: 12px;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.db-badge-pill.ingested {
+    background: #ecfdf5;
+    color: #065f46;
+    border: 1px solid #a7f3d0;
+}
+
 @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
@@ -692,3 +830,4 @@
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
+

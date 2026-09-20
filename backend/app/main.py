@@ -7,19 +7,35 @@ from app.api import routes, kb, chat, analytics, report, files
 from app.ingestion.store import KnowledgeBase
 from fastapi.middleware.cors import CORSMiddleware
 
-def _warm_embedding_model():
-    try:
-        kb_inst = KnowledgeBase()
-        kb_inst._get_embedder()
-        print("[Startup] Embedding model pre-warmed and ready.")
-    except Exception as e:
-        print(f"[Startup] Embedding model warm-up notice: {e}")
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Pre-warm embedding model in background thread for sub-second first-click ingestion
-    threading.Thread(target=_warm_embedding_model, daemon=True).start()
+    # Safely pre-warm embedding model and LLM in background daemon thread
+    def _prewarm():
+        try:
+            kb_inst = KnowledgeBase()
+            kb_inst._get_embedder()
+            print("[Startup] Embedding model pre-warmed and ready.")
+        except Exception as e:
+            print(f"[Startup] Embedding model warm-up notice: {e}")
+        try:
+            from app.core.llm import llm
+            client = llm._get_client()
+            active_model = llm._resolve_model(client)
+            print(f"[Startup] Local LLM ({active_model}) ready.")
+        except Exception as e:
+            print(f"[Startup] Local LLM warm-up notice: {e}")
+
+    threading.Thread(target=_prewarm, daemon=True).start()
+
+    # Start real-time sync worker
+    from app.ingestion.sync_worker import sync_worker
+    sync_worker.start()
+
     yield
+
+    # Shutdown real-time sync worker
+    sync_worker.stop()
+
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
@@ -45,3 +61,4 @@ def read_root():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "app": settings.app_name}
+# reload trigger v5 - routes updated with sql discover and ingest-database

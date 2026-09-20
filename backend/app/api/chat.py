@@ -6,15 +6,39 @@ from app.rag.models import ChatRequest, ChatResponse
 from app.rag.chat import rag_chat
 from app.rag.history import session_manager
 
+from app.core.llm import llm
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+class SelectModelRequest(BaseModel):
+    model: str = Field(..., description="Name of local model to activate")
 
 class SaveSessionRequest(BaseModel):
     messages: List[Dict[str, Any]] = Field(..., description="Full list of messages in this chat session")
     domain: Optional[str] = Field("pharmacy", description="The domain/vertical")
     title: Optional[str] = Field(None, description="Optional custom session title")
+    selected_file_ids: Optional[List[str]] = Field(None, description="Optional list of scoped file/table IDs")
 
 class UpdateTitleRequest(BaseModel):
     title: str = Field(..., description="New session title")
+
+@router.get("/models")
+def list_chat_models():
+    """List all installed local models and the currently active model."""
+    try:
+        models = llm.list_installed_models()
+        return {"models": models, "active_model": llm.model}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/models/select")
+def select_chat_model(payload: SelectModelRequest):
+    """Set active model for chat inference."""
+    try:
+        active = llm.set_active_model(payload.model)
+        return {"status": "ok", "active_model": active}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("", response_model=ChatResponse)
 def chat(request: ChatRequest):
@@ -31,7 +55,12 @@ def chat_stream(request: ChatRequest):
     try:
         return StreamingResponse(
             rag_chat.ask_stream(request), 
-            media_type="application/x-ndjson"
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -62,7 +91,8 @@ def save_session(session_id: str, payload: SaveSessionRequest):
             session_id=session_id,
             messages=payload.messages,
             domain=payload.domain or "pharmacy",
-            title=payload.title
+            title=payload.title,
+            selected_file_ids=payload.selected_file_ids
         )
         return {"status": "ok", "session": saved}
     except Exception as e:

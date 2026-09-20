@@ -21,6 +21,23 @@ class FileRecord(BaseModel):
     progress: Optional[float] = 0.0
     step_text: Optional[str] = ""
     error_message: Optional[str] = None
+    group_name: Optional[str] = None
+    source_type: Optional[str] = "file"
+    table_name: Optional[str] = None
+
+class DBConnectionRecord(BaseModel):
+    database_name: str
+    connection_string: str
+    db_type: str
+    domain: str = "pharmacy"
+    strategy: str = "row"
+    auto_sync: int = 1
+    sync_interval_sec: int = 15
+    last_synced_at: Optional[str] = None
+    last_status: Optional[str] = "active"
+    table_count: int = 0
+    row_count: int = 0
+    watermarks: Optional[str] = "{}"
 
 _hash_cache: Dict[str, tuple] = {}
 
@@ -58,7 +75,10 @@ class FileRegistry:
                     file_size_bytes INTEGER DEFAULT 0,
                     progress REAL DEFAULT 0.0,
                     step_text TEXT DEFAULT '',
-                    error_message TEXT DEFAULT ''
+                    error_message TEXT DEFAULT '',
+                    group_name TEXT DEFAULT NULL,
+                    source_type TEXT DEFAULT 'file',
+                    table_name TEXT DEFAULT NULL
                 )
             """)
             conn.commit()
@@ -73,6 +93,24 @@ class FileRegistry:
             """)
             conn.commit()
 
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS db_connections (
+                    database_name TEXT PRIMARY KEY,
+                    connection_string TEXT NOT NULL,
+                    db_type TEXT NOT NULL,
+                    domain TEXT DEFAULT 'pharmacy',
+                    strategy TEXT DEFAULT 'row',
+                    auto_sync INTEGER DEFAULT 1,
+                    sync_interval_sec INTEGER DEFAULT 15,
+                    last_synced_at TEXT,
+                    last_status TEXT DEFAULT 'active',
+                    table_count INTEGER DEFAULT 0,
+                    row_count INTEGER DEFAULT 0,
+                    watermarks TEXT DEFAULT '{}'
+                )
+            """)
+            conn.commit()
+
             # Ensure newly added columns exist in older database files
             cursor = conn.execute("PRAGMA table_info(file_registry)")
             cols = {row["name"] for row in cursor.fetchall()}
@@ -82,6 +120,12 @@ class FileRegistry:
                 conn.execute("ALTER TABLE file_registry ADD COLUMN step_text TEXT DEFAULT ''")
             if "error_message" not in cols:
                 conn.execute("ALTER TABLE file_registry ADD COLUMN error_message TEXT DEFAULT ''")
+            if "group_name" not in cols:
+                conn.execute("ALTER TABLE file_registry ADD COLUMN group_name TEXT DEFAULT NULL")
+            if "source_type" not in cols:
+                conn.execute("ALTER TABLE file_registry ADD COLUMN source_type TEXT DEFAULT 'file'")
+            if "table_name" not in cols:
+                conn.execute("ALTER TABLE file_registry ADD COLUMN table_name TEXT DEFAULT NULL")
             conn.commit()
 
     @staticmethod
@@ -216,19 +260,23 @@ class FileRegistry:
         chunk_count: int,
         domain: str = "pharmacy",
         strategy: str = "row",
-        file_id: Optional[str] = None
+        file_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        source_type: Optional[str] = "file",
+        table_name: Optional[str] = None,
+        filename_override: Optional[str] = None
     ) -> FileRecord:
-        canonical_path = self.normalize_path(file_path)
-        file_hash = self.calculate_hash(file_path)
-        filename = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        canonical_path = self.normalize_path(file_path) if source_type == "file" else file_path.replace("\\", "/")
+        file_hash = self.calculate_hash(file_path) if (source_type == "file" and os.path.exists(file_path)) else hashlib.sha256(canonical_path.encode()).hexdigest()
+        filename = filename_override or os.path.basename(file_path) or table_name or "data_source"
+        file_size = os.path.getsize(file_path) if (source_type == "file" and os.path.exists(file_path)) else 0
         ingested_at = datetime.now().isoformat()
         
         existing = None
         if file_id:
             existing = self.get_file_by_id(file_id)
         if not existing:
-            existing = self.get_file_by_path(canonical_path) or self.get_file_by_hash(file_hash)
+            existing = self.get_file_by_path(canonical_path) or (self.get_file_by_hash(file_hash) if source_type == "file" else None)
 
         with self._get_connection() as conn:
             if existing:
@@ -237,15 +285,16 @@ class FileRegistry:
                     UPDATE file_registry 
                     SET filename = ?, file_path = ?, file_hash = ?, chunk_count = ?, domain = ?, strategy = ?, 
                         status = 'active', progress = 100.0, step_text = 'Completed', error_message = '', 
-                        ingested_at = ?, file_size_bytes = ?
+                        ingested_at = ?, file_size_bytes = ?, group_name = COALESCE(?, group_name),
+                        source_type = COALESCE(?, source_type), table_name = COALESCE(?, table_name)
                     WHERE file_id = ?
-                """, (filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size, fid))
+                """, (filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size, group_name, source_type, table_name, fid))
             else:
                 fid = file_id or f"file_{uuid.uuid4().hex[:12]}"
                 conn.execute("""
-                    INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 100.0, 'Completed', '')
-                """, (fid, filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size))
+                    INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message, group_name, source_type, table_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 100.0, 'Completed', '', ?, ?, ?)
+                """, (fid, filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size, group_name, source_type, table_name))
             conn.commit()
 
         return self.get_file_by_id(fid)
@@ -259,12 +308,16 @@ class FileRegistry:
         strategy: str = "row",
         progress: float = 0.0,
         step_text: str = "",
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        group_name: Optional[str] = None,
+        source_type: Optional[str] = "file",
+        table_name: Optional[str] = None,
+        filename_override: Optional[str] = None
     ) -> FileRecord:
-        canonical_path = self.normalize_path(file_path)
-        filename = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-        file_hash = self.calculate_hash(file_path)
+        canonical_path = self.normalize_path(file_path) if source_type == "file" else file_path.replace("\\", "/")
+        filename = filename_override or os.path.basename(file_path) or table_name or "data_source"
+        file_size = os.path.getsize(file_path) if (source_type == "file" and os.path.exists(file_path)) else 0
+        file_hash = self.calculate_hash(file_path) if (source_type == "file" and os.path.exists(file_path)) else hashlib.sha256(canonical_path.encode()).hexdigest()
         now_ts = datetime.now().isoformat()
         err_str = error_message or ""
         
@@ -280,15 +333,16 @@ class FileRegistry:
                 conn.execute("""
                     UPDATE file_registry 
                     SET filename = ?, file_path = ?, status = ?, domain = ?, strategy = ?, 
-                        file_size_bytes = ?, progress = ?, step_text = ?, error_message = ?, ingested_at = ?
+                        file_size_bytes = ?, progress = ?, step_text = ?, error_message = ?, ingested_at = ?,
+                        group_name = COALESCE(?, group_name), source_type = COALESCE(?, source_type), table_name = COALESCE(?, table_name)
                     WHERE file_id = ?
-                """, (filename, canonical_path, status, domain, strategy, file_size, progress, step_text, err_str, now_ts, fid))
+                """, (filename, canonical_path, status, domain, strategy, file_size, progress, step_text, err_str, now_ts, group_name, source_type, table_name, fid))
             else:
                 fid = file_id or f"file_{uuid.uuid4().hex[:12]}"
                 conn.execute("""
-                    INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message)
-                    VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (fid, filename, canonical_path, file_hash, domain, strategy, status, now_ts, file_size, progress, step_text, err_str))
+                    INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message, group_name, source_type, table_name)
+                    VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (fid, filename, canonical_path, file_hash, domain, strategy, status, now_ts, file_size, progress, step_text, err_str, group_name, source_type, table_name))
             conn.commit()
 
         return self.get_file_by_id(fid)
@@ -334,10 +388,123 @@ class FileRegistry:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_group(self, group_name: str) -> int:
+        """Delete all records belonging to a database group."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM file_registry WHERE group_name = ? OR LOWER(group_name) = LOWER(?)", (group_name, group_name))
+            conn.commit()
+            return cursor.rowcount
+
     def clear_all(self):
         with self._get_connection() as conn:
             conn.execute("DELETE FROM file_registry")
             conn.commit()
 
+    # -------------------------------------------------------------
+    # Database Connections & Auto-Sync Tracking
+    # -------------------------------------------------------------
+    def save_db_connection(
+        self,
+        database_name: str,
+        connection_string: str,
+        db_type: str,
+        domain: str = "pharmacy",
+        strategy: str = "row",
+        auto_sync: int = 1,
+        sync_interval_sec: int = 15,
+        last_status: str = "active",
+        table_count: int = 0,
+        row_count: int = 0
+    ) -> DBConnectionRecord:
+        now_ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO db_connections (
+                    database_name, connection_string, db_type, domain, strategy,
+                    auto_sync, sync_interval_sec, last_synced_at, last_status, table_count, row_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(database_name) DO UPDATE SET
+                    connection_string = excluded.connection_string,
+                    db_type = excluded.db_type,
+                    domain = excluded.domain,
+                    strategy = excluded.strategy,
+                    auto_sync = excluded.auto_sync,
+                    sync_interval_sec = excluded.sync_interval_sec,
+                    last_status = excluded.last_status,
+                    table_count = CASE WHEN excluded.table_count > 0 THEN excluded.table_count ELSE table_count END,
+                    row_count = CASE WHEN excluded.row_count > 0 THEN excluded.row_count ELSE row_count END
+            """, (database_name, connection_string, db_type, domain, strategy, auto_sync, sync_interval_sec, now_ts, last_status, table_count, row_count))
+            conn.commit()
+        return self.get_db_connection(database_name)
+
+    def get_db_connection(self, database_name: str) -> Optional[DBConnectionRecord]:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM db_connections WHERE LOWER(database_name) = LOWER(?)",
+                (database_name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return DBConnectionRecord(**dict(row))
+        return None
+
+    def list_db_connections(self, auto_sync_only: bool = False) -> List[DBConnectionRecord]:
+        with self._get_connection() as conn:
+            query = "SELECT * FROM db_connections"
+            if auto_sync_only:
+                query += " WHERE auto_sync = 1 AND last_status = 'active'"
+            cursor = conn.execute(query)
+            return [DBConnectionRecord(**dict(r)) for r in cursor.fetchall()]
+
+    def update_db_sync_status(
+        self,
+        database_name: str,
+        status: str,
+        last_synced_at: Optional[str] = None,
+        table_count: Optional[int] = None,
+        row_count: Optional[int] = None,
+        watermarks: Optional[str] = None
+    ):
+        now_ts = last_synced_at or datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE db_connections
+                SET last_status = ?,
+                    last_synced_at = ?,
+                    table_count = COALESCE(?, table_count),
+                    row_count = COALESCE(?, row_count),
+                    watermarks = COALESCE(?, watermarks)
+                WHERE LOWER(database_name) = LOWER(?)
+            """, (status, now_ts, table_count, row_count, watermarks, database_name))
+            conn.commit()
+
+    def delete_db_connection(self, database_name: str) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM db_connections WHERE LOWER(database_name) = LOWER(?)",
+                (database_name,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
 file_registry = FileRegistry()
 file_registry.cleanup_stale_processing()
+
+# Pre-seed active connection for PharmacyPOS if present in registry
+try:
+    existing_pharmacy = file_registry.get_db_connection("PharmacyPOS")
+    if not existing_pharmacy:
+        file_registry.save_db_connection(
+            database_name="PharmacyPOS",
+            connection_string="mssql+pyodbc://localhost\\SQLEXPRESS/PharmacyPOS?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
+            db_type="mssql",
+            domain="pharmacy",
+            strategy="row",
+            auto_sync=1,
+            sync_interval_sec=15,
+            table_count=10,
+            row_count=772
+        )
+except Exception:
+    pass
+

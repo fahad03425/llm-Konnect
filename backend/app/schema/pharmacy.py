@@ -15,14 +15,15 @@ class PharmacyDomainPack(DomainPack):
             "generic_name", "manufacturer", "batch_no", "expiry_date", 
             "mfg_date", "pack_size", "barcode", "mrp", "drap_reg_no", 
             "schedule_flag", "scheme", "rack_location", "reorder_level", 
-            "prescription_ref"
+            "prescription_ref", "doctor_name", "mobile_number", "bonus_quantity"
         ]
 
     @property
     def searchable_fields(self) -> List[str]:
         return [
             "product_id", "generic_name", "manufacturer", "batch_no", 
-            "description", "category", "supplier_id", "customer_id", "invoice_id"
+            "description", "category", "supplier_id", "customer_id", "invoice_id",
+            "doctor_name", "mobile_number"
         ]
 
     @property
@@ -31,7 +32,7 @@ class PharmacyDomainPack(DomainPack):
             "date", "txn_type", "amount", "unit_price", "quantity",
             "product_id", "supplier_id", "customer_id", "invoice_id",
             "generic_name", "manufacturer", "batch_no", "expiry_date",
-            "mrp", "drap_reg_no", "schedule_flag"
+            "mrp", "drap_reg_no", "schedule_flag", "doctor_name", "discount", "cost"
         ]
 
     @property
@@ -43,6 +44,10 @@ class PharmacyDomainPack(DomainPack):
         from app.analytics.domains.pharmacy import PHARMACY_QUESTION_RULES
 
         return list(PHARMACY_QUESTION_RULES)
+
+    @property
+    def report_sections(self) -> List[str]:
+        return ["expiry_risk"]
 
     def register_kpis(self, engine) -> None:
         """
@@ -69,18 +74,23 @@ class PharmacyDomainPack(DomainPack):
             ("txn_type", "Transaction type", ""),
             ("date", "Date", ""),
             ("invoice_id", "Invoice", ""),
+            ("customer_id", "Customer", ""),
+            ("doctor_name", "Doctor", ""),
             ("product_id", "Product", ""),
             ("generic_name", "Generic", ""),
             ("batch_no", "Batch", ""),
             ("expiry_date", "Expiry", ""),
             ("manufacturer", "Manufacturer", ""),
             ("supplier_id", "Supplier", ""),
-            ("customer_id", "Customer", ""),
             ("quantity", "Quantity", ""),
             ("unit_price", "Unit price", "Rs "),
             ("amount", "Total amount", "Rs "),
+            ("discount", "Discount", "Rs "),
+            ("cost", "Cost price", "Rs "),
             ("mrp", "MRP", "Rs "),
-            ("payment_method", "Payment", "")
+            ("payment_method", "Payment", ""),
+            ("rack_location", "Rack", ""),
+            ("bonus_quantity", "Bonus", ""),
         ]
 
         parts = []
@@ -102,6 +112,20 @@ class PharmacyDomainPack(DomainPack):
     def header_synonyms(self) -> Dict[str, List[str]]:
         return {
             # --- Pharmacy-specific fields ---
+            "doctor_name": [
+                "doctor", "doctor name", "doctor_name", "doctorname",
+                "dr name", "dr", "prescriber", "physician", "consultant",
+                "doctor id", "doctor_id",
+            ],
+            "mobile_number": [
+                "mobile", "mobile number", "mobile no", "mobile_number",
+                "mobilenumber", "mobileno", "phone", "phone number",
+                "contact", "cell",
+            ],
+            "bonus_quantity": [
+                "bonus", "bon", "bon.", "bonus count", "total bonus",
+                "total bonus count", "bonus qty", "bonus quantity",
+            ],
             "expiry_date": [
                 "exp", "exp date", "exp.date", "expiry", "expiry date",
                 "e.date", "exp dt", "expdt", "میعاد", "expiry_date",
@@ -121,6 +145,7 @@ class PharmacyDomainPack(DomainPack):
             "mrp": [
                 "mrp", "retail price", "sale price", "max retail",
                 "maximum retail price", "retail", "selling price",
+                "s price", "s. price", "s price 1", "s. price 1", "sprice",
             ],
             "barcode": [
                 "barcode", "bar code", "ean", "ean13", "upc", "sku",
@@ -139,11 +164,13 @@ class PharmacyDomainPack(DomainPack):
             ],
             "rack_location": [
                 "rack", "location", "rack location", "rack no",
-                "shelf", "bin", "store location",
+                "shelf", "bin", "store location", "s.l.", "sl", "loc.", "loc",
+                "shelf location",
             ],
             "reorder_level": [
                 "reorder", "reorder level", "min stock", "minimum stock",
-                "reorder qty", "reorder quantity",
+                "reorder qty", "reorder quantity", "reorder point", "rop",
+                "safety stock", "min level", "minimum level",
             ],
             "prescription_ref": [
                 "prescription", "rx", "prescription no", "prescription ref",
@@ -159,15 +186,16 @@ class PharmacyDomainPack(DomainPack):
             "product_id": [
                 "product name", "item name", "brand name", "medicine",
                 "product", "drug name", "medicine name", "drug",
-                "item", "name", "product desc",
+                "item", "product desc", "product_name", "item_name", "drug_name",
             ],
             "supplier_id": [
                 "supplier", "vendor", "distributor", "supplier name",
                 "vendor name", "distributor name", "party", "party name",
             ],
             "customer_id": [
-                "customer", "patient", "client", "customer name",
-                "patient name", "buyer",
+                "patient name", "patient", "patientname", "customer",
+                "client", "customer name", "patient name", "buyer",
+                "client name", "customer_name",
             ],
             "description": [
                 "desc", "description", "details", "particulars",
@@ -175,11 +203,12 @@ class PharmacyDomainPack(DomainPack):
             ],
             "category": [
                 "category", "cat", "type", "drug type", "product type",
-                "therapeutic class", "class", "group",
+                "therapeutic class", "class", "group", "drug class",
+                "therapeutic category", "specialty", "disease",
             ],
             "quantity": [
                 "qty", "quantity", "stock", "on hand", "units",
-                "available qty", "closing stock",
+                "available qty", "closing stock", "total qty", "total quantity",
             ],
             "unit_price": [
                 "price", "rate", "unit price", "rate pkr",
@@ -187,32 +216,43 @@ class PharmacyDomainPack(DomainPack):
             ],
             "amount": [
                 "total", "amount", "net amount", "line total",
-                "total amount", "value", "net value",
+                "total amount", "value", "net value", "net total amount",
+                "net payable", "nettotalamount",
             ],
             "cost": [
                 "trade price", "tp", "purchase price", "cost price",
-                "pp", "cost", "landed cost",
+                "pp", "cost", "landed cost", "p price", "p. price", "pprice",
             ],
             "date": [
                 "date", "txn date", "invoice date", "transaction date",
-                "posting date", "voucher date",
+                "posting date", "voucher date", "invoice date time",
+                "invoicedatetime", "invoice_date_time", "inv date", "inv. date",
+                "date & time", "bill date", "bill_date", "billdate",
+                "bill time", "bill_time", "bill datetime", "bill_datetime",
+                "sale date", "sales date", "sales_date", "order date", "order_date",
+                "created at", "created_at", "timestamp", "receipt date", "receipt_date",
             ],
             "invoice_id": [
                 "invoice", "bill no", "receipt no", "invoice no",
                 "invoice number", "bill number", "voucher no",
-                "challan no", "order no",
+                "challan no", "order no", "billno", "transaction #",
+
+                "transaction no",
             ],
             "discount": [
                 "discount", "disc", "disc%", "discount%",
-                "trade discount", "special discount",
+                "trade discount", "special discount", "item discount",
+                "item discount total", "itemdiscounttotal", "item disc",
+                "flat disc", "flat discount", "disc by %",
             ],
             "tax": [
                 "tax", "gst", "vat", "sales tax", "st",
-                "withholding tax", "wht",
+                "withholding tax", "wht", "gst %", "flat gst", "item gst",
             ],
             "payment_method": [
                 "payment", "payment method", "mode of payment",
-                "pay mode", "payment mode",
+                "pay mode", "payment mode", "client type", "clienttype",
+                "payment type",
             ],
             "txn_type": [
                 "type", "txn type", "transaction type", "voucher type",

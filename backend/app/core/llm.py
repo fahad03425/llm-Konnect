@@ -66,6 +66,40 @@ class LLMService:
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
         return text.strip()
 
+    def _get_default_options(self, custom_opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        num_threads = max(4, min(16, os.cpu_count() or 6))
+        opts: Dict[str, Any] = {
+            "temperature": settings.llm_temperature,
+            "num_predict": settings.llm_num_predict,
+            "num_ctx": 1536,
+            "num_thread": num_threads,
+            "top_k": 20,
+            "top_p": 0.85
+        }
+        if custom_opts:
+            opts.update(custom_opts)
+        return opts
+
+    def list_installed_models(self) -> List[str]:
+        """List all installed local models in Ollama."""
+        try:
+            client = self._get_client()
+            res = client.list()
+            installed = []
+            if hasattr(res, 'models'):
+                installed = [getattr(m, 'model', None) or getattr(m, 'name', '') for m in res.models]
+            elif isinstance(res, dict) and 'models' in res:
+                installed = [m.get('model') or m.get('name') for m in res['models']]
+            return [m for m in installed if m]
+        except Exception:
+            return [self.model]
+
+    def set_active_model(self, model_name: str) -> str:
+        """Set the active LLM model."""
+        self.model = model_name
+        settings.llm_model = model_name
+        return self.model
+
     def generate(
         self,
         prompt: str,
@@ -82,20 +116,13 @@ class LLMService:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        opts = options or {}
-        # Ensure default behavior for 4GB VRAM
-        if "temperature" not in opts:
-            opts["temperature"] = settings.llm_temperature
-            
+        opts = self._get_default_options(options)
         kwargs = {
             "model": active_model,
             "messages": messages,
             "options": opts,
+            "keep_alive": keep_alive or settings.llm_keep_alive
         }
-        if keep_alive is not None:
-            kwargs["keep_alive"] = keep_alive
-        else:
-            kwargs["keep_alive"] = settings.llm_keep_alive
 
         try:
             response = client.chat(**kwargs)
@@ -110,23 +137,17 @@ class LLMService:
         keep_alive: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Non-streaming chat."""
+        """Non-streaming fast chat."""
         client = self._get_client()
         active_model = self._resolve_model(client)
         
-        opts = options or {}
-        if "temperature" not in opts:
-            opts["temperature"] = settings.llm_temperature
-            
+        opts = self._get_default_options(options)
         kwargs = {
             "model": active_model,
             "messages": messages,
             "options": opts,
+            "keep_alive": keep_alive or settings.llm_keep_alive_chat
         }
-        if keep_alive is not None:
-            kwargs["keep_alive"] = keep_alive
-        else:
-            kwargs["keep_alive"] = settings.llm_keep_alive_chat
 
         try:
             response = client.chat(**kwargs)
@@ -145,22 +166,14 @@ class LLMService:
         client = self._get_client()
         active_model = self._resolve_model(client)
         
-        opts = options or {}
-        if "temperature" not in opts:
-            opts["temperature"] = settings.llm_temperature
-        if "num_predict" not in opts:
-            opts["num_predict"] = settings.llm_num_predict
-            
+        opts = self._get_default_options(options)
         kwargs = {
             "model": active_model,
             "messages": messages,
             "stream": True,
             "options": opts,
+            "keep_alive": keep_alive or settings.llm_keep_alive_chat
         }
-        if keep_alive is not None:
-            kwargs["keep_alive"] = keep_alive
-        else:
-            kwargs["keep_alive"] = settings.llm_keep_alive_chat
 
         try:
             stream = client.chat(**kwargs)

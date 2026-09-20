@@ -29,8 +29,9 @@ export const PreviewTable = ({ columns, sampleRows, totalRows }: Props) => (
         </div>
         <div className="preview-meta">
             <Rows size={14} />
-            Showing 5 of <strong style={{ color: '#1A1A1A' }}>{totalRows.toLocaleString()}</strong> total rows
-            &nbsp;·&nbsp; {columns.length} columns
+            <span>
+                Showing <strong>{sampleRows.length}</strong> sample rows for schema preview &amp; mapping · Full dataset ({totalRows > sampleRows.length ? `${totalRows.toLocaleString()} rows` : 'all rows'}) loaded during ingestion · <strong>{columns.length}</strong> columns detected
+            </span>
         </div>
     </div>
 );

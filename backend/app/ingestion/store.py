@@ -10,14 +10,14 @@ locally and the app runs fully offline. For air-gapped installs, point
 import os
 import time
 import hashlib
+import threading
 from typing import List, Dict, Any, Optional, Callable
 import pandas as pd
+import torch
 
 from app.core.config import settings
 from app.schema.domain import get_domain_pack
 from app.ingestion.models import IngestSummary, RetrievedChunk
-
-import threading
 
 _global_chroma_clients: Dict[str, Any] = {}
 _chroma_init_lock = threading.Lock()
@@ -33,6 +33,34 @@ def _get_persistent_chroma_client(chroma_path: str):
     return _global_chroma_clients[abs_path]
 
 
+_global_embedders: Dict[str, Any] = {}
+_embedder_lock = threading.Lock()
+
+def _get_global_embedder(model_name: str, progress_callback: Optional[Callable[[float, str], None]] = None):
+    if model_name not in _global_embedders:
+        with _embedder_lock:
+            if model_name not in _global_embedders:
+                if progress_callback:
+                    progress_callback(32.0, "Loading local neural embedding model...")
+                import os
+                import torch
+                from sentence_transformers import SentenceTransformer
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                try:
+                    # Try instant offline loading from local cache first
+                    _global_embedders[model_name] = SentenceTransformer(model_name, device=device, local_files_only=True)
+                except Exception:
+                    # Fall back to online download if not cached yet
+                    try:
+                        os.environ.pop("HF_HUB_OFFLINE", None)
+                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                        _global_embedders[model_name] = SentenceTransformer(model_name, device=device)
+                    finally:
+                        os.environ["HF_HUB_OFFLINE"] = "1"
+                        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    return _global_embedders[model_name]
+
+
 class KnowledgeBase:
     def __init__(self, chroma_dir: Optional[str] = None, collection_name: Optional[str] = None):
         self.chroma_dir = chroma_dir or settings.chroma_dir
@@ -42,7 +70,6 @@ class KnowledgeBase:
         # Lazy loaded
         self._chroma_client = None
         self._collection = None
-        self._embedder = None
         
         # Determine prefix for e5 models
         self.query_prefix = "query: " if "e5" in self.embedding_model_name.lower() else ""
@@ -59,25 +86,7 @@ class KnowledgeBase:
         return self._collection
 
     def _get_embedder(self, progress_callback: Optional[Callable[[float, str], None]] = None):
-        if self._embedder is None:
-            if progress_callback:
-                progress_callback(32.0, "Loading local neural embedding model...")
-            import torch
-            from sentence_transformers import SentenceTransformer
-            if not torch.cuda.is_available():
-                try:
-                    num_threads = max(1, min(16, os.cpu_count() or 4))
-                    torch.set_num_threads(num_threads)
-                except Exception:
-                    pass
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            try:
-                # Try instant offline loading from local cache first
-                self._embedder = SentenceTransformer(self.embedding_model_name, device=device, local_files_only=True)
-            except Exception:
-                # Fall back to online download if not cached yet
-                self._embedder = SentenceTransformer(self.embedding_model_name, device=device)
-        return self._embedder
+        return _get_global_embedder(self.embedding_model_name, progress_callback)
         
     def _sanitize_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Chroma requires metadata values to be str, int, float, or bool.
@@ -132,10 +141,11 @@ class KnowledgeBase:
         strategy: str = "row",
         merge_key: Optional[str] = None,
         file_id: Optional[str] = None,
-        progress_callback: Optional[Callable[[float, str], None]] = None
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> IngestSummary:
         """
-        Batched, idempotent upsert of canonical records into Chroma with live progress reporting.
+        Batched, idempotent upsert of canonical records into Chroma with live progress reporting and cancellation support.
 
         strategy="row"   (default) — one record = one chunk.
         strategy="merge" — greedy, token-constrained merge
@@ -155,6 +165,9 @@ class KnowledgeBase:
                 file_id=file_id
             )
 
+        if cancel_check and cancel_check():
+            raise InterruptedError("Ingestion cancelled by user")
+
         if progress_callback:
             progress_callback(35.0, "Preparing records for vectorization...")
 
@@ -167,7 +180,9 @@ class KnowledgeBase:
         records = canonical_df.to_dict(orient="records")
         total_records = len(records)
         
-        batch_size = 128
+        # Optimized batch sizes for high-throughput tensor encoding and database writing
+        encode_batch_size = 512 if torch.cuda.is_available() else 256
+        upsert_batch_size = 1024
         total_chunks = 0
         
         # Prepare dates for derived metadata
@@ -203,6 +218,15 @@ class KnowledgeBase:
                 "ingested_at": source_meta.get("ingested_at", pd.Timestamp.now().isoformat()),
                 "source_row": int(source_row),
             }
+            if "database_name" in source_meta:
+                base_meta["database_name"] = str(source_meta["database_name"])
+            if "table_name" in source_meta:
+                base_meta["table_name"] = str(source_meta["table_name"])
+            if "group_name" in source_meta:
+                base_meta["group_name"] = str(source_meta["group_name"])
+            if "source_type" in source_meta:
+                base_meta["source_type"] = str(source_meta["source_type"])
+
             for f in pack.filter_metadata_fields:
                 if f in row and row[f] is not None and row[f] != "":
                     base_meta[f] = row[f]
@@ -217,10 +241,19 @@ class KnowledgeBase:
             nonlocal total_chunks
             if not ids:
                 return
+            if cancel_check and cancel_check():
+                raise InterruptedError("Ingestion cancelled by user")
             if progress_callback:
                 pct = min(94.0, 35.0 + (58.0 * (current_idx / max(1, total_records))))
                 progress_callback(pct, f"Vectorizing records: {current_idx}/{total_records} ({pct:.0f}%)...")
-            embeddings = embedder.encode(texts, batch_size=batch_size, show_progress_bar=False, normalize_embeddings=True).tolist()
+            embeddings = embedder.encode(
+                texts,
+                batch_size=encode_batch_size,
+                show_progress_bar=False,
+                normalize_embeddings=True
+            ).tolist()
+            if cancel_check and cancel_check():
+                raise InterruptedError("Ingestion cancelled by user")
             collection.upsert(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
             total_chunks += len(ids)
             ids.clear(); texts.clear(); metadatas.clear()
@@ -234,11 +267,21 @@ class KnowledgeBase:
             except ImportError:
                 count_tokens = lambda t: len(t.split())
 
-            key_field = merge_key or "invoice_id"
+            key_field = merge_key
+            if not key_field and records:
+                first_record_keys = {str(k).lower().strip(): k for k in records[0].keys()}
+                for candidate in ["invoice_id", "invoice_no", "invoiceno", "bill_no", "bill_id", "billno", "order_id", "orderno", "voucher_no", "receipt_no", "transaction_id", "doc_no", "id"]:
+                    if candidate in first_record_keys:
+                        key_field = first_record_keys[candidate]
+                        break
+            if not key_field:
+                key_field = "invoice_id"
+
             chunk_limit = settings.chunk_size
 
             current_texts: List[str] = []
             current_source_rows: List[int] = []
+            current_group_rows: List[dict] = []
             current_token_count = 0
             current_group_key = object()
             chunk_group_idx = 0
@@ -247,18 +290,20 @@ class KnowledgeBase:
                 nonlocal chunk_group_idx
                 if not current_texts:
                     return
-                merged_text = " | ".join(current_texts)
+                # Formulate unified chunk text
+                if len(current_texts) == 1:
+                    merged_text = current_texts[0]
+                else:
+                    merged_text = " | ".join(current_texts)
+                
                 first_row_idx = current_source_rows[0]
-                meta = {
-                    "source_file": source_file,
-                    "filename": filename,
-                    "file_id": file_id or "",
-                    "source_connector": source_meta.get("source_connector", "unknown"),
-                    "domain": domain,
-                    "ingested_at": source_meta.get("ingested_at", pd.Timestamp.now().isoformat()),
-                    "source_row": first_row_idx,
-                    "merged_rows": str(current_source_rows),
-                }
+                first_row_dict = current_group_rows[0] if current_group_rows else {}
+                
+                meta = _build_row_meta(first_row_idx - 1, first_row_dict)
+                meta["merged_rows"] = str(current_source_rows)
+                meta["items_in_chunk"] = len(current_texts)
+                meta["chunk_type"] = "merged"
+                
                 chunk_id = self._generate_chunk_id(source_file, first_row_idx, chunk_group_idx)
                 ids.append(chunk_id)
                 texts.append(self.passage_prefix + merged_text)
@@ -266,15 +311,19 @@ class KnowledgeBase:
                 chunk_group_idx += 1
                 current_texts.clear()
                 current_source_rows.clear()
+                current_group_rows.clear()
 
             for i, row in enumerate(records):
+                if cancel_check and i % 50 == 0 and cancel_check():
+                    raise InterruptedError("Ingestion cancelled by user")
                 row_text = pack.row_to_text(row)
                 row_tokens = count_tokens(row_text)
-                group_key = row.get(key_field)
+                group_key = row.get(key_field) if key_field else None
                 source_row_val = int(row.get("source_row", i + 1))
 
+                # If group key changes (e.g. new invoice) or chunk token limit reached, emit
                 if (
-                    group_key != current_group_key
+                    (group_key is not None and group_key != current_group_key)
                     or (current_token_count + row_tokens) > chunk_limit
                 ):
                     _emit_merged_chunk()
@@ -283,9 +332,10 @@ class KnowledgeBase:
 
                 current_texts.append(row_text)
                 current_source_rows.append(source_row_val)
+                current_group_rows.append(row)
                 current_token_count += row_tokens
 
-                if len(ids) >= batch_size:
+                if len(ids) >= upsert_batch_size:
                     _flush(i + 1)
 
             _emit_merged_chunk()
@@ -294,6 +344,8 @@ class KnowledgeBase:
 
         else:
             for i, row in enumerate(records):
+                if cancel_check and i % 50 == 0 and cancel_check():
+                    raise InterruptedError("Ingestion cancelled by user")
                 source_row = row.get("source_row", i + 1)
                 clean_meta = _build_row_meta(i, row)
                 text = pack.row_to_text(row)
@@ -302,7 +354,7 @@ class KnowledgeBase:
                 texts.append(self.passage_prefix + text)
                 metadatas.append(clean_meta)
 
-                if len(ids) >= batch_size:
+                if len(ids) >= upsert_batch_size:
                     _flush(i + 1)
 
             if ids:
@@ -463,10 +515,18 @@ class KnowledgeBase:
             else:
                 clauses.append({"file_id": {"$in": file_ids}})
         elif source_files and len(source_files) > 0:
-            if len(source_files) == 1:
-                clauses.append({"source_file": source_files[0]})
+            sf_or = []
+            for sf in source_files:
+                fname = os.path.basename(sf)
+                norm = sf.replace("\\", "/")
+                sf_or.append({"filename": fname})
+                sf_or.append({"source_file": sf})
+                sf_or.append({"source_file": norm})
+                sf_or.append({"file_id": sf})
+            if len(sf_or) == 1:
+                clauses.append(sf_or[0])
             else:
-                clauses.append({"source_file": {"$in": source_files}})
+                clauses.append({"$or": sf_or})
                 
         if len(clauses) == 0:
             where_clause = None
@@ -479,20 +539,49 @@ class KnowledgeBase:
         has_date_range = bool(filters and ("date_from" in filters or "date_to" in filters))
         query_k = min(count, max(top_k * 4, 30)) if has_date_range else top_k
         
-        try:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=query_k,
-                where=where_clause,
-                include=["documents", "metadatas", "distances"]
-            )
-        except Exception:
-            # Fallback without filter if filter fails
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=query_k,
-                include=["documents", "metadatas", "distances"]
-            )
+        # Multi-source balanced retrieval: when multiple file_ids are requested,
+        # retrieve balanced candidates per file_id so one source does not starve the others
+        results = None
+        if file_ids and len(file_ids) > 1:
+            per_source_k = max(3, query_k // len(file_ids))
+            all_docs = []
+            all_metas = []
+            all_distances = []
+            other_clauses = [c for c in clauses if "file_id" not in c] if clauses else []
+            for fid in file_ids:
+                source_clause = {"file_id": fid}
+                sub_where = {"$and": [source_clause] + other_clauses} if other_clauses else source_clause
+                try:
+                    sub_res = collection.query(
+                        query_embeddings=[query_embedding],
+                        n_results=min(count, per_source_k),
+                        where=sub_where,
+                        include=["documents", "metadatas", "distances"]
+                    )
+                    if sub_res and sub_res.get("documents") and sub_res["documents"][0]:
+                        all_docs.extend(sub_res["documents"][0])
+                        all_metas.extend(sub_res["metadatas"][0])
+                        all_distances.extend(sub_res["distances"][0])
+                except Exception:
+                    pass
+            if all_docs:
+                results = {"documents": [all_docs], "metadatas": [all_metas], "distances": [all_distances]}
+
+        if results is None:
+            try:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=query_k,
+                    where=where_clause,
+                    include=["documents", "metadatas", "distances"]
+                )
+            except Exception:
+                # Fallback without filter if filter fails
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=query_k,
+                    include=["documents", "metadatas", "distances"]
+                )
         
         retrieved = []
         seen_chunk_ids = set()

@@ -24,10 +24,12 @@ export default function Chatbot() {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [availableFiles, setAvailableFiles] = useState<ScopeFile[]>([]);
-    const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+    const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
     const [sessionId, setSessionId] = useState(() => `sess-${Math.random().toString(36).substring(2, 10)}`);
     const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
     const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+    const [models, setModels] = useState<string[]>(['qwen2.5:3b', 'gemma3:1b', 'llama3:latest']);
+    const [activeModel, setActiveModel] = useState<string>('qwen2.5:3b');
 
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const chatPanelRef = useRef<HTMLDivElement>(null);
@@ -55,12 +57,46 @@ export default function Chatbot() {
                 const files: ScopeFile[] = (data.files || []).map((f: any) => ({
                     file_id: f.file_id,
                     filename: f.filename,
-                    chunk_count: f.chunk_count
+                    chunk_count: f.chunk_count,
+                    source_type: f.source_type,
+                    group_name: f.group_name,
+                    table_name: f.table_name
                 }));
                 setAvailableFiles(files);
             }
         } catch (e) {
             console.error('Could not load sources for chat scoping', e);
+        }
+    };
+
+    const fetchModels = async () => {
+        try {
+            const res = await fetch('/api/chat/models');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.models && data.models.length > 0) {
+                    setModels(data.models);
+                }
+                if (data.active_model) {
+                    setActiveModel(data.active_model);
+                }
+            }
+        } catch (e) {
+            console.error('Could not fetch installed models', e);
+        }
+    };
+
+    const handleModelChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const newModel = e.target.value;
+        setActiveModel(newModel);
+        try {
+            await fetch('/api/chat/models/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: newModel })
+            });
+        } catch (err) {
+            console.error('Failed to update active model', err);
         }
     };
 
@@ -87,7 +123,8 @@ export default function Chatbot() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     messages: currentMsgs,
-                    domain: user.domain
+                    domain: user.domain,
+                    selected_file_ids: selectedFileIds
                 })
             });
             fetchSessions();
@@ -100,6 +137,7 @@ export default function Chatbot() {
         document.title = `${activeDomainMeta.name} RAG Chatbot — LLM-KONNECT`;
         scrollToBottom();
         fetchSources();
+        fetchModels();
     }, [messages, isLoading, activeDomainMeta.name, user.domain]);
 
     useEffect(() => {
@@ -111,7 +149,7 @@ export default function Chatbot() {
         setSessionId(newId);
         setMessages([]);
         setInput('');
-        setSelectedFileId(null);
+        setSelectedFileIds([]);
         scrollToTop();
     };
 
@@ -128,6 +166,11 @@ export default function Chatbot() {
                 setSessionId(resumeId);
                 setMessages(data.messages || []);
                 setInput('');
+                if (data.selected_file_ids && Array.isArray(data.selected_file_ids)) {
+                    setSelectedFileIds(data.selected_file_ids);
+                } else {
+                    setSelectedFileIds([]);
+                }
                 scrollToTop();
             }
         } catch (e) {
@@ -197,9 +240,6 @@ export default function Chatbot() {
         setIsLoading(true);
 
         const botMsgId = Date.now().toString() + 'bot';
-        let botAnswer = '';
-        let route = 'rag';
-        let sources: any[] = [];
         const startTime = Date.now();
 
         try {
@@ -208,8 +248,8 @@ export default function Chatbot() {
                 session_id: sessionId,
                 domain: user.domain
             };
-            if (selectedFileId) {
-                payload.file_ids = [selectedFileId];
+            if (selectedFileIds.length > 0) {
+                payload.file_ids = selectedFileIds;
             }
 
             const res = await fetch('/api/chat/stream', {
@@ -218,125 +258,123 @@ export default function Chatbot() {
                 body: JSON.stringify(payload)
             });
 
-            if (!res.ok || !res.body) {
-                throw new Error('Streaming not available, falling back');
-            }
+            if (res.ok && res.body) {
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let fullAnswer = '';
+                let route = 'rag';
+                let sources: any[] = [];
+                let buffer = '';
+                let hasStarted = false;
 
-            // Create placeholder assistant bubble
-            setMessages(prev => [...prev, {
-                id: botMsgId,
-                role: 'assistant',
-                content: '',
-                route: '',
-                sources: [],
-                timestamp: new Date().toISOString()
-            }]);
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        try {
+                            const parsed = JSON.parse(trimmed);
+                            if (parsed.error) {
+                                throw new Error(parsed.error);
+                            }
+                            if (parsed.chunk !== undefined) {
+                                fullAnswer += parsed.chunk;
+                            }
+                            if (parsed.route) {
+                                route = parsed.route;
+                            }
+                            if (parsed.sources && parsed.sources.length > 0) {
+                                sources = parsed.sources;
+                            }
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                            if (!hasStarted) {
+                                hasStarted = true;
+                                setIsLoading(false);
+                            }
 
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const parsed = JSON.parse(line);
-                        if (parsed.chunk) {
-                            botAnswer += parsed.chunk;
+                            const currentAssistantMsg: Message = {
+                                id: botMsgId,
+                                role: 'assistant',
+                                content: fullAnswer,
+                                route: route,
+                                sources: sources,
+                                timing: Number(((Date.now() - startTime) / 1000).toFixed(2)),
+                                timestamp: new Date().toISOString()
+                            };
+                            setMessages([...updatedMsgs, currentAssistantMsg]);
+                        } catch (e: any) {
+                            if (e.message && !e.message.includes('JSON')) {
+                                throw e;
+                            }
                         }
-                        if (parsed.route) route = parsed.route;
-                        if (parsed.sources && parsed.sources.length > 0) sources = parsed.sources;
-
-                        setMessages(prev => prev.map(m => m.id === botMsgId ? {
-                            ...m,
-                            content: botAnswer,
-                            route: route,
-                            sources: sources,
-                            timing: Number(((Date.now() - startTime) / 1000).toFixed(2))
-                        } : m));
-                    } catch {
-                        botAnswer += line;
-                        setMessages(prev => prev.map(m => m.id === botMsgId ? {
-                            ...m,
-                            content: botAnswer,
-                            timing: Number(((Date.now() - startTime) / 1000).toFixed(2))
-                        } : m));
                     }
                 }
-            }
 
-            if (buffer.trim()) {
-                try {
-                    const parsed = JSON.parse(buffer);
-                    if (parsed.chunk) botAnswer += parsed.chunk;
-                    if (parsed.route) route = parsed.route;
-                    if (parsed.sources && parsed.sources.length > 0) sources = parsed.sources;
-                } catch {
-                    botAnswer += buffer;
+                if (buffer.trim()) {
+                    try {
+                        const parsed = JSON.parse(buffer.trim());
+                        if (parsed.chunk) fullAnswer += parsed.chunk;
+                        if (parsed.route) route = parsed.route;
+                        if (parsed.sources) sources = parsed.sources;
+                    } catch {}
                 }
-            }
 
-            const finalAssistantMsg: Message = {
-                id: botMsgId,
-                role: 'assistant',
-                content: botAnswer,
-                route: route,
-                sources: sources,
-                timing: Number(((Date.now() - startTime) / 1000).toFixed(2)),
-                timestamp: new Date().toISOString()
-            };
-
-            const allFinalMsgs = [...updatedMsgs, finalAssistantMsg];
-            setMessages(allFinalMsgs);
-            saveCurrentSession(allFinalMsgs, sessionId);
-
-        } catch {
-            // Non-streaming fallback
-            try {
-                const fallbackPayload: any = {
-                    question: userMsg,
-                    session_id: sessionId,
-                    domain: user.domain
+                const finalAssistantMsg: Message = {
+                    id: botMsgId,
+                    role: 'assistant',
+                    content: fullAnswer || "No response received.",
+                    route: route,
+                    sources: sources,
+                    timing: Number(((Date.now() - startTime) / 1000).toFixed(2)),
+                    timestamp: new Date().toISOString()
                 };
-                if (selectedFileId) fallbackPayload.file_ids = [selectedFileId];
-
-                const fallbackRes = await fetch('/api/chat', {
+                const allFinalMsgs = [...updatedMsgs, finalAssistantMsg];
+                setMessages(allFinalMsgs);
+                saveCurrentSession(allFinalMsgs, sessionId);
+            } else {
+                // Non-streaming fallback
+                const nonStreamRes = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(fallbackPayload)
+                    body: JSON.stringify(payload)
                 });
-                if (fallbackRes.ok) {
-                    const data = await fallbackRes.json();
+
+                if (nonStreamRes.ok) {
+                    const data = await nonStreamRes.json();
                     const assistantMsg: Message = {
                         id: botMsgId,
                         role: 'assistant',
                         content: data.answer,
                         route: data.route,
-                        sources: data.sources,
-                        timing: data.timing,
+                        sources: data.sources || [],
+                        timing: data.timing || Number(((Date.now() - startTime) / 1000).toFixed(2)),
                         timestamp: new Date().toISOString()
                     };
-                    const allFallbackMsgs = [...updatedMsgs, assistantMsg];
-                    setMessages(allFallbackMsgs);
-                    saveCurrentSession(allFallbackMsgs, sessionId);
-                    return;
+                    const allFinalMsgs = [...updatedMsgs, assistantMsg];
+                    setMessages(allFinalMsgs);
+                    saveCurrentSession(allFinalMsgs, sessionId);
+                } else {
+                    const errData = await nonStreamRes.json().catch(() => ({ detail: `Error ${nonStreamRes.status}` }));
+                    throw new Error(errData.detail || `Server returned ${nonStreamRes.status}`);
                 }
-            } catch {}
-
+            }
+        } catch (err: any) {
+            console.error('Chat request failed:', err);
             const errorMsg: Message = {
                 id: Date.now().toString() + 'err',
                 role: 'error',
-                content: "Couldn't reach the local engine — is the backend running?",
+                content: "Local AI engine encountered an issue. Please make sure Ollama and the backend are running.",
                 timestamp: new Date().toISOString()
             };
-            setMessages(prev => [...prev.filter(m => m.id !== botMsgId), errorMsg]);
+            const allFinalMsgs = [...updatedMsgs, errorMsg];
+            setMessages(allFinalMsgs);
+            saveCurrentSession(allFinalMsgs, sessionId);
         } finally {
             setIsLoading(false);
             fetchSessions();
@@ -365,7 +403,18 @@ export default function Chatbot() {
                         <span className="monospaced model-chip" style={{ background: 'rgba(16, 185, 129, 0.12)', color: 'var(--accent-teal)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
                             {activeDomainMeta.icon} {activeDomainMeta.name}
                         </span>
-                        <span className="monospaced model-chip">[Model: Local Qwen]</span>
+                        <select 
+                            className="model-select-dropdown"
+                            value={activeModel}
+                            onChange={handleModelChange}
+                            title="Switch local AI model for speed or depth"
+                        >
+                            {models.map(m => (
+                                <option key={m} value={m}>
+                                    {m.includes('gemma3') ? `⚡ ${m} (Ultra Fast 1B)` : m.includes('qwen2.5') ? `🎯 ${m} (Fast & Accurate 3B)` : m.includes('qwen3') ? `🧠 ${m} (Reasoning 4B)` : `🤖 ${m}`}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                     <div className="chat-actions">
                         <button 
@@ -425,8 +474,8 @@ export default function Chatbot() {
                     isLoading={isLoading}
                     handleKeyDown={handleKeyDown}
                     availableFiles={availableFiles}
-                    selectedFileId={selectedFileId}
-                    onSelectFile={setSelectedFileId}
+                    selectedFileIds={selectedFileIds}
+                    onSelectFiles={setSelectedFileIds}
                 />
             </div>
 

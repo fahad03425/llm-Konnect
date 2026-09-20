@@ -21,8 +21,26 @@ _kb = KnowledgeBase()
 _active_tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = threading.Lock()
 
+_cancelled_tasks: set = set()
+_cancelled_tasks_lock = threading.Lock()
+
 def _norm_key(path: str) -> str:
     return path.replace("\\", "/").lower()
+
+def _is_task_cancelled(file_path: str) -> bool:
+    key = _norm_key(file_path)
+    with _cancelled_tasks_lock:
+        return key in _cancelled_tasks
+
+def _set_task_cancelled(file_path: str):
+    key = _norm_key(file_path)
+    with _cancelled_tasks_lock:
+        _cancelled_tasks.add(key)
+
+def _clear_task_cancelled(file_path: str):
+    key = _norm_key(file_path)
+    with _cancelled_tasks_lock:
+        _cancelled_tasks.discard(key)
 
 def _update_task(
     file_path: str,
@@ -95,6 +113,9 @@ class FileItem(BaseModel):
     step_text: Optional[str] = ""
     error_message: Optional[str] = None
     ingested_at: Optional[str] = None
+    group_name: Optional[str] = None
+    source_type: Optional[str] = "file"
+    table_name: Optional[str] = None
 
 class QuickIngestRequest(BaseModel):
     file_path: str
@@ -102,11 +123,17 @@ class QuickIngestRequest(BaseModel):
     strategy: str = "row"
     file_id: Optional[str] = None
 
+class CancelIngestRequest(BaseModel):
+    file_path: Optional[str] = None
+    file_id: Optional[str] = None
+    filename: Optional[str] = None
+
 class UningestRequest(BaseModel):
     file_id: Optional[str] = None
     file_path: Optional[str] = None
 
 @router.get("", response_model=Dict[str, Any])
+@router.get("/list", response_model=Dict[str, Any])
 def list_all_files():
     """List all uploaded and sample dataset files with ingestion status, real-time progress, and duplicate detection."""
     _, upload_dir, samples_dir, storage_dir = get_base_dirs()
@@ -220,10 +247,13 @@ def list_all_files():
                 "progress": progress,
                 "step_text": step_text,
                 "error_message": err_msg,
-                "ingested_at": reg.ingested_at if reg else None
+                "ingested_at": reg.ingested_at if reg else None,
+                "group_name": reg.group_name if reg else None,
+                "source_type": reg.source_type if reg else ("database" if "sql://" in canonical_path else "file"),
+                "table_name": reg.table_name if reg else None
             })
 
-    # Also include any registered files that might be in external paths
+    # Also include any registered files that might be in external paths or databases
     for reg in all_registered:
         if reg.filename.startswith("."):
             continue
@@ -250,10 +280,10 @@ def list_all_files():
                     err = None
                     is_ing = True
                 else:
-                    is_proc = False
-                    stat = "not_ingested"
-                    prog = 0.0
-                    step = ""
+                    is_proc = True
+                    stat = "processing"
+                    prog = float(reg.progress or 10.0)
+                    step = reg.step_text or "Processing..."
                     err = None
                     is_ing = False
             elif reg.status == "failed":
@@ -284,8 +314,8 @@ def list_all_files():
                 "file_path": reg.file_path.replace("\\", "/"),
                 "file_size_bytes": size_bytes,
                 "file_size_formatted": format_bytes(size_bytes),
-                "extension": os.path.splitext(reg.filename)[1].lower(),
-                "dir_type": "external",
+                "extension": os.path.splitext(reg.filename)[1].lower() or "db",
+                "dir_type": "database" if (reg.source_type == "database" or "sql://" in reg.file_path) else "external",
                 "modified_at": reg.ingested_at,
                 "is_ingested": is_ing,
                 "is_processing": is_proc,
@@ -297,7 +327,10 @@ def list_all_files():
                 "progress": prog,
                 "step_text": step,
                 "error_message": err,
-                "ingested_at": reg.ingested_at
+                "ingested_at": reg.ingested_at,
+                "group_name": reg.group_name,
+                "source_type": reg.source_type or ("database" if "sql://" in reg.file_path else "file"),
+                "table_name": reg.table_name
             })
 
     total_chunks = sum(i["chunk_count"] for i in items)
@@ -343,11 +376,19 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
 def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: Optional[str]):
-    """Execute ingestion in background thread with live stage reporting."""
+    """Execute ingestion in background thread with live stage reporting and cancellation support."""
+    active_file_id = file_id
     try:
+        if _is_task_cancelled(file_path):
+            raise InterruptedError("Ingestion was cancelled before start")
+
         _update_task(file_path, file_id, 10.0, "Reading dataset & detecting format...", status="processing")
         connector = detect_connector(file_path)
         df = connector.fetch()
+
+        if _is_task_cancelled(file_path):
+            raise InterruptedError("Ingestion was cancelled")
+
         if df.empty:
             _update_task(file_path, file_id, 0.0, "File is empty", status="failed", error_message="Source file contains no data rows.")
             return
@@ -361,6 +402,9 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
 
         mapping = map_headers(list(df.columns), domain_pack)
         canonical_df = apply_mapping(df, mapping, domain=domain, keep_extras=True)
+
+        if _is_task_cancelled(file_path):
+            raise InterruptedError("Ingestion was cancelled")
 
         _update_task(file_path, file_id, 35.0, "Validating canonical records...", status="processing")
         try:
@@ -378,12 +422,17 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
             _kb.delete_source(active_file_id)
         _kb.delete_source(file_path)
 
+        if _is_task_cancelled(file_path):
+            raise InterruptedError("Ingestion was cancelled")
+
         source_meta = {
             "source_file": file_path,
             "source_connector": connector.__class__.__name__
         }
 
         def on_kb_progress(pct: float, step: str):
+            if _is_task_cancelled(file_path):
+                raise InterruptedError("Ingestion was cancelled")
             _update_task(file_path, active_file_id, pct, step, status="processing")
 
         summary = _kb.add_dataframe(
@@ -392,8 +441,12 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
             domain=domain,
             strategy=strategy,
             file_id=active_file_id,
-            progress_callback=on_kb_progress
+            progress_callback=on_kb_progress,
+            cancel_check=lambda: _is_task_cancelled(file_path)
         )
+
+        if _is_task_cancelled(file_path):
+            raise InterruptedError("Ingestion was cancelled")
 
         _update_task(file_path, active_file_id, 98.0, "Registering in Knowledge Base...", status="processing")
 
@@ -410,20 +463,41 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
         # Clean up active memory task
         with _tasks_lock:
             _active_tasks.pop(_norm_key(file_path), None)
+        _clear_task_cancelled(file_path)
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"Background ingestion failed for {file_path}: {e}")
-        _update_task(file_path, file_id, 0.0, "Ingestion failed", status="failed", error_message=str(e))
-        with _tasks_lock:
-            _active_tasks.pop(_norm_key(file_path), None)
+    except (InterruptedError, Exception) as e:
+        is_cancelled = isinstance(e, InterruptedError) or _is_task_cancelled(file_path)
+        if is_cancelled:
+            print(f"[Ingestion] Ingestion cancelled for {file_path}")
+            try:
+                if active_file_id:
+                    _kb.delete_source(active_file_id)
+                _kb.delete_source(file_path)
+                file_registry.delete_file(file_path)
+                if active_file_id:
+                    file_registry.delete_file(active_file_id)
+            except Exception as ce:
+                print(f"[Ingestion] Cleanup error on cancel: {ce}")
+            with _tasks_lock:
+                _active_tasks.pop(_norm_key(file_path), None)
+            _clear_task_cancelled(file_path)
+        else:
+            import traceback
+            traceback.print_exc()
+            print(f"Background ingestion failed for {file_path}: {e}")
+            _update_task(file_path, file_id, 0.0, "Ingestion failed", status="failed", error_message=str(e))
+            with _tasks_lock:
+                _active_tasks.pop(_norm_key(file_path), None)
+            _clear_task_cancelled(file_path)
 
 @router.post("/quick-ingest")
 def quick_ingest_file(req: QuickIngestRequest):
     """Start background ingestion with strict duplicate checking and live progress tracking."""
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Clear any previous cancelled state for this file
+    _clear_task_cancelled(req.file_path)
 
     # 1. Check if the exact file or identical content is already ingested or processing
     file_hash = file_registry.calculate_hash(req.file_path)
@@ -499,6 +573,56 @@ def quick_ingest_file(req: QuickIngestRequest):
         "file_path": req.file_path,
         "progress": 5.0,
         "step_text": "Starting ingestion..."
+    }
+
+@router.post("/cancel-ingest")
+def cancel_ingest_file(req: CancelIngestRequest):
+    """Cancel an active background ingestion task and reset file state."""
+    target_path = req.file_path
+    target_id = req.file_id
+
+    if not target_path and target_id:
+        reg = file_registry.get_file_by_id(target_id)
+        if reg:
+            target_path = reg.file_path
+
+    if not target_path and req.filename:
+        _, upload_dir, samples_dir, _ = get_base_dirs()
+        cand1 = os.path.join(upload_dir, req.filename)
+        cand2 = os.path.join(samples_dir, req.filename)
+        if os.path.exists(cand1):
+            target_path = cand1
+        elif os.path.exists(cand2):
+            target_path = cand2
+
+    if not target_path:
+        raise HTTPException(status_code=400, detail="file_path, file_id, or filename is required to cancel ingestion.")
+
+    norm_path = target_path.replace("\\", "/")
+    key = _norm_key(norm_path)
+
+    # 1. Mark task as cancelled so any background loop aborts immediately
+    _set_task_cancelled(norm_path)
+
+    # 2. Clear memory task tracking
+    with _tasks_lock:
+        _active_tasks.pop(key, None)
+
+    # 3. Clean up SQLite registry and Chroma DB
+    try:
+        if target_id:
+            _kb.delete_source(target_id)
+            file_registry.delete_file(target_id)
+        _kb.delete_source(norm_path)
+        file_registry.delete_file(norm_path)
+    except Exception as e:
+        print(f"[Cancel] Cleanup notice for {norm_path}: {e}")
+
+    return {
+        "status": "cancelled",
+        "message": f"Ingestion cancelled for {os.path.basename(norm_path)}",
+        "file_path": norm_path,
+        "file_id": target_id
     }
 
 @router.post("/un-ingest")

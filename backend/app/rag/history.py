@@ -108,13 +108,16 @@ class SessionManager:
         session_id: str,
         messages: List[Dict[str, Any]],
         domain: str = "pharmacy",
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        selected_file_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         curr = self.get_session(session_id)
         curr["id"] = session_id
         curr["domain"] = domain or curr.get("domain", "pharmacy")
         curr["messages"] = messages
         curr["updated_at"] = self._now_iso()
+        if selected_file_ids is not None:
+            curr["selected_file_ids"] = selected_file_ids
 
         if title and title.strip():
             curr["title"] = title.strip()
