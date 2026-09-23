@@ -18,6 +18,7 @@ import torch
 from app.core.config import settings
 from app.schema.domain import get_domain_pack
 from app.ingestion.models import IngestSummary, RetrievedChunk
+from app.security.crypto import encrypt_string, decrypt_string
 
 _global_chroma_clients: Dict[str, Any] = {}
 _chroma_init_lock = threading.Lock()
@@ -254,7 +255,8 @@ class KnowledgeBase:
             ).tolist()
             if cancel_check and cancel_check():
                 raise InterruptedError("Ingestion cancelled by user")
-            collection.upsert(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+            docs_to_store = [encrypt_string(t) for t in texts] if getattr(settings, "encryption_enabled", True) else texts
+            collection.upsert(ids=ids, embeddings=embeddings, documents=docs_to_store, metadatas=metadatas)
             total_chunks += len(ids)
             ids.clear(); texts.clear(); metadatas.clear()
 
@@ -435,10 +437,11 @@ class KnowledgeBase:
                 
                 if len(ids) >= batch_size:
                     embeddings = embedder.encode(texts, batch_size=batch_size, normalize_embeddings=True).tolist()
+                    docs_to_store = [encrypt_string(t) for t in texts] if getattr(settings, "encryption_enabled", True) else texts
                     collection.upsert(
                         ids=ids,
                         embeddings=embeddings,
-                        documents=texts,
+                        documents=docs_to_store,
                         metadatas=metadatas
                     )
                     total_chunks += len(ids)
@@ -446,10 +449,11 @@ class KnowledgeBase:
 
         if ids:
             embeddings = embedder.encode(texts, batch_size=batch_size, normalize_embeddings=True).tolist()
+            docs_to_store = [encrypt_string(t) for t in texts] if getattr(settings, "encryption_enabled", True) else texts
             collection.upsert(
                 ids=ids,
                 embeddings=embeddings,
-                documents=texts,
+                documents=docs_to_store,
                 metadatas=metadatas
             )
             total_chunks += len(ids)
@@ -607,7 +611,7 @@ class KnowledgeBase:
                 if not _is_date_in_range(meta):
                     continue
 
-                clean_text = doc
+                clean_text = decrypt_string(doc)
                 if self.passage_prefix and clean_text.startswith(self.passage_prefix):
                     clean_text = clean_text[len(self.passage_prefix):]
                     
@@ -639,7 +643,7 @@ class KnowledgeBase:
                             continue
                         seen_chunk_ids.add(g_id)
                         
-                        g_text = g_doc
+                        g_text = decrypt_string(g_doc)
                         if self.passage_prefix and g_text.startswith(self.passage_prefix):
                             g_text = g_text[len(self.passage_prefix):]
 

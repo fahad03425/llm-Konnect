@@ -29,20 +29,23 @@ class SessionManager:
         path = self._get_file_path(session_id)
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                    if isinstance(raw, list):
-                        # Backward compatibility for legacy raw turn lists
-                        return {
-                            "id": session_id,
-                            "title": (raw[0]["content"][:60] if raw and "content" in raw[0] else "Conversation"),
-                            "domain": "pharmacy",
-                            "created_at": self._now_iso(),
-                            "updated_at": self._now_iso(),
-                            "messages": raw
-                        }
-                    elif isinstance(raw, dict):
-                        return raw
+                from app.security.crypto import decrypt_bytes
+                with open(path, "rb") as f:
+                    raw_bytes = f.read()
+                decrypted = decrypt_bytes(raw_bytes, allow_passthrough=True)
+                raw = json.loads(decrypted.decode("utf-8"))
+                if isinstance(raw, list):
+                    # Backward compatibility for legacy raw turn lists
+                    return {
+                        "id": session_id,
+                        "title": (raw[0]["content"][:60] if raw and "content" in raw[0] else "Conversation"),
+                        "domain": "pharmacy",
+                        "created_at": self._now_iso(),
+                        "updated_at": self._now_iso(),
+                        "messages": raw
+                    }
+                elif isinstance(raw, dict):
+                    return raw
             except Exception:
                 pass
         return {
@@ -58,8 +61,12 @@ class SessionManager:
         session_id = session_data.get("id", "default")
         path = self._get_file_path(session_id)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(session_data, f, indent=2, ensure_ascii=False)
+            from app.security.crypto import encrypt_bytes
+            json_str = json.dumps(session_data, indent=2, ensure_ascii=False)
+            raw_bytes = json_str.encode("utf-8")
+            to_write = encrypt_bytes(raw_bytes) if getattr(settings, "encryption_enabled", True) else raw_bytes
+            with open(path, "wb") as f:
+                f.write(to_write)
         except Exception:
             pass
 

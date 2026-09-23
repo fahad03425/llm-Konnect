@@ -303,6 +303,18 @@ def gather_report_data(
     if not em.branches_list and effective_name:
         em.branches_list = [effective_name]
 
+    # Automatically run statistical anomaly detection if not explicitly supplied
+    if anomalies is None and source_df is not None and not source_df.empty:
+        try:
+            from app.anomaly.detectors import detect_all_anomalies
+            from app.anomaly.explainer import explain_all
+            scan_res = detect_all_anomalies(source_df, domain=effective_domain)
+            if scan_res.anomalies:
+                explain_all(scan_res.anomalies, max_items=10, use_llm=False)
+                anomalies = [a.to_dict() for a in scan_res.anomalies]
+        except Exception:
+            anomalies = None
+
     return ReportData(
         kpis=computed_kpis,
         domain=effective_domain,
@@ -469,6 +481,27 @@ def _render_html_document(
             f"<td>{float(b.get('avg_bill', 0.0)):,.0f}</td></tr>"
         )
 
+    anomalies_html = ""
+    if report_data.anomalies and len(report_data.anomalies) > 0:
+        rows = []
+        for a in report_data.anomalies[:8]:
+            a_type = str(a.get("anomaly_type", "")).replace("_", " ").title()
+            sev = str(a.get("severity", "medium")).upper()
+            exp = a.get("explanation") or str(a.get("observed_value"))
+            row_ref = a.get("source_row")
+            row_str = f" [Row #{row_ref}]" if row_ref else ""
+            rows.append(f"<li style='margin-bottom: 0.35rem;'><b>[{sev}] {a_type}:</b> {exp}{row_str}</li>")
+        anomalies_html = f"""
+    <div class="section-title" style="margin-top: 2rem;">Audit &amp; Statistical Anomaly Alerts</div>
+    <div class="section-sub">Algorithmic risk scan (Module 6.7 &mdash; Z-score, IQR, duplicates, abnormal refund patterns)</div>
+    <div class="callout callout-orange" style="margin: 1rem 0;">
+      <h4>Flagged Statistical Outliers ({len(report_data.anomalies)} items detected)</h4>
+      <ul style="margin: 0.5rem 0 0 1.25rem; font-size: 0.88rem; line-height: 1.5;">
+        {''.join(rows)}
+      </ul>
+    </div>
+    """
+
     warn_banner = ""
     if verification.claims and not verification.all_verified:
         mismatches = [f"<li>Claim '{c.matched_text}': extracted {c.extracted_value} (expected {c.expected_value})</li>" for c in verification.claims if c.status != STATUS_VERIFIED]
@@ -604,6 +637,8 @@ def _render_html_document(
     <p style="margin: 0.75rem 0; font-size: 0.92rem;">
       Discounts totaled <b>{disc_str}</b> across the period (~3.6% of gross turnover). Standardizing discount authorization will protect margins while maintaining client goodwill.
     </p>
+
+    {anomalies_html}
 
     <div class="section-title" style="margin-top: 2rem;">9. Recommendations Summary</div>
     <ul class="bullet-list">

@@ -165,12 +165,17 @@ class FileRegistry:
         except Exception:
             pass
 
-        # 3. Compute SHA-256 using large 1MB buffer for fast Windows I/O
+        # 3. Compute SHA-256 using large 1MB buffer (or decrypted content if encrypted at rest)
         sha256 = hashlib.sha256()
         try:
-            with open(file_path, "rb") as f:
-                while chunk := f.read(1048576):
-                    sha256.update(chunk)
+            from app.security.crypto import is_encrypted_file, decrypt_file_to_bytes
+            if is_encrypted_file(file_path):
+                decrypted = decrypt_file_to_bytes(file_path)
+                sha256.update(decrypted)
+            else:
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(1048576):
+                        sha256.update(chunk)
             h = sha256.hexdigest()
             _hash_cache[norm_path] = (mtime, size, h)
             # Save to persistent cache
@@ -493,7 +498,15 @@ file_registry.cleanup_stale_processing()
 # Pre-seed active connection for PharmacyPOS if present in registry
 try:
     existing_pharmacy = file_registry.get_db_connection("PharmacyPOS")
+    should_seed = False
     if not existing_pharmacy:
+        should_seed = True
+    elif "pytest" in existing_pharmacy.connection_string or (
+        existing_pharmacy.db_type == "sqlite" and not os.path.exists(existing_pharmacy.connection_string.replace("sqlite:///", ""))
+    ):
+        should_seed = True
+
+    if should_seed:
         file_registry.save_db_connection(
             database_name="PharmacyPOS",
             connection_string="mssql+pyodbc://localhost\\SQLEXPRESS/PharmacyPOS?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
@@ -502,6 +515,7 @@ try:
             strategy="row",
             auto_sync=1,
             sync_interval_sec=15,
+            last_status="active",
             table_count=10,
             row_count=772
         )

@@ -8,7 +8,7 @@
 | Month 3 | Document ingestion + RAG |
 | Month 4 | KPI engine + anomaly detection |
 | Month 5 | Report generator + desktop shell |
-| Month 6 | Encryption, integration testing, evaluation, docs |
+| Month 6 | Encryption, integration testing, evaluation, docs (includes [R14: Cloud vs. Local LLM Benchmark](file:///docs/BENCHMARK_CLOUD_VS_LOCAL.md)) |
 
 ## Out of scope
 These must stay out of the codebase and live only in the report's Future Work:

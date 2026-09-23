@@ -260,16 +260,21 @@ def validate_source(req: ValidateRequest):
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
+    existing = file_registry.get_file_by_path(req.file_path)
+    prior_status = "active" if (existing and existing.chunk_count > 0) else "not_ingested"
+
     try:
-        try:
-            file_registry.set_file_status(
-                file_path=req.file_path,
-                status="processing",
-                progress=85.0,
-                step_text="Step 5: Validating Data Quality"
-            )
-        except Exception:
-            pass
+        # Only show validation progress if the file isn't already actively ingested
+        if prior_status != "active":
+            try:
+                file_registry.set_file_status(
+                    file_path=req.file_path,
+                    status="processing",
+                    progress=85.0,
+                    step_text="Step 5: Validating Data Quality"
+                )
+            except Exception:
+                pass
 
         connector = detect_connector(req.file_path)
         kwargs = {}
@@ -300,6 +305,16 @@ def validate_source(req: ValidateRequest):
         return report.to_dict()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status=prior_status,
+                progress=100.0 if prior_status == "active" else 0.0,
+                step_text="Completed" if prior_status == "active" else ""
+            )
+        except Exception:
+            pass
 
 @router.post("/clean")
 def clean_source(req: CleanRequest):

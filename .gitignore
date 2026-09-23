@@ -11,6 +11,7 @@ backend/data/storage/
 reports/
 chroma/
 *.db
+*.sqlite3
 
 debug.json
 
@@ -23,3 +24,5 @@ desktop/dist/
 
 data/uploads/
 *.log
+.vault_key
+*.vault_key

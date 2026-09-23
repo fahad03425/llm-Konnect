@@ -373,7 +373,13 @@ def _load_canonical(req: KPIRequest):
     except ValueError:
         pass
 
-    mapping = req.mapping or map_headers(list(raw.columns), domain_pack)
+    if not req.mapping:
+        from app.schema.mapper import suggest_mapping
+        sample_records = raw.head(5).to_dict(orient="records") if hasattr(raw, "head") else []
+        proposal = suggest_mapping(list(raw.columns), sample_records, domain_pack, resolve_conflicts=True)
+        mapping = {s.source_column: s.canonical_field for s in proposal.suggestions if s.canonical_field is not None}
+    else:
+        mapping = req.mapping
     canonical = apply_mapping(raw, mapping, domain=req.domain, keep_extras=True)
     
     if cache_key:
@@ -570,7 +576,7 @@ def trend(req: TrendRequest):
         body["granularity"] = effective_req.granularity or settings.forecast_granularity
         body["range_preset"] = req.range_preset
         trend_dict = result.to_dict()
-        series = trend_dict.get("series", [])
+        series = trend_dict.get("series") or []
         body["trend"] = trend_dict
         body["monthly"] = series
         body["series"] = series

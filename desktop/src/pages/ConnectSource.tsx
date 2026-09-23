@@ -1400,11 +1400,34 @@ export default function ConnectSource() {
                     <div className="wizard-card">
                         <div className="wizard-card-title"><Database size={16} /> Step 5/6 — Ingest to Knowledge Base</div>
 
-                        {validateResult && validateResult.verdict === 'usable' && step === 5 && !ingestSt.loading && !ingestMsg && (
+                        {validateResult && (validateResult.verdict === 'usable' || validateResult.verdict === 'usable_with_warnings') && step === 5 && !ingestSt.loading && !ingestMsg && (
                             <>
-                                <div className="verdict-badge ok">
-                                    <CheckCircle size={16} /> Data validated — ready to ingest into {domain.toUpperCase()} Knowledge Base
-                                </div>
+                                {validateResult.verdict === 'usable' ? (
+                                    <div className="verdict-badge ok">
+                                        <CheckCircle size={16} /> Data validated — ready to ingest into {domain.toUpperCase()} Knowledge Base
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="verdict-badge warn">
+                                            <AlertTriangle size={16} /> Data validated with minor warnings — ready to ingest into {domain.toUpperCase()} Knowledge Base
+                                        </div>
+                                        {validateResult.problems && validateResult.problems.length > 0 && (
+                                            <ul className="problems-list" style={{ marginTop: '0.75rem', marginBottom: '0.75rem', maxHeight: '130px', overflowY: 'auto' }}>
+                                                {validateResult.problems.slice(0, 5).map((p: any, i: number) => (
+                                                    <li key={i}>
+                                                        <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : p.message || p.description || JSON.stringify(p)}</span>
+                                                    </li>
+                                                ))}
+                                                {validateResult.problems.length > 5 && (
+                                                    <li style={{ color: '#64748b', fontStyle: 'italic', fontSize: '0.75rem' }}>
+                                                        +{validateResult.problems.length - 5} more non-critical notice(s)
+                                                    </li>
+                                                )}
+                                            </ul>
+                                        )}
+                                    </>
+                                )}
 
                                 <div style={{ marginTop: '1.25rem', marginBottom: '1.25rem', background: '#F8FAFC', padding: '1rem', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
                                     <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.6rem' }}>
@@ -1454,7 +1477,7 @@ export default function ConnectSource() {
 
                                 <div className="btn-actions">
                                     <button className="btn-primary" onClick={() => doIngest()}>
-                                        <Database size={15} /> Ingest into Knowledge Base
+                                        <Database size={15} /> {validateResult.verdict === 'usable_with_warnings' ? 'Ingest into Knowledge Base (Proceed with Warnings)' : 'Ingest into Knowledge Base'}
                                     </button>
                                     <button
                                         type="button"
@@ -1473,6 +1496,26 @@ export default function ConnectSource() {
                                     </button>
                                 </div>
                             </>
+                        )}
+
+                        {step === 5 && !validateResult && !valSt.loading && !ingestSt.loading && !ingestMsg && (
+                            <div style={{ padding: '0.75rem 0' }}>
+                                <div className="info-card" style={{ marginBottom: '1rem' }}>
+                                    <ShieldCheck size={16} /> Ready for quality validation before ingesting into {domain.toUpperCase()} Knowledge Base.
+                                </div>
+                                <div className="btn-actions">
+                                    <button className="btn-primary" onClick={() => doValidate()}>
+                                        <ShieldCheck size={15} /> Run Data Validation
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={() => resetConnectSession('file')}
+                                    >
+                                        <Upload size={15} /> Choose Another File
+                                    </button>
+                                </div>
+                            </div>
                         )}
 
                         {ingestSt.loading && (

@@ -37,3 +37,6 @@ uvicorn app.main:app --port 8756
 - `docs/`: Project documentation and roadmap
 - `scripts/`: Utility scripts
 See `docs/ROADMAP.md` for build order.
+
+## Benchmarks & Evaluation
+- [Cloud vs. Local LLM Benchmark (Requirement R14)](file:///docs/BENCHMARK_CLOUD_VS_LOCAL.md): Empirical latency, accuracy, cost, and privacy evaluation of local offline LLMs (Qwen 2.5 3B, Gemma 3 1B) vs. cloud models across 91 standardized pharmacy POS queries.

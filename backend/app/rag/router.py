@@ -85,7 +85,10 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
                 return RouteType.ANALYTICS
 
     # Explicit batch/record lookup patterns (prioritized to RAG)
-    if re.search(r"^(list|show|fetch|find|display)\s+(all\s+)?(batches|records|files|data)\b", q_lower):
+    if (
+        re.search(r"\b(batch|batches|invoice|invoices|record|records)\b\s+[a-zA-Z0-9\-_]+", q_lower)
+        or re.search(r"^(list|show|fetch|find|display)\s+(all\s+)?(batches|records|files|data)\b", q_lower)
+    ):
         return RouteType.RAG
 
     # Explicit listing / lookup / informational patterns (prioritized over incidental keyword matches)
@@ -100,7 +103,8 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     numeric_or_inventory_guard = (
         r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|revenue|"
         r"expire|expiry|expired|expiring|velocity|reorder|stockout|supply|days supply|days of supply|"
-        r"running below|low stock|dead stock|liquidation|kam stock)\b"
+        r"running below|low stock|dead stock|liquidation|kam stock|"
+        r"most|highest|lowest|max|min|top|best|least|qty|quantity)\b"
     )
     for pattern in lookup_patterns:
         if re.search(pattern, q_lower) and not re.search(numeric_or_inventory_guard, q_lower):
@@ -112,14 +116,20 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\baverage\b", r"\bavg\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
         r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b", r"\bexpiry\b", r"\bexpired\b",
         r"\bcount\b", r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
-        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b",
+        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b", r"\bmost\b", r"\btop\b", r"\bbest\b",
+        r"\b(top|best|largest|highest)\s+(supplier|vendor|product|medicine)\b",
+        r"\b(buy|bought|purchased?)\s+(the\s+)?(most|highest|least)\b",
+        r"\bqty\b", r"\bquantity\b",
         r"\bforecast\b", r"\bpredict\b", r"\btrend\b", r"\bgrowth\b",
         r"\brevenue\b", r"\bbreakdown\b", r"\btotal sales\b", r"\bsales amount\b", r"\bsales total\b",
         r"\brow count\b", r"\bdataset size\b", r"\bnumber of rows\b", r"\bnumber of records\b",
         r"\bvelocity\b", r"\breorder\b", r"\bstockout\b", r"\bliquidat(e|ion)\b",
         r"\b(day|days) supply\b", r"\b(day|days) of supply\b", r"\brunning below\b",
         r"\blow stock\b", r"\bkam stock\b", r"\bdead stock\b", r"\bshort expiry\b",
-        r"\bnear expiry\b", r"\bnear-expiry\b", r"\bkhatam hone\b", r"\bstock khatam\b"
+        r"\bnear expiry\b", r"\bnear-expiry\b", r"\bkhatam hone\b", r"\bstock khatam\b",
+        r"\banomal(y|ies)\b", r"\boutlier(s)?\b", r"\bduplicate invoice(s)?\b",
+        r"\bunusual spike(s)?\b", r"\btransaction spike(s)?\b", r"\babnormal refund\b",
+        r"\bfraud\b", r"\birregularit(y|ies)\b"
     ]
     for pattern in analytics_patterns:
         if re.search(pattern, q_lower):
