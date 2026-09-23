@@ -2,6 +2,7 @@
 fastapi
 uvicorn
 pydantic-settings
+python-multipart
 
 # Data
 pandas
