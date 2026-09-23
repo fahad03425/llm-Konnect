@@ -44,9 +44,15 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     (("profit", "munafa", "nafa"), ("net_profit", "gross_profit", "total_revenue")),
     (("expense", "expenses", "spend", "spent", "purchase", "purchases", "kharcha", "kharch"),
      ("total_expenses", "expense_breakdown_by_category")),
+    (("total revenue and average", "revenue and average", "sales and average", "average and total", "total and average", "total sales and average"),
+     ("total_revenue", "average_transaction_value", "transaction_count")),
     (("average", "avg", "mean", "ausat"), ("average_transaction_value", "transaction_count")),
+    (("how many rows", "row count", "total rows", "number of rows", "dataset size", "total records", "how many records", "rows in this", "rows are in", "how many items are in this data"),
+     ("row_count", "transaction_count")),
     (("how many", "count", "number of", "kitne"), ("transaction_count",)),
     (("per month", "monthly", "by month", "each month"), ("revenue_by_month",)),
+    (("by supplier", "per supplier", "which supplier", "supplier", "vendor"),
+     ("revenue_breakdown_by_supplier", "expense_breakdown_by_supplier")),
     (("by product", "per product", "top product", "best selling", "top selling"),
      ("revenue_breakdown_by_product",)),
     (("by category", "per category"), ("revenue_breakdown_by_category",)),
@@ -82,6 +88,7 @@ def select_kpi_keys(question: str, domain: str = "") -> List[str]:
 
     Pure string matching — no model call, no randomness, same question always
     yields the same keys in the same order. Domain rules first, then core rules.
+    First matching rule wins.
     """
     q = (question or "").casefold()
     for keywords, keys in list(_domain_rules(domain)) + _INTENT_RULES:

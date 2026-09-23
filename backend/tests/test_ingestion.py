@@ -13,7 +13,7 @@ class FakeEmbedder:
     def __init__(self, model_name=None, device=None):
         pass
 
-    def encode(self, texts, batch_size=32, normalize_embeddings=True):
+    def encode(self, texts, batch_size=32, normalize_embeddings=True, **kwargs):
         import numpy as np
         embeddings = []
         for text in texts:
@@ -43,8 +43,16 @@ class FakeCollection:
         return len(self.data)
 
     def delete(self, where):
-        for k, v in where.items():
-            self.data = [d for d in self.data if d["metadata"].get(k) != v]
+        if not where:
+            return
+        if "$or" in where:
+            clauses = where["$or"]
+            def matches_any(meta):
+                return any(all(meta.get(k) == v for k, v in clause.items()) for clause in clauses)
+            self.data = [d for d in self.data if not matches_any(d["metadata"])]
+        else:
+            for k, v in where.items():
+                self.data = [d for d in self.data if d["metadata"].get(k) != v]
 
     def query(self, query_embeddings, n_results, where, include):
         results = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
@@ -99,7 +107,7 @@ def fake_kb(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "chroma_dir", test_chroma_dir)
     monkeypatch.setattr(
         KnowledgeBase, "_get_embedder",
-        lambda self: FakeEmbedder(self.embedding_model_name, "cpu"),
+        lambda self, *args, **kwargs: FakeEmbedder(self.embedding_model_name, "cpu"),
     )
     kb = KnowledgeBase()
     yield kb
@@ -272,8 +280,13 @@ def test_e5_prefix_applied_correctly(monkeypatch, tmp_path):
                 vecs.append(v / norm if norm > 0 else v)
             return np.array(vecs)
 
+    capturing_embedder = CapturingEmbedder()
+    monkeypatch.setattr(
+        KnowledgeBase, "_get_embedder",
+        lambda self, *args, **kwargs: capturing_embedder,
+    )
     kb = KnowledgeBase()
-    kb._embedder = CapturingEmbedder()
+    kb._embedder = capturing_embedder
 
     df = pd.DataFrame([{"source_row": 1, "product_id": "Aspirin"}])
     meta = {"source_file": "prefix_test.csv"}

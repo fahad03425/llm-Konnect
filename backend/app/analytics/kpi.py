@@ -73,8 +73,7 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
             expense=pd.Series(False, index=df.index),
             refund=pd.Series(False, index=df.index),
             notes=[
-                "canonical 'txn_type' column is absent; every row was treated as a SALE "
-                "for revenue purposes, and expense/refund figures are reported as unavailable"
+                "canonical 'txn_type' column is absent; all rows treated as sales"
             ],
         )
 
@@ -224,13 +223,17 @@ def _amount_series(df: pd.DataFrame) -> Tuple[Optional[pd.Series], List[str], Li
     """
     The monetary value of each row.
 
-    Prefers the canonical `amount` (line total). If absent, derives
+    Prefers the canonical `amount` (line total) or `total_amount`. If absent, derives
     `unit_price x quantity` and records that derivation as an assumption.
 
     Returns (series_or_None, columns_used, notes).
     """
     if "amount" in df.columns:
         return pd.to_numeric(df["amount"], errors="coerce"), ["amount"], []
+    if "total_amount" in df.columns:
+        return pd.to_numeric(df["total_amount"], errors="coerce"), ["total_amount"], []
+    if "total" in df.columns:
+        return pd.to_numeric(df["total"], errors="coerce"), ["total"], []
     if "unit_price" in df.columns and "quantity" in df.columns:
         series = pd.to_numeric(df["unit_price"], errors="coerce") * pd.to_numeric(
             df["quantity"], errors="coerce"
@@ -695,6 +698,25 @@ def transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -
     )
 
 
+def row_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Total count of rows/records in the dataset matching the active filter."""
+    formula = "count of rows in dataset matching filter"
+    notes: List[str] = []
+    if df.empty:
+        return unavailable(
+            "row_count", "Row Count", UNIT_COUNT, formula,
+            "no rows are available to count",
+            build_provenance(df, _no_rows(df), filters, [], notes),
+        )
+    contributing = pd.Series(True, index=df.index)
+    provenance = build_provenance(df, contributing, filters, [], notes)
+    return KPIResult(
+        key="row_count", name="Row Count", value=float(len(df)),
+        unit="rows", formula=formula, provenance=provenance, period=_period(df, contributing),
+    )
+
+
+
 def average_transaction_value(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """Average bill value = total revenue / transaction count."""
     formula = "total_revenue / transaction_count"
@@ -762,6 +784,17 @@ def revenue_breakdown_by_category(df: pd.DataFrame, filters: KPIFilters, domain:
         "revenue_breakdown_by_category", "Revenue Breakdown by Category",
         "sum of amount grouped by category, over sale rows", txn.notes,
     )
+
+
+def revenue_breakdown_by_supplier(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Revenue grouped by canonical `supplier_id`."""
+    txn = classify_transactions(df)
+    return _breakdown(
+        df, filters, txn.sale, "supplier_id",
+        "revenue_breakdown_by_supplier", "Revenue Breakdown by Supplier",
+        "sum of amount grouped by supplier_id, over sale rows", txn.notes,
+    )
+
 
 
 def revenue_breakdown_by_product(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
