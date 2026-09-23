@@ -121,11 +121,6 @@ def validate_core_dataframe(df: pd.DataFrame, table_kind: str = "auto") -> List[
         for col_name in item_cols:
             if col_name in valid_df.columns:
                 has_prod = has_prod | (valid_df[col_name].notna() & (valid_df[col_name].astype(str).str.strip() != ""))
-        
-        if not has_prod.any() and data_cols:
-            # Fallback: if data columns exist, accept rows with non-empty data
-            has_prod = pd.Series(True, index=valid_df.index)
-        
         req_missing = ~has_prod
         if req_missing.any():
             mask_full = pd.Series(False, index=df.index)

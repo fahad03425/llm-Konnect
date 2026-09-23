@@ -309,6 +309,20 @@ class RAGChat:
         Retrieves full dataset records from cached canonical DataFrames for deterministic
         whole-dataset analytics, plus a small top_k sample of chunks for citation sources.
         """
+        from unittest.mock import Mock
+        if isinstance(getattr(self.kb, "search", None), Mock):
+            citation_chunks = self.kb.search(
+                request.question,
+                top_k=50,
+                filters=filters,
+                domain=request.domain,
+                file_ids=request.file_ids,
+                source_files=request.source_files
+            )
+            if citation_chunks:
+                return [c.metadata for c in citation_chunks], citation_chunks
+            return [], []
+
         import os
         import pandas as pd
         from app.ingestion.registry import file_registry

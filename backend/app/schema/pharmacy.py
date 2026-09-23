@@ -184,7 +184,7 @@ class PharmacyDomainPack(DomainPack):
                 "pharma company", "lab", "laboratory",
             ],
             "product_id": [
-                "product name", "item name", "brand name", "medicine",
+                "name", "product name", "item name", "brand name", "medicine",
                 "product", "drug name", "medicine name", "drug",
                 "item", "product desc", "product_name", "item_name", "drug_name",
             ],
