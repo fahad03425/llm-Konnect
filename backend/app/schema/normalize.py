@@ -161,7 +161,7 @@ def _get_money_fields(domain: str) -> frozenset:
 def normalize(
     raw: pd.DataFrame,
     mapping: Dict[str, str],
-    domain: str = "pharmacy",
+    domain: Optional[str] = None,
     keep_extras: bool = False,
 ) -> pd.DataFrame:
     """
@@ -231,7 +231,7 @@ def normalize(
 def apply_mapping(
     raw_df: pd.DataFrame,
     mapping: Dict[str, str],
-    domain: str = "pharmacy",
+    domain: Optional[str] = None,
     keep_extras: bool = True,
 ) -> pd.DataFrame:
     """

@@ -1,11 +1,12 @@
 """Module 1.4 — API routes. Month 2."""
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import os
 import shutil
 import pandas as pd
 
+from app.core.config import get_default_domain, set_default_domain
 from app.connectors.base import detect_connector
 from app.ingestion.registry import file_registry
 from app.schema.mapper import map_headers, suggest_mapping
@@ -56,12 +57,12 @@ class PreviewRequest(BaseModel):
     n: int = 5
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
 
 class MappingConfirmRequest(BaseModel):
     file_path: str
     mapping: Dict[str, str]
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
     keep_extras: bool = True
@@ -71,13 +72,13 @@ class NormalizeRequest(BaseModel):
     file_path: str
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     mapping: Optional[Dict[str, str]] = None 
 
 class ValidateRequest(BaseModel):
     file_path: str
     mapping: Optional[Dict[str, str]] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     table_kind: str = "auto"
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
@@ -85,7 +86,7 @@ class ValidateRequest(BaseModel):
 class CleanRequest(BaseModel):
     file_path: str
     mapping: Optional[Dict[str, str]] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
     options: Optional[Dict[str, Any]] = None
@@ -360,22 +361,52 @@ class SQLConnectRequest(BaseModel):
     n: int = 5
     watermark_column: Optional[str] = None
     watermark_value: Optional[Any] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
 
 class WatcherConfigRequest(BaseModel):
     watch_dir: str
     file_pattern: str = "*.*"
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
+
+class SetActiveDomainRequest(BaseModel):
+    domain: str
 
 @router.get("/domains")
 def list_available_domains():
     from app.schema.domain import registry
-    return {"domains": registry.available_domains()}
+    return {
+        "default_domain": get_default_domain(),
+        "active_domain": get_default_domain(),
+        "domains": registry.available_domains(),
+        "domain_details": registry.get_domain_details(),
+    }
+
+@router.get("/domains/active")
+def get_active_domain():
+    from app.schema.domain import registry
+    return {
+        "active_domain": get_default_domain(),
+        "available_domains": registry.available_domains(),
+    }
+
+@router.post("/domains/active")
+def switch_active_domain(req: SetActiveDomainRequest):
+    from app.schema.domain import registry
+    if req.domain not in registry.available_domains():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown domain '{req.domain}'. Available domains: {registry.available_domains()}"
+        )
+    set_default_domain(req.domain)
+    return {
+        "status": "success",
+        "active_domain": get_default_domain(),
+    }
 
 class SQLDiscoverRequest(BaseModel):
     connection_string: str
     db_type: str = "sqlite"
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     sample_n: int = 5
 
 @router.post("/sql/discover")

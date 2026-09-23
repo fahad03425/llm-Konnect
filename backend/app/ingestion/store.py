@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional, Callable
 import pandas as pd
 import torch
 
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 from app.schema.domain import get_domain_pack
 from app.ingestion.models import IngestSummary, RetrievedChunk
 from app.security.crypto import encrypt_string, decrypt_string
@@ -138,13 +138,14 @@ class KnowledgeBase:
         self,
         canonical_df: pd.DataFrame,
         source_meta: dict,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         strategy: str = "row",
         merge_key: Optional[str] = None,
         file_id: Optional[str] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None
     ) -> IngestSummary:
+        domain = domain or get_default_domain()
         """
         Batched, idempotent upsert of canonical records into Chroma with live progress reporting and cancellation support.
 
@@ -374,7 +375,8 @@ class KnowledgeBase:
             file_id=file_id
         )
         
-    def add_text_documents(self, docs: List[str], source_meta: dict, domain: str = "pharmacy", file_id: Optional[str] = None) -> IngestSummary:
+    def add_text_documents(self, docs: List[str], source_meta: dict, domain: Optional[str] = None, file_id: Optional[str] = None) -> IngestSummary:
+        domain = domain or get_default_domain()
         """
         Ingest free-text documents using recursive token splitting.
         """
@@ -472,13 +474,14 @@ class KnowledgeBase:
         query: str,
         top_k: Optional[int] = None,
         filters: Optional[Dict[str, Any]] = None,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
         source_files: Optional[List[str]] = None
     ) -> List[RetrievedChunk]:
         """
         Filtered semantic search over the knowledge base with optional file scoping.
         """
+        domain = domain or get_default_domain()
         top_k = top_k or settings.retrieval_top_k
         collection = self._get_chroma()
         embedder = self._get_embedder()

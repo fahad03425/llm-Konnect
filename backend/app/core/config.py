@@ -61,8 +61,17 @@ class Settings(BaseSettings):
     # Local Security & Encryption At Rest (Module 5.1)
     encryption_enabled: bool = True
     vault_key_path: str = "data/.vault_key"
-    secret_key: Optional[str] = None
+    # Domain configuration
+    default_domain: str = "pharmacy"
 
     model_config = SettingsConfigDict(env_prefix="KONNECT_")
 
 settings = Settings()
+
+def get_default_domain() -> str:
+    """Returns the active default business domain."""
+    return getattr(settings, "default_domain", "pharmacy")
+
+def set_default_domain(domain: str) -> None:
+    """Sets the active default business domain."""
+    settings.default_domain = domain

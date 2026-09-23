@@ -63,4 +63,15 @@ def read_root():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "app": settings.app_name}
-# reload trigger v5 - routes updated with sql discover and ingest-database
+
+@app.get("/api/domains")
+@app.get("/domains")
+def get_domains():
+    from app.schema.domain import registry
+    from app.core.config import get_default_domain
+    return {
+        "default_domain": get_default_domain(),
+        "active_domain": get_default_domain(),
+        "domains": registry.available_domains(),
+        "domain_details": registry.get_domain_details(),
+    }

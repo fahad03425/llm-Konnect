@@ -6,7 +6,7 @@ from app.schema.canonical import validate_core_dataframe
 
 def validate(
     canonical_df: pd.DataFrame, 
-    domain: str = "pharmacy", 
+    domain: Optional[str] = None, 
     table_kind: str = "auto"
 ) -> ValidationReport:
     """

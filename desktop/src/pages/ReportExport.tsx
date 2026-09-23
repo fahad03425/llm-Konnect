@@ -121,9 +121,8 @@ export default function ReportExport() {
                 const historyList: ReportHistoryItem[] = diskReports.map(r => ({
                     id: r.id || r.stem,
                     stem: r.stem,
-                    timestamp: r.created_formatted || 'Recent Report',
-                    businessName: businessName || 'Al-Shifa Family Pharmacy',
-                    domain: 'pharmacy',
+                    businessName: businessName || user?.organization || 'Business Analytics Report',
+                    domain: user?.domain || 'pharmacy',
                     sourceFile: 'Pharmacy_Sales_Dataset.xlsx',
                     verificationPassed: true,
                     verifiedCount: 5,
@@ -165,7 +164,7 @@ export default function ReportExport() {
                             },
                             download_url_html: top.downloadHtmlUrl,
                             download_url_pdf: top.downloadPdfUrl,
-                            domain: 'pharmacy',
+                            domain: user?.domain || 'pharmacy',
                             source: 'Pharmacy_Sales_Dataset.xlsx'
                         };
                     }

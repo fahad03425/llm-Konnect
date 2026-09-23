@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Any, Optional
+from app.core.config import get_default_domain
 from app.schema.domain import get_domain_pack
 
 # Module 6.6 supersedes the temporary in-module pandas fallback that used to live
@@ -137,10 +138,11 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
             
     return RouteType.RAG
 
-def extract_filters(question: str, domain: str = "pharmacy") -> Dict[str, Any]:
+def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract exact-match filters, date intervals, and inventory threshold options from the question.
     """
+    effective_domain = domain or get_default_domain()
     filters: Dict[str, Any] = {}
     options: Dict[str, Any] = {}
     q_lower = question.lower()

@@ -4,8 +4,9 @@ import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.core.config import get_default_domain
 from app.ingestion.registry import file_registry, FileRecord
 from app.ingestion.store import KnowledgeBase
 from app.connectors.base import detect_connector
@@ -120,7 +121,7 @@ class FileItem(BaseModel):
 
 class QuickIngestRequest(BaseModel):
     file_path: str
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     strategy: str = "row"
     file_id: Optional[str] = None
 

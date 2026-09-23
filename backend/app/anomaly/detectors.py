@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from app.core.config import get_default_domain
 from app.anomaly.models import AnomalyRecord, AnomalyScanResult, AnomalyType, Severity
 
 
@@ -392,11 +393,12 @@ def detect_negative_or_zero_prices(df: pd.DataFrame) -> List[AnomalyRecord]:
     return anomalies
 
 
-def detect_all_anomalies(df: pd.DataFrame, domain: str = "pharmacy") -> AnomalyScanResult:
+def detect_all_anomalies(df: pd.DataFrame, domain: Optional[str] = None) -> AnomalyScanResult:
     """
     Master runner: Executes all statistical detectors, compiles summary,
     and returns a structured AnomalyScanResult sorted by severity and statistical score.
     """
+    effective_domain = domain or get_default_domain()
     if df is None or df.empty:
         return AnomalyScanResult(total_anomalies=0, by_type={}, by_severity={}, anomalies=[])
 

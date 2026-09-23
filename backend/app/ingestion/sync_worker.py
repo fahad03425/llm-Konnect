@@ -17,6 +17,7 @@ import pandas as pd
 from app.ingestion.store import KnowledgeBase
 from app.ingestion.registry import file_registry
 from app.schema.domain import get_domain_pack
+from app.core.config import get_default_domain
 
 
 class ChangeEvent(BaseModel):
@@ -247,10 +248,11 @@ class SyncWorker:
         connector,
         database_name: str,
         table_name: str,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         strategy: str = "row"
     ) -> int:
         """Sync a single database table into ChromaDB and update registry."""
+        effective_domain = domain or get_default_domain()
         table_path = f"sql://{database_name}/{table_name}"
         file_id = f"db_{database_name}_{table_name}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
         
@@ -260,9 +262,9 @@ class SyncWorker:
                 return 0
             
             try:
-                domain_pack = get_domain_pack(domain)
+                domain_pack = get_domain_pack(effective_domain)
             except ValueError:
-                domain_pack = get_domain_pack("pharmacy")
+                domain_pack = get_domain_pack()
 
             from app.schema.mapper import map_headers
             from app.schema.normalize import apply_mapping

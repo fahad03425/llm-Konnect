@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from app.analytics.engine import engine
 from app.analytics.filters import KPIFilters
 from app.connectors.base import detect_connector
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 from app.schema.domain import get_domain_pack
 from app.schema.mapper import map_headers
 from app.schema.normalize import apply_mapping
@@ -55,7 +55,7 @@ class AnalyticsFilters(BaseModel):
 
 class KPIRequest(BaseModel):
     file_path: str
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Active business domain")
     mapping: Optional[Dict[str, str]] = None
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
@@ -496,9 +496,10 @@ def compute_single_kpi(key: str, req: KPIRequest):
 
 
 @router.get("/kpis")
-def list_available_kpis(domain: str = "pharmacy") -> Dict[str, List[Dict[str, Any]]]:
+def list_available_kpis(domain: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """List registered KPIs (core + those registered for `domain`) and their definitions."""
-    return {"kpis": [spec.to_dict() for spec in engine.list_kpis(domain)]}
+    eff_domain = domain or get_default_domain()
+    return {"kpis": [spec.to_dict() for spec in engine.list_kpis(eff_domain)]}
 
 
 class TrendRequest(KPIRequest):

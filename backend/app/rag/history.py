@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 
 class SessionManager:
     def __init__(self):
@@ -39,7 +39,7 @@ class SessionManager:
                     return {
                         "id": session_id,
                         "title": (raw[0]["content"][:60] if raw and "content" in raw[0] else "Conversation"),
-                        "domain": "pharmacy",
+                        "domain": get_default_domain(),
                         "created_at": self._now_iso(),
                         "updated_at": self._now_iso(),
                         "messages": raw
@@ -51,7 +51,7 @@ class SessionManager:
         return {
             "id": session_id,
             "title": "New Conversation",
-            "domain": "pharmacy",
+            "domain": get_default_domain(),
             "created_at": self._now_iso(),
             "updated_at": self._now_iso(),
             "messages": []
@@ -99,7 +99,7 @@ class SessionManager:
             sessions_meta.append({
                 "id": data.get("id", session_id),
                 "title": data.get("title", "Conversation"),
-                "domain": data.get("domain", "pharmacy"),
+                "domain": data.get("domain", get_default_domain()),
                 "created_at": data.get("created_at", self._now_iso()),
                 "updated_at": data.get("updated_at", self._now_iso()),
                 "message_count": len(msgs),
@@ -114,13 +114,13 @@ class SessionManager:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         title: Optional[str] = None,
         selected_file_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         curr = self.get_session(session_id)
         curr["id"] = session_id
-        curr["domain"] = domain or curr.get("domain", "pharmacy")
+        curr["domain"] = domain or curr.get("domain", get_default_domain())
         curr["messages"] = messages
         curr["updated_at"] = self._now_iso()
         if selected_file_ids is not None:
@@ -144,7 +144,7 @@ class SessionManager:
         session_id: str,
         role: str,
         content: str,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         route: Optional[str] = None,
         sources: Optional[List[Any]] = None,
         timing: Optional[float] = None

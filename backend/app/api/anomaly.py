@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.config import get_default_domain
 from app.anomaly.detectors import detect_all_anomalies
 from app.anomaly.explainer import explain_all, explain_anomaly
 from app.anomaly.models import AnomalyRecord, AnomalyScanResult
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/api/anomaly", tags=["anomaly"])
 class AnomalyScanRequest(BaseModel):
     file_path: Optional[str] = Field(None, description="Path to file, sql:// table, or db:// database")
     file_id: Optional[str] = Field(None, description="Registry file ID")
-    domain: str = Field("pharmacy", description="Domain pack name (default: pharmacy)")
+    domain: str = Field(default_factory=get_default_domain, description="Domain pack name (defaults to active domain)")
     include_explanations: bool = Field(True, description="Attach plain-language explanations to top anomalies")
     use_llm_explanations: bool = Field(False, description="Use local LLM for narrative explanations (slower)")
 

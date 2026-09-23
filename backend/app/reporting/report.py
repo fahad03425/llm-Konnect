@@ -31,7 +31,7 @@ import pandas as pd
 
 from app.analytics.engine import engine
 from app.analytics.filters import KPIFilters
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 from app.reporting.charts import render_charts
 from app.reporting.models import ExecutiveMetrics, ReportData
 from app.reporting.narrative import generate_narrative
@@ -271,14 +271,14 @@ def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Data
 def gather_report_data(
     source_df: Optional[pd.DataFrame] = None,
     raw_df: Optional[pd.DataFrame] = None,
-    domain: str = "pharmacy",
+    domain: Optional[str] = None,
     filters: Optional[KPIFilters] = None,
     business_name: Optional[str] = None,
     anomalies: Optional[List[Dict[str, Any]]] = None,
     kpi_results: Optional[Dict[str, Any]] = None,
 ) -> ReportData:
     """Gather and assemble ReportData with rich executive dimensions."""
-    effective_domain = domain or "pharmacy"
+    effective_domain = domain or get_default_domain()
     effective_name = business_name or f"{effective_domain.title()} Business"
 
     # Compute KPI results
@@ -689,7 +689,7 @@ def build_report(
 def generate_report(
     source_df: Optional[pd.DataFrame] = None,
     raw_df: Optional[pd.DataFrame] = None,
-    domain: str = "pharmacy",
+    domain: Optional[str] = None,
     filters: Optional[KPIFilters] = None,
     business_name: Optional[str] = None,
     max_regeneration_attempts: int = 1,
