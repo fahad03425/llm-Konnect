@@ -55,7 +55,10 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     (("by supplier", "per supplier", "which supplier", "top supplier", "best supplier", "supplier", "vendor",
       "suppliers", "vendors", "buy the most", "bought the most", "buy most", "bought most"),
      ("expense_breakdown_by_supplier", "revenue_breakdown_by_supplier")),
-    (("by product", "per product", "top product", "top products", "best selling", "top selling", "most popular"),
+    (("by product", "per product", "top product", "top products", "best selling", "top selling", "most popular",
+      "sb se ziada", "sab se ziada", "sab se zyada", "sb se zyada", "sabse ziada", "sabse zyada",
+      "ziada sale", "zyada sale", "dawai ki sale", "dawa ki sale", "kis dawai", "konsi dawai", "kon si dawai",
+      "highest sale", "highest selling"),
      ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
     (("expense", "expenses", "spend", "spent", "purchase", "purchases", "kharcha", "kharch"),
      ("total_expenses", "expense_breakdown_by_category")),
@@ -138,14 +141,17 @@ def infer_product_id(question: str, df: pd.DataFrame) -> Optional[str]:
     return best
 
 
-def _records_to_frame(records: List[Dict[str, Any]]) -> pd.DataFrame:
+def _records_to_frame(records: Any) -> pd.DataFrame:
     """
-    Build a canonical-shaped DataFrame from retrieved knowledge-base records.
+    Build a canonical-shaped DataFrame from retrieved knowledge-base records or DataFrame.
 
     KB metadata preserves the canonical field names plus `source_file`/`source_row`,
     so provenance survives the round trip through retrieval.
     """
-    df = pd.DataFrame(records)
+    if isinstance(records, pd.DataFrame):
+        df = records
+    else:
+        df = pd.DataFrame(records)
     if "source_row" in df.columns:
         df["source_row"] = pd.to_numeric(df["source_row"], errors="coerce")
     return df
@@ -249,7 +255,7 @@ class AnalyticsRouter:
         self,
         question: str,
         filters: Dict[str, Any],
-        kb_records: list,
+        kb_records: Any,
         domain: str = "",
     ) -> Tuple[Optional[Dict[str, Any]], list]:
         """
@@ -259,7 +265,7 @@ class AnalyticsRouter:
             question:   The user's question (already normalized by RAGChat).
             filters:    Filters extracted by `app.rag.router.extract_filters`
                         (e.g. {"month": 1}). Unknown keys are ignored.
-            kb_records: Retrieved knowledge-base record metadata (canonical fields
+            kb_records: Retrieved knowledge-base record metadata or DataFrame (canonical fields
                         plus source_file/source_row).
             domain:     Active domain, so domain KPIs and domain question vocabulary
                         apply. Optional and defaulted, so pre-existing 3-argument
@@ -270,10 +276,16 @@ class AnalyticsRouter:
             is nothing to compute over, matching the 6.5 contract so the chatbot
             replies "no records found" instead of guessing.
         """
-        if not kb_records:
+        if kb_records is None:
             return None, []
-
-        df = _records_to_frame(kb_records)
+        if isinstance(kb_records, pd.DataFrame):
+            if kb_records.empty:
+                return None, []
+            df = kb_records
+        else:
+            if not kb_records:
+                return None, []
+            df = _records_to_frame(kb_records)
         if df.empty:
             return None, []
 

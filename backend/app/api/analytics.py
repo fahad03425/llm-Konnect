@@ -68,11 +68,18 @@ class KPIRequest(BaseModel):
     )
 
 
+from app.analytics.cache import (
+    get_cached_table,
+    set_cached_table,
+    clear_analytics_cache as _clear_cache,
+)
+
 _df_cache: Dict[str, Any] = {}
 
 def clear_analytics_cache(db_name: Optional[str] = None):
     """Purge in-memory DataFrame cache for all or specific database sources."""
     global _df_cache
+    _clear_cache(db_name)
     if db_name:
         db_low = db_name.strip().lower()
         keys_to_remove = [k for k in _df_cache if db_low in k.lower()]
@@ -83,32 +90,26 @@ def clear_analytics_cache(db_name: Optional[str] = None):
 
 def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Intelligently structure multi-table relational database records into a canonical DataFrame.
-
-    Prevents naively dumping sales, purchases, batches, and dimensions together:
-    1. Distinguishes Sales vs. Expenses/Purchases by setting `txn_type = 'sale'` and `txn_type = 'expense'`.
-    2. Merges sales details with sales headers (enriching line items with date, invoice_id, customer) to prevent double counting.
-    3. Dynamically links product costs from product master or purchase detail tables so Gross Profit and Gross Margin compute accurately.
-    4. Handles inventory/stock records for expiry analytics with `txn_type = 'inventory'`.
-    """
-    import re
-
-    if "table_name" not in df.columns or df["table_name"].nunique() <= 1:
-        if "table_name" in df.columns and "txn_type" not in df.columns:
-            tbl_name = str(df["table_name"].iloc[0]).lower()
-            if re.search(r"purchase|expense", tbl_name):
-                df = df.copy()
-                df["txn_type"] = "expense"
-        return df
-
-def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
-    """
     Decompose multi-table whole-database records into a clean canonical DataFrame.
     Dynamically identifies sales headers vs details, supplier purchases/expenses,
     inventory/stock, and cross-references product catalogs for accurate cost linking.
     Works dynamically across arbitrary database schemas.
     """
+    import re
+
     if "table_name" not in df.columns:
+        return df
+
+    # Single-table case: tag purchase/expense/sale tables appropriately
+    if df["table_name"].nunique() <= 1:
+        if "txn_type" not in df.columns:
+            tbl_name = str(df["table_name"].iloc[0]).lower()
+            if re.search(r"purchase|expense", tbl_name):
+                df = df.copy()
+                df["txn_type"] = "expense"
+            elif re.search(r"sale|order|invoice", tbl_name):
+                df = df.copy()
+                df["txn_type"] = "sale"
         return df
 
     tables = {t: df[df["table_name"] == t].copy() for t in df["table_name"].unique()}
@@ -180,7 +181,9 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
 
             cost_cols = [
                 "cost", "cost_price", "purchase_price", "buying_price",
-                "unit_cost", "standard_cost", "buy_rate"
+                "unit_cost", "standard_cost", "buy_rate",
+                "trade_price", "tp", "pp", "p_price", "wholesale_price",
+                "landed_cost"
             ]
             id_cols = [
                 "product_id", "product_sku", "product_code", "generic_name",
@@ -254,23 +257,26 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     used_sales_names = [n for n in [sd_name, sh_name, sg_name] if n]
     purchase_header, ph_name = find_table(r"purchase.*header|expense.*header|vendor_bill|supplier_invoice", exclude=used_sales_names)
     purchase_gen, pg_name = find_table(r"^(tbl_)?(purchases?|expenses?|supplier_bills?|bills_payable)$", exclude=used_sales_names)
-    purchase_detail, pd_name = find_table(r"purchase.*detail|purchase.*item|expense.*detail|vendor.*detail", exclude=used_sales_names)
+    purch_detail, pdet_name = find_table(r"purchase.*detail|purchase.*item|expense.*detail|vendor.*detail", exclude=used_sales_names)
 
     if purchase_header is not None:
         purchases = purchase_header.copy()
+        purchases["txn_type"] = "expense"
+        parts.append(purchases)
+    elif purch_detail is not None:
+        purchases = purch_detail.copy()
+        if "cost" in purchases.columns and "quantity" in purchases.columns:
+            if "amount" not in purchases.columns or (pd.to_numeric(purchases["amount"], errors="coerce") == 0).all():
+                purchases["amount"] = pd.to_numeric(purchases["cost"], errors="coerce") * pd.to_numeric(purchases["quantity"], errors="coerce")
         purchases["txn_type"] = "expense"
         parts.append(purchases)
     elif purchase_gen is not None:
         purchases = purchase_gen.copy()
         purchases["txn_type"] = "expense"
         parts.append(purchases)
-    elif purchase_detail is not None:
-        purchases = purchase_detail.copy()
-        purchases["txn_type"] = "expense"
-        parts.append(purchases)
 
     # 3. Assemble Inventory / Stock (for stock holding and expiry analysis)
-    candidate_stock = [t for t in [stock_tbl, purchase_detail] if t is not None]
+    candidate_stock = [t for t in [stock_tbl, purch_detail] if t is not None]
     stock = None
     for c_tbl in candidate_stock:
         if _has_valid_col(c_tbl, "quantity") and _has_valid_col(c_tbl, "expiry_date"):
@@ -337,6 +343,7 @@ def _load_canonical(req: KPIRequest):
                 raise HTTPException(status_code=404, detail="Database table records not found in KnowledgeBase")
             
             canonical = pd.DataFrame(res["metadatas"])
+            canonical = _build_canonical_database(canonical)
             mapping = {col_name: col_name for col_name in canonical.columns}
             _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
             return canonical.copy(), mapping

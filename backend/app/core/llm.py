@@ -64,6 +64,8 @@ class LLMService:
             text = text.split('<think>')[0]
         # Regex clean any remaining tags
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Strip raw debug metadata block if echoed verbatim by the model
+        text = re.sub(r'\n+Computed Values:\s*\n.*', '', text, flags=re.DOTALL | re.IGNORECASE)
         return text.strip()
 
     def _get_default_options(self, custom_opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

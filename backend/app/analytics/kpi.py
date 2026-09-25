@@ -631,11 +631,56 @@ def _revenue_matched_to_cost(df: pd.DataFrame, filters: KPIFilters) -> KPIResult
 
 def gross_margin_pct(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """Gross margin % = gross profit / revenue of costed rows x 100."""
-    return _ratio(
+    res = _ratio(
         "gross_margin_pct", "Gross Margin %",
         "gross_profit / revenue of costed sale rows x 100",
         gross_profit(df, filters), _revenue_matched_to_cost(df, filters), filters,
     )
+    if not res.is_available:
+        return res
+
+    prod_col = "product_id" if "product_id" in df.columns else ("product_name" if "product_name" in df.columns else None)
+    if prod_col and "cost" in df.columns:
+        txn = classify_transactions(df)
+        amounts, _, _ = _amount_series(df)
+        cogs, _, _ = _cogs_series(df)
+        if amounts is not None and cogs is not None:
+            mask = txn.sale & amounts.notna() & cogs.notna() & df[prod_col].notna()
+            if mask.any():
+                sub = pd.DataFrame({
+                    "product": df.loc[mask, prod_col].astype(str),
+                    "amount": amounts[mask],
+                    "cogs": cogs[mask],
+                    "quantity": pd.to_numeric(df.loc[mask, "quantity"], errors="coerce").fillna(1.0) if "quantity" in df.columns else 1.0,
+                })
+                grp = sub.groupby("product", as_index=False).agg(
+                    total_amount=("amount", "sum"),
+                    total_cogs=("cogs", "sum"),
+                    total_qty=("quantity", "sum"),
+                )
+                grp["profit"] = grp["total_amount"] - grp["total_cogs"]
+                grp["margin_pct"] = (grp["profit"] / grp["total_amount"].replace(0, float("nan"))) * 100
+                grp = grp.sort_values("total_qty", ascending=False).head(5)
+                breakdown = [
+                    {
+                        "product_name": str(r["product"]),
+                        "quantity_sold": round(float(r["total_qty"]), 2),
+                        "profit_margin": f"{round(float(r['margin_pct']), 2)}%",
+                        "profit_pkr": round(float(r["profit"]), 2),
+                    }
+                    for _, r in grp.iterrows()
+                ]
+                return KPIResult(
+                    key=res.key,
+                    name=res.name,
+                    value=res.value,
+                    unit=res.unit,
+                    formula=res.formula,
+                    provenance=res.provenance,
+                    period=res.period,
+                    breakdown=breakdown,
+                )
+    return res
 
 
 def net_margin_pct(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:

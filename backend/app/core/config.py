@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:3b"
     llm_keep_alive: str = "30m"  # keeps model in VRAM for instant subsequent responses
     llm_keep_alive_chat: str = "30m"  # keeps model in VRAM for interactive chat
-    llm_num_predict: int = 128
+    llm_num_predict: int = 256
     llm_chat_history_size: int = 3
     llm_temperature: float = 0.2
     

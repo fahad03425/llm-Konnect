@@ -28,7 +28,7 @@ export default function Chatbot() {
     const [sessionId, setSessionId] = useState(() => `sess-${Math.random().toString(36).substring(2, 10)}`);
     const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
     const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-    const [models, setModels] = useState<string[]>(['qwen2.5:3b', 'gemma3:1b', 'llama3:latest']);
+    const [models, setModels] = useState<string[]>(['qwen2.5:3b', 'gemma3:1b', 'llama3.2:1b', 'llama3.2:3b']);
     const [activeModel, setActiveModel] = useState<string>('qwen2.5:3b');
 
     const messagesContainerRef = useRef<HTMLDivElement>(null);
