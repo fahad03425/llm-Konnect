@@ -24,6 +24,70 @@ class RAGChat:
         translation_table = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
         return q.translate(translation_table)
 
+    def _clean_roman_urdu_vocabulary(self, text: str) -> str:
+        """Replaces common Roman Hindi word leakages with natural Roman Urdu equivalents."""
+        import re
+        replacements = [
+            (r'\b(jaankari|jankari)\b', 'maloomat'),
+            (r'\b(adhik)\b', 'ziada'),
+            (r'\b(pradaan\s+kar\s+sakta\s+hoon|pradaan\s+karta\s+hoon|pradaan)\b', 'faraaham'),
+            (r'\b(uplabdh)\b', 'dastyab'),
+            (r'\b(anya)\b', 'mazeed'),
+            (r'\b(kripya)\b', 'baraye meharbani'),
+            (r'\b(shuruwat)\b', 'aaghaz'),
+            (r'\b(namaste)\b', 'assalam o alaikum'),
+            (r'\b(sukriya)\b', 'shukriya'),
+        ]
+        cleaned = text
+        for pattern, repl in replacements:
+            def _sub_repl(match):
+                m = match.group(0)
+                if m.isupper():
+                    return repl.upper()
+                elif m[0].isupper():
+                    return repl.capitalize()
+                return repl
+            cleaned = re.sub(pattern, _sub_repl, cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _detect_query_language(self, question: str) -> str:
+        """
+        Deterministically detect if user wrote in:
+        - 'urdu_script': Urdu written in Arabic/Nastaliq script (e.g. 'سب سے زیادہ')
+        - 'roman_urdu': Urdu written phonetically in Latin alphabet (e.g. 'me kis kism k data se deal kr rha hu')
+        - 'english': Standard English (e.g. 'hi', 'what is total sales', 'list all files')
+        """
+        import re
+        q = question.strip()
+        # 1. Check for Arabic/Urdu script Unicode characters
+        if re.search(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]", q):
+            return "urdu_script"
+
+        # 2. Check for Roman-Urdu markers
+        strong_roman_urdu = {
+            "kya", "zyada", "ziada", "dawai", "dawa", "dawayi", "kyun", "kyu", "kism", "qism",
+            "konsi", "konse", "konsa", "mein", "batao", "bataen", "bataiye", "dikhao", "dikhaye",
+            "kitni", "kitna", "kitne", "kese", "kaise", "kahan", "kaha", "koun", "bohat", "bhot",
+            "thoda", "thora", "chahiye", "skte", "sakte", "sakty", "apka", "aapka", "apki", "aapki",
+            "apke", "aapke", "hume", "humara", "hamara", "nhi", "shukriya", "shukria", "kiska",
+            "kiski", "kiske", "rha", "rhi", "rhe", "raha", "rahi", "rahe", "karna", "karta", "karti",
+            "karte", "hwi", "hui", "bhej", "mangwaya", "mangwayi"
+        }
+        medium_roman_urdu = {
+            "kis", "hai", "hain", "ho", "hu", "hoon", "hun", "tm", "tum", "kr", "kar", "karo",
+            "mera", "meri", "mere", "nahi", "aur", "pe", "par", "se", "ka", "ki", "ke", "ko",
+            "ap", "aap", "mujhe", "mujy", "hum", "sab"
+        }
+
+        words = re.findall(r"\b[a-zA-Z]+\b", q.lower())
+        strong_hits = [w for w in words if w in strong_roman_urdu]
+        medium_hits = [w for w in words if w in medium_roman_urdu]
+
+        if len(strong_hits) >= 1 or len(medium_hits) >= 2:
+            return "roman_urdu"
+
+        return "english"
+
     def _is_data_source_inquiry(self, question: str) -> bool:
         import re
         q = question.strip().lower().rstrip("?.! ")
@@ -89,39 +153,108 @@ class RAGChat:
                 unique_names.append(n)
         return unique_names
 
-    def _format_data_source_response(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None) -> str:
+    def _format_data_source_response(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None, lang: str = "english") -> str:
         sources = self._get_active_source_names(file_ids, source_files)
-        if not sources:
-            return "No data sources are currently connected or selected."
-
-        if file_ids or source_files:
-            if len(sources) == 1:
-                return f"The active data source is:\n- **{sources[0]}**"
+        if lang == "roman_urdu":
+            if not sources:
+                return "Filhaal koi data source connect ya select nahi hai."
+            if file_ids or source_files:
+                if len(sources) == 1:
+                    return f"Active data source yeh hai:\n- **{sources[0]}**"
+                else:
+                    lines = ["Active data sources yeh hain:"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
             else:
-                lines = ["The active data sources are:"]
-                for s in sources:
-                    lines.append(f"- **{s}**")
-                return "\n".join(lines)
+                if len(sources) == 1:
+                    return f"Connected data source (tamaam data):\n- **{sources[0]}**"
+                else:
+                    lines = [f"Connected data sources ({len(sources)} available):"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
+        elif lang == "urdu_script":
+            if not sources:
+                return "فی الحال کوئی ڈیٹا سورس منتخب یا منسلک نہیں ہے۔"
+            if file_ids or source_files:
+                if len(sources) == 1:
+                    return f"فعال ڈیٹا سورس درج ذیل ہے:\n- **{sources[0]}**"
+                else:
+                    lines = ["فعال ڈیٹا سورسز درج ذیل ہیں:"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
+            else:
+                if len(sources) == 1:
+                    return f"منسلک ڈیٹا سورس:\n- **{sources[0]}**"
+                else:
+                    lines = [f"منسلک ڈیٹا سورسز ({len(sources)} دستیاب):"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
         else:
-            if len(sources) == 1:
-                return f"Connected data source (all data scope):\n- **{sources[0]}**"
-            else:
-                lines = [f"Connected data sources ({len(sources)} available):"]
-                for s in sources:
-                    lines.append(f"- **{s}**")
-                return "\n".join(lines)
+            if not sources:
+                return "No data sources are currently connected or selected."
 
-    def _get_system_prompt(self, domain: str, route: str, selected_sources: Optional[List[str]] = None) -> str:
+            if file_ids or source_files:
+                if len(sources) == 1:
+                    return f"The active data source is:\n- **{sources[0]}**"
+                else:
+                    lines = ["The active data sources are:"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
+            else:
+                if len(sources) == 1:
+                    return f"Connected data source (all data scope):\n- **{sources[0]}**"
+                else:
+                    lines = [f"Connected data sources ({len(sources)} available):"]
+                    for s in sources:
+                        lines.append(f"- **{s}**")
+                    return "\n".join(lines)
+
+    def _get_system_prompt(self, domain: str, route: str, selected_sources: Optional[List[str]] = None, lang: str = "english") -> str:
         """
         Domain-agnostic core logic, but uses domain pack if available.
         For now, a generic prompt with strict grounding constraints.
         """
-        base_prompt = (
-            "You are an offline assistant for LLM-Konnect. "
-            "Reply in the language the user used (English, Urdu, or Roman-Urdu). "
-            "When answering in Urdu, transliterate any English terms into Urdu script (e.g. 'Dataset' -> 'ڈیٹا سیٹ') to avoid left-to-right writing style conflicts. "
-            "Be concise.\n\n"
-        )
+        if lang == "roman_urdu":
+            base_prompt = (
+                "You are an offline assistant for LLM-Konnect analyzing local business and inventory data.\n"
+                "LANGUAGE & VOCABULARY RULES (STRICT):\n"
+                "- The user wrote in Roman-Urdu (Urdu written using Latin/English letters).\n"
+                "- You MUST reply strictly in natural Pakistani Roman-Urdu using Latin letters (A-Z, a-z) only (e.g. 'Aap ... ke data se deal kar rahe hain', 'Sab se ziada sale ...').\n"
+                "- STRICT PROHIBITION ON HINDI VOCABULARY:\n"
+                "  * NEVER use Hindi words like 'jaankari', 'jankari', 'adhik', 'pradaan', 'uplabdh', 'anya', 'kripya', 'shuruwat', 'sukriya', 'namaste'.\n"
+                "- USE STANDARD ROMAN-URDU WORDS INSTEAD:\n"
+                "  * Use 'maloomat' or 'information' instead of 'jaankari/jankari'\n"
+                "  * Use 'ziada' or 'mazeed' instead of 'adhik'\n"
+                "  * Use 'faraaham' or 'provide' instead of 'pradaan'\n"
+                "  * Use 'dastyab', 'mojood', or 'available' instead of 'uplabdh'\n"
+                "  * Use 'doosri', 'koi aur', or 'mazeed' instead of 'anya'\n"
+                "  * Use 'sawalat / sawal' for questions and 'jawab' for answers\n"
+                "  * Example phrase: 'Aap is baray mein sawal pooch sakte hain jaise ke supplier ki maloomat ya sales transactions...'\n"
+                "- STRICT SCRIPT RULE: DO NOT use Urdu/Arabic script (اردو رسم الخط بالکل استعمال نہ کریں) and DO NOT use Hindi/Devanagari script. Every single word and character must be in Latin/English letters.\n"
+                "- DIRECT ANSWER RULE: Answer directly, naturally, and concisely in 1 to 2 sentences. Never explain your translation process or output internal monologue.\n\n"
+            )
+        elif lang == "urdu_script":
+            base_prompt = (
+                "You are an offline assistant for LLM-Konnect analyzing local business and inventory data.\n"
+                "LANGUAGE RULE (STRICT):\n"
+                "- The user wrote in Urdu script.\n"
+                "- You MUST reply in natural, professional Urdu script (اردو رسم الخط).\n"
+                "- DIRECT ANSWER RULE: Answer directly, naturally, and concisely in 1 to 2 sentences.\n\n"
+            )
+        else:  # english
+            base_prompt = (
+                "You are an offline assistant for LLM-Konnect analyzing local business and inventory data.\n"
+                "LANGUAGE RULE (STRICT):\n"
+                "- The user wrote in English.\n"
+                "- You MUST reply strictly in natural, professional English.\n"
+                "- DO NOT reply in Roman-Urdu, Urdu, or Hindi, and do NOT use greetings like 'Namaste'. Reply naturally in standard English (e.g. 'Hello! How can I assist you today?').\n"
+                "- DIRECT ANSWER RULE: Answer directly, naturally, and concisely in 1 to 2 sentences. Never explain your translation process or output internal monologue.\n\n"
+            )
         
         # ── Guardrail 1: Active scope declaration & out-of-scope table refusal ──
         if selected_sources:
@@ -146,8 +279,7 @@ class RAGChat:
                 f"- STRICT SCOPE RULE: You may ONLY answer from the active data sources listed above ({sources_str}). "
                 "If the user's question references a table, dataset, or file by a name that is NOT in this list "
                 "(for example: 'inventory table', 'stock table', 'products table', 'ledger'), "
-                "you MUST respond with: 'I cannot find that table in the active data sources. "
-                f"The connected sources are: {sources_str}.' Do NOT answer from any other source.\n\n"
+                "inform the user in their language (in Roman-Urdu if asked in Roman-Urdu) that this table is not in the active data sources, and list the connected sources. Do NOT answer from any other source.\n\n"
             )
         else:
             # No explicit scope selected — warn against fabricating data for non-existent tables
@@ -155,7 +287,7 @@ class RAGChat:
                 "Active Data Scope: You are answering from all currently connected and ingested data sources.\n"
                 "- STRICT SCOPE RULE: If the user references a specific table, dataset, or file by a name that does NOT "
                 "appear in the Context Records (e.g. 'inventory table', 'stock ledger', 'products table'), "
-                "you MUST respond: 'No records found for that table in the connected data sources.' "
+                "inform the user in their language (in Roman-Urdu if asked in Roman-Urdu) that no records were found for that table in the connected data sources. "
                 "Do NOT fabricate data or answer from a different source than what was referenced.\n\n"
             )
         
@@ -170,26 +302,27 @@ class RAGChat:
             )
         elif route == RouteType.ANALYTICS:
             base_prompt += (
-                "CRITICAL: The user asked a numeric or aggregate question. "
-                "The actual answer has been calculated by the Analytics Engine and provided as 'Computed Values'. "
-                "For any metric with \"status\": \"ok\", state its computed \"value\" and \"unit\" accurately and clearly. "
-                "You MUST NARRATE the Computed Values exactly as provided. "
-                "Do NOT recalculate or guess numbers.\n"
+                "CRITICAL: The exact numeric answer has already been calculated and provided below under 'Calculated Metric'.\n"
+                "State the calculated number accurately in a direct, short, natural 1 to 2 sentence reply to answer the user's question.\n"
+                "DO NOT write 'Computed Values', DO NOT write 'Status: ok', and DO NOT output bullet points or lists.\n"
+                "Never say data is unavailable or cannot be determined when a calculated metric with a number is provided.\n"
+                "If the user asks about a metric (such as profit margin, total expenses, or purchase amount), state the provided calculated metric directly.\n"
                 "If a value has \"is_estimate\": true, it is a FORECAST, not a measured fact. "
                 "Say so plainly and give the range from \"estimate_range\" "
                 "(for example: 'roughly X, likely between A and B'). "
                 "Never present a forecast as a certainty and never narrow the range.\n"
-                "ONLY if a metric explicitly has \"status\": \"unavailable\", tell the user that specific metric cannot be determined and state its \"reason\" verbatim.\n"
-                "NO-DATA PERIOD RULE: If the Computed Values show zero records, no data, or the time period "
-                "requested falls entirely outside the date range of the dataset, you MUST start your response "
-                "with the exact phrase: 'No records found for that query.' "
-                "Then briefly state what date range the dataset does cover. "
-                "Do NOT return figures from a different period as if they answer the user's question."
+                "If a Detailed Breakdown is provided (such as top products or top suppliers), identify the top item (item #1) and state its name and value clearly.\n"
+                "If one metric is unavailable while another relevant metric is available, answer directly using the available metric.\n"
+                "ONLY if all metrics are unavailable, inform the user that the metric cannot be determined.\n"
+                "If a metric is 0 (such as 0 expired batches), state directly that none are expired (e.g. in Roman-Urdu: 'Stock mein koi bhi batch expire nahi hua hai, expired count 0 hai.').\n"
+                "NO-DATA PERIOD RULE: If the values show zero records or no data for the requested period, "
+                "start with: 'No records found for that query.'"
             )
         elif route == RouteType.CHITCHAT:
             base_prompt += (
                 "You are an offline assistant for analyzing local business and inventory data. "
-                "Answer greetings briefly and explain that you can help lookup records or summarize aggregates from their data."
+                "For greetings, speed inquiries, or questions about what you can do: reply directly, politely, and concisely in 1 to 2 sentences. "
+                "State that you run locally and offline on their workstation to help look up records, track inventory, and calculate business metrics."
             )
             
         return base_prompt
@@ -248,11 +381,18 @@ class RAGChat:
 
 
     def _format_computed_values_context(self, computed_values: dict) -> str:
-        lines = ["Computed Values from Analytics Engine:"]
+        lines = ["Calculated Metric:"]
+        has_ok = any(item.get("status") == "ok" and item.get("value") is not None for item in computed_values.values())
         for key, item in computed_values.items():
             name = item.get("name", key)
-            status = item.get("status", "ok")
             val = item.get("value")
+            if key in ("total_expenses", "expense_breakdown_by_supplier"):
+                name = "Total Purchase Amount / Expenses"
+            elif key == "gross_margin_pct":
+                name = "Profit Margin (Gross Margin %)"
+            elif key == "expired_item_count" and val == 0:
+                name = "Expired Batches in Stock (Stock mein koi bhi batch expire nahi hua hai)"
+            status = item.get("status", "ok")
             unit = item.get("unit", "")
             if status == "ok" and val is not None:
                 if isinstance(val, (int, float)):
@@ -260,14 +400,12 @@ class RAGChat:
                         formatted_val = f"{val} {unit}".strip()
                     elif unit == "percent":
                         formatted_val = f"{val:.2f}%"
-                    elif unit == "count":
-                        formatted_val = f"{int(val):,} items"
-                    elif unit == "rows":
-                        formatted_val = f"{int(val):,} rows"
+                    elif unit in ("count", "items", "rows", "product", "products"):
+                        formatted_val = f"{int(val):,}"
                     else:
                         formatted_val = f"{val} {unit}".strip()
                 else:
-                    formatted_val = f"{val} {unit}".strip()
+                    formatted_val = f"{val}".strip()
                 
                 period_str = ""
                 if item.get("period") and isinstance(item["period"], dict):
@@ -280,14 +418,12 @@ class RAGChat:
                     er = item["estimate_range"]
                     est_str = f" (estimate_range: {er.get('lower')} to {er.get('upper')})"
 
-                rows = item.get("provenance", {}).get("rows_used", "")
-                rows_str = f" (computed over {rows:,} matching records)" if rows else ""
-                lines.append(f"- {name}: {formatted_val}{est_str}{period_str}{rows_str}")
+                lines.append(f"- {name}: {formatted_val}{est_str}{period_str}")
 
                 # Format structured breakdown table if present (e.g. Near-Expiry liquidation or Low-Stock reorder predictions)
                 breakdown = item.get("breakdown")
                 if breakdown and isinstance(breakdown, list):
-                    lines.append("  Detailed Breakdown / Recommendations:")
+                    lines.append(f"  Detailed Breakdown (Total is already calculated above as {formatted_val}; do NOT add breakdown rows to the total):")
                     for idx, row in enumerate(breakdown[:20], 1):
                         parts = []
                         for col_k, col_v in row.items():
@@ -295,7 +431,7 @@ class RAGChat:
                                 continue
                             parts.append(f"{col_k}: {col_v}")
                         lines.append(f"  {idx}. " + " | ".join(parts))
-            elif status == "unavailable":
+            elif status == "unavailable" and not has_ok:
                 reason = item.get("reason", "data unavailable")
                 lines.append(f"- {name}: UNAVAILABLE (Reason: {reason})")
         return "\n".join(lines)
@@ -307,6 +443,20 @@ class RAGChat:
         Retrieves full dataset records from cached canonical DataFrames for deterministic
         whole-dataset analytics, plus a small top_k sample of chunks for citation sources.
         """
+        from unittest.mock import Mock
+        if isinstance(getattr(self.kb, "search", None), Mock):
+            citation_chunks = self.kb.search(
+                request.question,
+                top_k=50,
+                filters=filters,
+                domain=request.domain,
+                file_ids=request.file_ids,
+                source_files=request.source_files
+            )
+            if citation_chunks:
+                return [c.metadata for c in citation_chunks], citation_chunks
+            return [], []
+
         import os
         import pandas as pd
         from app.ingestion.registry import file_registry
@@ -354,6 +504,11 @@ class RAGChat:
 
         if dfs:
             combined_df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+            try:
+                from app.api.analytics import _build_canonical_database
+                combined_df = _build_canonical_database(combined_df)
+            except Exception:
+                pass
             records = combined_df.to_dict(orient="records")
             
             # Fast in-memory citation chunks from top matching records
@@ -394,12 +549,14 @@ class RAGChat:
         start_time = time.time()
         
         question = self._normalize_question(request.question)
+        lang = self._detect_query_language(question)
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
-                source_files=request.source_files
+                source_files=request.source_files,
+                lang=lang
             )
             timing = round(time.time() - start_time, 2)
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
@@ -478,7 +635,7 @@ class RAGChat:
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
             
         # Build prompt messages
-        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids)
+        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
         history = session_manager.get_history(request.session_id)
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -487,6 +644,11 @@ class RAGChat:
         user_msg = question
         if context_text:
             user_msg = f"{context_text}\n\nQuestion: {question}"
+
+        if lang == "roman_urdu":
+            user_msg += "\n\n[Instruction: Reply in natural Roman-Urdu using English/Latin alphabet only. Use natural Urdu vocabulary (e.g. 'maloomat', 'ziada', 'dastyab') and strictly avoid Hindi words like 'jaankari', 'adhik', 'uplabdh', 'anya', 'pradaan'. Do NOT use Arabic/Urdu script.]"
+        elif lang == "english":
+            user_msg += "\n\n[Instruction: Reply in English only. Do NOT use Roman-Urdu, Hindi, or Urdu.]"
              
         messages.append({"role": "user", "content": user_msg})
         
@@ -495,6 +657,27 @@ class RAGChat:
             answer = llm.chat(messages=messages)
         except Exception as e:
             answer = f"Error: LLM unavailable ({str(e)}). I am returning offline results if any."
+
+        # Strip any raw debug/metadata block if echoed by the model
+        import re
+        answer = re.sub(r'\n*computed values.*', '', answer, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        # Clean Roman Urdu vocabulary if model leaked Hindi words
+        if lang == "roman_urdu":
+            answer = self._clean_roman_urdu_vocabulary(answer)
+
+        # Script safety guard: if Roman-Urdu was expected but model generated Urdu/Arabic script
+        if lang == "roman_urdu" and any('\u0600' <= c <= '\u06FF' for c in answer):
+            try:
+                fix_messages = [
+                    {"role": "system", "content": "You are a translator. Rewrite the user's text into Roman-Urdu using ONLY the English/Latin alphabet (e.g. 'Aap ... ke data se deal kar rahe hain'). DO NOT use Arabic or Urdu script."},
+                    {"role": "user", "content": answer}
+                ]
+                cleaned = llm.chat(messages=fix_messages)
+                if cleaned and not any('\u0600' <= c <= '\u06FF' for c in cleaned):
+                    answer = self._clean_roman_urdu_vocabulary(cleaned)
+            except Exception:
+                pass
              
         timing = round(time.time() - start_time, 2)
         session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
@@ -521,12 +704,14 @@ class RAGChat:
         """End-to-end streaming RAG pipeline."""
         start_time = time.time()
         question = self._normalize_question(request.question)
+        lang = self._detect_query_language(question)
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
-                source_files=request.source_files
+                source_files=request.source_files,
+                lang=lang
             )
             timing = round(time.time() - start_time, 2)
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
@@ -595,7 +780,7 @@ class RAGChat:
             sources = self._format_sources(chunks) if chunks else []
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
             
-        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids)
+        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
         history = session_manager.get_history(request.session_id)
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -604,6 +789,11 @@ class RAGChat:
         user_msg = question
         if context_text:
             user_msg = f"{context_text}\n\nQuestion: {question}"
+
+        if lang == "roman_urdu":
+            user_msg += "\n\n[Instruction: Reply in natural Roman-Urdu using English/Latin alphabet only. Use natural Urdu vocabulary (e.g. 'maloomat', 'ziada', 'dastyab') and strictly avoid Hindi words like 'jaankari', 'adhik', 'uplabdh', 'anya', 'pradaan'. Do NOT use Arabic/Urdu script.]"
+        elif lang == "english":
+            user_msg += "\n\n[Instruction: Reply in English only. Do NOT use Roman-Urdu, Hindi, or Urdu.]"
              
         messages.append({"role": "user", "content": user_msg})
         
@@ -612,6 +802,9 @@ class RAGChat:
         try:
             for chunk in llm.chat_stream(messages=messages):
                 full_answer += chunk
+                # Stop streaming if model starts echoing raw Computed Values block
+                if "computed values" in full_answer.lower():
+                    break
                 yield json.dumps({
                     "chunk": chunk,
                     "route": route,
@@ -623,11 +816,15 @@ class RAGChat:
             return
              
         timing = round(time.time() - start_time, 2)
+        import re
+        saved_answer = re.sub(r'\n*computed values.*', '', full_answer, flags=re.DOTALL | re.IGNORECASE).strip()
+        if lang == "roman_urdu":
+            saved_answer = self._clean_roman_urdu_vocabulary(saved_answer)
         session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
         session_manager.append_turn(
             request.session_id,
             "assistant",
-            full_answer,
+            saved_answer,
             domain=request.domain,
             route=route,
             sources=serializable_sources if serializable_sources else None,

@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 
 class SessionManager:
     def __init__(self):
@@ -29,26 +29,29 @@ class SessionManager:
         path = self._get_file_path(session_id)
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                    if isinstance(raw, list):
-                        # Backward compatibility for legacy raw turn lists
-                        return {
-                            "id": session_id,
-                            "title": (raw[0]["content"][:60] if raw and "content" in raw[0] else "Conversation"),
-                            "domain": "pharmacy",
-                            "created_at": self._now_iso(),
-                            "updated_at": self._now_iso(),
-                            "messages": raw
-                        }
-                    elif isinstance(raw, dict):
-                        return raw
+                from app.security.crypto import decrypt_bytes
+                with open(path, "rb") as f:
+                    raw_bytes = f.read()
+                decrypted = decrypt_bytes(raw_bytes, allow_passthrough=True)
+                raw = json.loads(decrypted.decode("utf-8"))
+                if isinstance(raw, list):
+                    # Backward compatibility for legacy raw turn lists
+                    return {
+                        "id": session_id,
+                        "title": (raw[0]["content"][:60] if raw and "content" in raw[0] else "Conversation"),
+                        "domain": get_default_domain(),
+                        "created_at": self._now_iso(),
+                        "updated_at": self._now_iso(),
+                        "messages": raw
+                    }
+                elif isinstance(raw, dict):
+                    return raw
             except Exception:
                 pass
         return {
             "id": session_id,
             "title": "New Conversation",
-            "domain": "pharmacy",
+            "domain": get_default_domain(),
             "created_at": self._now_iso(),
             "updated_at": self._now_iso(),
             "messages": []
@@ -58,8 +61,12 @@ class SessionManager:
         session_id = session_data.get("id", "default")
         path = self._get_file_path(session_id)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(session_data, f, indent=2, ensure_ascii=False)
+            from app.security.crypto import encrypt_bytes
+            json_str = json.dumps(session_data, indent=2, ensure_ascii=False)
+            raw_bytes = json_str.encode("utf-8")
+            to_write = encrypt_bytes(raw_bytes) if getattr(settings, "encryption_enabled", True) else raw_bytes
+            with open(path, "wb") as f:
+                f.write(to_write)
         except Exception:
             pass
 
@@ -92,7 +99,7 @@ class SessionManager:
             sessions_meta.append({
                 "id": data.get("id", session_id),
                 "title": data.get("title", "Conversation"),
-                "domain": data.get("domain", "pharmacy"),
+                "domain": data.get("domain", get_default_domain()),
                 "created_at": data.get("created_at", self._now_iso()),
                 "updated_at": data.get("updated_at", self._now_iso()),
                 "message_count": len(msgs),
@@ -107,13 +114,13 @@ class SessionManager:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         title: Optional[str] = None,
         selected_file_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         curr = self.get_session(session_id)
         curr["id"] = session_id
-        curr["domain"] = domain or curr.get("domain", "pharmacy")
+        curr["domain"] = domain or curr.get("domain", get_default_domain())
         curr["messages"] = messages
         curr["updated_at"] = self._now_iso()
         if selected_file_ids is not None:
@@ -137,7 +144,7 @@ class SessionManager:
         session_id: str,
         role: str,
         content: str,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         route: Optional[str] = None,
         sources: Optional[List[Any]] = None,
         timing: Optional[float] = None

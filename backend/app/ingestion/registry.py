@@ -5,7 +5,9 @@ import hashlib
 import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.core.config import get_default_domain
 
 class FileRecord(BaseModel):
     file_id: str
@@ -29,7 +31,7 @@ class DBConnectionRecord(BaseModel):
     database_name: str
     connection_string: str
     db_type: str
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain)
     strategy: str = "row"
     auto_sync: int = 1
     sync_interval_sec: int = 15
@@ -165,12 +167,17 @@ class FileRegistry:
         except Exception:
             pass
 
-        # 3. Compute SHA-256 using large 1MB buffer for fast Windows I/O
+        # 3. Compute SHA-256 using large 1MB buffer (or decrypted content if encrypted at rest)
         sha256 = hashlib.sha256()
         try:
-            with open(file_path, "rb") as f:
-                while chunk := f.read(1048576):
-                    sha256.update(chunk)
+            from app.security.crypto import is_encrypted_file, decrypt_file_to_bytes
+            if is_encrypted_file(file_path):
+                decrypted = decrypt_file_to_bytes(file_path)
+                sha256.update(decrypted)
+            else:
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(1048576):
+                        sha256.update(chunk)
             h = sha256.hexdigest()
             _hash_cache[norm_path] = (mtime, size, h)
             # Save to persistent cache
@@ -258,7 +265,7 @@ class FileRegistry:
         self,
         file_path: str,
         chunk_count: int,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         strategy: str = "row",
         file_id: Optional[str] = None,
         group_name: Optional[str] = None,
@@ -266,6 +273,7 @@ class FileRegistry:
         table_name: Optional[str] = None,
         filename_override: Optional[str] = None
     ) -> FileRecord:
+        eff_domain = domain or get_default_domain()
         canonical_path = self.normalize_path(file_path) if source_type == "file" else file_path.replace("\\", "/")
         file_hash = self.calculate_hash(file_path) if (source_type == "file" and os.path.exists(file_path)) else hashlib.sha256(canonical_path.encode()).hexdigest()
         filename = filename_override or os.path.basename(file_path) or table_name or "data_source"
@@ -288,13 +296,13 @@ class FileRegistry:
                         ingested_at = ?, file_size_bytes = ?, group_name = COALESCE(?, group_name),
                         source_type = COALESCE(?, source_type), table_name = COALESCE(?, table_name)
                     WHERE file_id = ?
-                """, (filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size, group_name, source_type, table_name, fid))
+                """, (filename, canonical_path, file_hash, chunk_count, eff_domain, strategy, ingested_at, file_size, group_name, source_type, table_name, fid))
             else:
                 fid = file_id or f"file_{uuid.uuid4().hex[:12]}"
                 conn.execute("""
                     INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message, group_name, source_type, table_name)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 100.0, 'Completed', '', ?, ?, ?)
-                """, (fid, filename, canonical_path, file_hash, chunk_count, domain, strategy, ingested_at, file_size, group_name, source_type, table_name))
+                """, (fid, filename, canonical_path, file_hash, chunk_count, eff_domain, strategy, ingested_at, file_size, group_name, source_type, table_name))
             conn.commit()
 
         return self.get_file_by_id(fid)
@@ -304,7 +312,7 @@ class FileRegistry:
         file_path: str,
         status: str,
         file_id: Optional[str] = None,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         strategy: str = "row",
         progress: float = 0.0,
         step_text: str = "",
@@ -314,6 +322,7 @@ class FileRegistry:
         table_name: Optional[str] = None,
         filename_override: Optional[str] = None
     ) -> FileRecord:
+        eff_domain = domain or get_default_domain()
         canonical_path = self.normalize_path(file_path) if source_type == "file" else file_path.replace("\\", "/")
         filename = filename_override or os.path.basename(file_path) or table_name or "data_source"
         file_size = os.path.getsize(file_path) if (source_type == "file" and os.path.exists(file_path)) else 0
@@ -336,13 +345,13 @@ class FileRegistry:
                         file_size_bytes = ?, progress = ?, step_text = ?, error_message = ?, ingested_at = ?,
                         group_name = COALESCE(?, group_name), source_type = COALESCE(?, source_type), table_name = COALESCE(?, table_name)
                     WHERE file_id = ?
-                """, (filename, canonical_path, status, domain, strategy, file_size, progress, step_text, err_str, now_ts, group_name, source_type, table_name, fid))
+                """, (filename, canonical_path, status, eff_domain, strategy, file_size, progress, step_text, err_str, now_ts, group_name, source_type, table_name, fid))
             else:
                 fid = file_id or f"file_{uuid.uuid4().hex[:12]}"
                 conn.execute("""
                     INSERT INTO file_registry (file_id, filename, file_path, file_hash, chunk_count, domain, strategy, status, ingested_at, file_size_bytes, progress, step_text, error_message, group_name, source_type, table_name)
                     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (fid, filename, canonical_path, file_hash, domain, strategy, status, now_ts, file_size, progress, step_text, err_str, group_name, source_type, table_name))
+                """, (fid, filename, canonical_path, file_hash, eff_domain, strategy, status, now_ts, file_size, progress, step_text, err_str, group_name, source_type, table_name))
             conn.commit()
 
         return self.get_file_by_id(fid)
@@ -408,7 +417,7 @@ class FileRegistry:
         database_name: str,
         connection_string: str,
         db_type: str,
-        domain: str = "pharmacy",
+        domain: Optional[str] = None,
         strategy: str = "row",
         auto_sync: int = 1,
         sync_interval_sec: int = 15,
@@ -416,6 +425,7 @@ class FileRegistry:
         table_count: int = 0,
         row_count: int = 0
     ) -> DBConnectionRecord:
+        eff_domain = domain or get_default_domain()
         now_ts = datetime.now().isoformat()
         with self._get_connection() as conn:
             conn.execute("""
@@ -433,7 +443,7 @@ class FileRegistry:
                     last_status = excluded.last_status,
                     table_count = CASE WHEN excluded.table_count > 0 THEN excluded.table_count ELSE table_count END,
                     row_count = CASE WHEN excluded.row_count > 0 THEN excluded.row_count ELSE row_count END
-            """, (database_name, connection_string, db_type, domain, strategy, auto_sync, sync_interval_sec, now_ts, last_status, table_count, row_count))
+            """, (database_name, connection_string, db_type, eff_domain, strategy, auto_sync, sync_interval_sec, now_ts, last_status, table_count, row_count))
             conn.commit()
         return self.get_db_connection(database_name)
 
@@ -493,7 +503,15 @@ file_registry.cleanup_stale_processing()
 # Pre-seed active connection for PharmacyPOS if present in registry
 try:
     existing_pharmacy = file_registry.get_db_connection("PharmacyPOS")
+    should_seed = False
     if not existing_pharmacy:
+        should_seed = True
+    elif "pytest" in existing_pharmacy.connection_string or (
+        existing_pharmacy.db_type == "sqlite" and not os.path.exists(existing_pharmacy.connection_string.replace("sqlite:///", ""))
+    ):
+        should_seed = True
+
+    if should_seed:
         file_registry.save_db_connection(
             database_name="PharmacyPOS",
             connection_string="mssql+pyodbc://localhost\\SQLEXPRESS/PharmacyPOS?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
@@ -502,6 +520,7 @@ try:
             strategy="row",
             auto_sync=1,
             sync_interval_sec=15,
+            last_status="active",
             table_count=10,
             row_count=772
         )

@@ -631,11 +631,56 @@ def _revenue_matched_to_cost(df: pd.DataFrame, filters: KPIFilters) -> KPIResult
 
 def gross_margin_pct(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """Gross margin % = gross profit / revenue of costed rows x 100."""
-    return _ratio(
+    res = _ratio(
         "gross_margin_pct", "Gross Margin %",
         "gross_profit / revenue of costed sale rows x 100",
         gross_profit(df, filters), _revenue_matched_to_cost(df, filters), filters,
     )
+    if not res.is_available:
+        return res
+
+    prod_col = "product_id" if "product_id" in df.columns else ("product_name" if "product_name" in df.columns else None)
+    if prod_col and "cost" in df.columns:
+        txn = classify_transactions(df)
+        amounts, _, _ = _amount_series(df)
+        cogs, _, _ = _cogs_series(df)
+        if amounts is not None and cogs is not None:
+            mask = txn.sale & amounts.notna() & cogs.notna() & df[prod_col].notna()
+            if mask.any():
+                sub = pd.DataFrame({
+                    "product": df.loc[mask, prod_col].astype(str),
+                    "amount": amounts[mask],
+                    "cogs": cogs[mask],
+                    "quantity": pd.to_numeric(df.loc[mask, "quantity"], errors="coerce").fillna(1.0) if "quantity" in df.columns else 1.0,
+                })
+                grp = sub.groupby("product", as_index=False).agg(
+                    total_amount=("amount", "sum"),
+                    total_cogs=("cogs", "sum"),
+                    total_qty=("quantity", "sum"),
+                )
+                grp["profit"] = grp["total_amount"] - grp["total_cogs"]
+                grp["margin_pct"] = (grp["profit"] / grp["total_amount"].replace(0, float("nan"))) * 100
+                grp = grp.sort_values("total_qty", ascending=False).head(5)
+                breakdown = [
+                    {
+                        "product_name": str(r["product"]),
+                        "quantity_sold": round(float(r["total_qty"]), 2),
+                        "profit_margin": f"{round(float(r['margin_pct']), 2)}%",
+                        "profit_pkr": round(float(r["profit"]), 2),
+                    }
+                    for _, r in grp.iterrows()
+                ]
+                return KPIResult(
+                    key=res.key,
+                    name=res.name,
+                    value=res.value,
+                    unit=res.unit,
+                    formula=res.formula,
+                    provenance=res.provenance,
+                    period=res.period,
+                    breakdown=breakdown,
+                )
+    return res
 
 
 def net_margin_pct(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
@@ -809,6 +854,85 @@ def revenue_breakdown_by_product(df: pd.DataFrame, filters: KPIFilters, domain: 
     )
 
 
+def quantity_breakdown_by_product(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Quantity grouped by canonical `product_id`, top-N by quantity."""
+    txn = classify_transactions(df)
+    top_n = int(settings.analytics_top_n)
+    key = "quantity_breakdown_by_product"
+    name = f"Quantity Breakdown by Product (top {top_n})"
+    formula = f"sum of quantity grouped by product_id, top {top_n} by quantity"
+
+    prod_col = "product_id" if "product_id" in df.columns else ("product_name" if "product_name" in df.columns else None)
+    if not prod_col:
+        return unavailable(
+            key, name, UNIT_COUNT, formula,
+            "canonical 'product_id' column is not present in this data",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+    if "quantity" not in df.columns:
+        return unavailable(
+            key, name, UNIT_COUNT, formula,
+            "canonical 'quantity' column is not present in this data",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+
+    qty_series = pd.to_numeric(df["quantity"], errors="coerce")
+    mask = txn.sale if txn.sale.any() else pd.Series(True, index=df.index)
+    contributing = mask & qty_series.notna() & df[prod_col].notna()
+    provenance = build_provenance(df, contributing, filters, [prod_col, "quantity"], txn.notes)
+
+    if not contributing.any():
+        return unavailable(
+            key, name, UNIT_COUNT, formula,
+            "no rows with both a usable quantity and a product_id matched this KPI's criteria",
+            provenance,
+        )
+
+    grouped = (
+        pd.DataFrame(
+            {
+                prod_col: df.loc[contributing, prod_col].astype(str),
+                "quantity": qty_series[contributing],
+            }
+        )
+        .groupby(prod_col, as_index=False, sort=False)
+        .agg(quantity=("quantity", "sum"), row_count=("quantity", "size"))
+        .sort_values(["quantity", prod_col], ascending=[False, True], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+    total_qty = round(float(grouped["quantity"].sum()), 2)
+    truncated_note = []
+    if top_n is not None and len(grouped) > top_n:
+        truncated_note = [
+            f"breakdown shows the top {top_n} of {len(grouped)} products; "
+            f"'value' is the total quantity across all products"
+        ]
+        grouped = grouped.head(top_n)
+
+    breakdown_list = [
+        {
+            "product_id": str(r[prod_col]),
+            "quantity": round(float(r["quantity"]), 2),
+            "row_count": int(r["row_count"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=total_qty,
+        unit=UNIT_COUNT,
+        formula=formula,
+        provenance=build_provenance(
+            df, contributing, filters, [prod_col, "quantity"], txn.notes + truncated_note
+        ),
+        period=_period(df, contributing),
+        breakdown=breakdown_list,
+    )
+
+
 def revenue_by_month(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """
     Revenue aggregated per calendar month, ascending.
@@ -863,3 +987,76 @@ def revenue_by_month(df: pd.DataFrame, filters: KPIFilters, domain: str = "") ->
         ],
         breakdown_columns=["month", "amount", "row_count"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Module 6.7 — Statistical Anomaly Detection KPIs
+# ---------------------------------------------------------------------------
+
+
+def anomaly_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Total count of statistically detected anomalies (duplicates, spikes, abnormal refunds)."""
+    formula = "count of anomalies detected via Module 6.7 statistical analysis"
+    if df.empty:
+        return unavailable("anomaly_count", "Statistical Anomalies Count", UNIT_COUNT, formula, "dataset is empty", build_provenance(df, _no_rows(df), filters, [], []))
+    try:
+        from app.anomaly.detectors import detect_all_anomalies
+        scan_res = detect_all_anomalies(df, domain=domain)
+        contributing = pd.Series(True, index=df.index)
+        provenance = build_provenance(df, contributing, filters, ["amount", "invoice_id"], [])
+        breakdown_list = [
+            {"anomaly_type": k, "count": v}
+            for k, v in scan_res.by_type.items()
+        ]
+        return KPIResult(
+            key="anomaly_count",
+            name="Statistical Anomalies Count",
+            value=float(scan_res.total_anomalies),
+            unit=UNIT_COUNT,
+            formula=formula,
+            provenance=provenance,
+            period=_period(df, contributing),
+            breakdown=breakdown_list,
+        )
+    except Exception as e:
+        return unavailable("anomaly_count", "Statistical Anomalies Count", UNIT_COUNT, formula, str(e), build_provenance(df, _no_rows(df), filters, [], []))
+
+
+def anomaly_breakdown(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Detailed itemized list of top statistical anomalies with provenance and explanations."""
+    formula = "top anomalies from Module 6.7 statistical detectors (Z-score, IQR, collisions)"
+    if df.empty:
+        return unavailable("anomaly_breakdown", "Statistical Anomaly Breakdown", UNIT_COUNT, formula, "dataset is empty", build_provenance(df, _no_rows(df), filters, [], []))
+    try:
+        from app.anomaly.detectors import detect_all_anomalies
+        from app.anomaly.explainer import explain_all
+        scan_res = detect_all_anomalies(df, domain=domain)
+        explain_all(scan_res.anomalies, max_items=15, use_llm=False)
+        contributing = pd.Series(True, index=df.index)
+        provenance = build_provenance(df, contributing, filters, ["amount", "invoice_id"], [])
+        breakdown_list = [
+            {
+                "type": a.anomaly_type.value if hasattr(a.anomaly_type, "value") else str(a.anomaly_type),
+                "severity": a.severity.value if hasattr(a.severity, "value") else str(a.severity),
+                "metric": a.metric_name,
+                "observed": str(a.observed_value),
+                "score": a.statistical_score,
+                "row": a.source_row,
+                "explanation": a.explanation,
+            }
+            for a in scan_res.anomalies[:15]
+        ]
+        return KPIResult(
+            key="anomaly_breakdown",
+            name="Statistical Anomaly Breakdown",
+            value=float(len(scan_res.anomalies)),
+            unit=UNIT_COUNT,
+            formula=formula,
+            provenance=provenance,
+            period=_period(df, contributing),
+            breakdown=breakdown_list,
+            breakdown_columns=["type", "severity", "metric", "observed", "score", "row", "explanation"],
+        )
+    except Exception as e:
+        return unavailable("anomaly_breakdown", "Statistical Anomaly Breakdown", UNIT_COUNT, formula, str(e), build_provenance(df, _no_rows(df), filters, [], []))
+

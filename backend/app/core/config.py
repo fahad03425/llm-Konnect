@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 
 # Ensure local HuggingFace / Transformers models never hang on internet network checks
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:3b"
     llm_keep_alive: str = "30m"  # keeps model in VRAM for instant subsequent responses
     llm_keep_alive_chat: str = "30m"  # keeps model in VRAM for interactive chat
-    llm_num_predict: int = 128
+    llm_num_predict: int = 256
     llm_chat_history_size: int = 3
     llm_temperature: float = 0.2
     
@@ -58,7 +58,20 @@ class Settings(BaseSettings):
     # Paths
     storage_dir: str = "data/storage"
     reports_dir: str = "reports"
+    # Local Security & Encryption At Rest (Module 5.1)
+    encryption_enabled: bool = True
+    vault_key_path: str = "data/.vault_key"
+    # Domain configuration
+    default_domain: str = "pharmacy"
 
     model_config = SettingsConfigDict(env_prefix="KONNECT_")
 
 settings = Settings()
+
+def get_default_domain() -> str:
+    """Returns the active default business domain."""
+    return getattr(settings, "default_domain", "pharmacy")
+
+def set_default_domain(domain: str) -> None:
+    """Sets the active default business domain."""
+    settings.default_domain = domain

@@ -8,9 +8,11 @@ FIX (BUG 6): a module-level singleton `_kb` is used across all requests so the
               lifetime, not once per request.
 """
 from fastapi import APIRouter, HTTPException, Query, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import os
+
+from app.core.config import get_default_domain
 
 from app.connectors.base import detect_connector
 from app.schema.mapper import map_headers
@@ -28,7 +30,7 @@ _kb = KnowledgeBase()
 class IngestRequest(BaseModel):
     file_path: str
     mapping: Optional[Dict[str, str]] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     sheet_name: Optional[str] = None
     table_or_query: Optional[str] = None
     strategy: str = "row"
@@ -38,7 +40,7 @@ class IngestRequest(BaseModel):
 class IngestDatabaseRequest(BaseModel):
     connection_string: str
     db_type: str = "sqlite"
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     tables: Optional[List[str]] = None
     strategy: str = "merge"
     merge_key: Optional[str] = None
@@ -48,7 +50,7 @@ class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = None
     filters: Optional[Dict[str, Any]] = None
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     file_ids: Optional[List[str]] = None
     source_files: Optional[List[str]] = None
 

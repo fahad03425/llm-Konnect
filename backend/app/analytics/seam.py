@@ -38,10 +38,28 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     (("declining", "falling", "dropping", "slowing down"), ("top_declining_products",)),
     (("trend", "growth", "growing", "increasing", "decreasing", "barh rah", "kam ho rah"),
      ("revenue_trend", "units_trend")),
+    # Statistical Anomaly Detection (Module 6.7)
+    (("anomaly", "anomalies", "outlier", "outliers", "unusual spike", "unusual spikes",
+      "duplicate invoice", "duplicate invoices", "abnormal refund", "fraud", "irregularity", "irregularities",
+      "statistical scan", "audit risk", "suspicious"),
+     ("anomaly_count", "anomaly_breakdown")),
     (("margin", "margins"), ("gross_margin_pct", "net_margin_pct", "gross_profit")),
     (("refund", "refunds", "return", "returns", "wapsi"),
      ("total_refunds", "refund_rate_pct")),
     (("profit", "munafa", "nafa"), ("net_profit", "gross_profit", "total_revenue")),
+    (("highest total qty", "highest qty", "highest quantity", "total qty", "total quantity",
+      "most purchased", "most bought", "qty purchased", "quantity purchased", "top qty",
+      "top quantity", "most sold", "top selling by quantity", "by quantity", "most items", "highest items",
+      "highest total quantity"),
+     ("quantity_breakdown_by_product", "revenue_breakdown_by_product")),
+    (("by supplier", "per supplier", "which supplier", "top supplier", "best supplier", "supplier", "vendor",
+      "suppliers", "vendors", "buy the most", "bought the most", "buy most", "bought most"),
+     ("expense_breakdown_by_supplier", "revenue_breakdown_by_supplier")),
+    (("by product", "per product", "top product", "top products", "best selling", "top selling", "most popular",
+      "sb se ziada", "sab se ziada", "sab se zyada", "sb se zyada", "sabse ziada", "sabse zyada",
+      "ziada sale", "zyada sale", "dawai ki sale", "dawa ki sale", "kis dawai", "konsi dawai", "kon si dawai",
+      "highest sale", "highest selling"),
+     ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
     (("expense", "expenses", "spend", "spent", "purchase", "purchases", "kharcha", "kharch"),
      ("total_expenses", "expense_breakdown_by_category")),
     (("total revenue and average", "revenue and average", "sales and average", "average and total", "total and average", "total sales and average"),
@@ -51,10 +69,6 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
      ("row_count", "transaction_count")),
     (("how many", "count", "number of", "kitne"), ("transaction_count",)),
     (("per month", "monthly", "by month", "each month"), ("revenue_by_month",)),
-    (("by supplier", "per supplier", "which supplier", "supplier", "vendor"),
-     ("revenue_breakdown_by_supplier", "expense_breakdown_by_supplier")),
-    (("by product", "per product", "top product", "best selling", "top selling"),
-     ("revenue_breakdown_by_product",)),
     (("by category", "per category"), ("revenue_breakdown_by_category",)),
     (("revenue", "sales", "sale", "turnover", "total", "how much", "sum", "kitna", "bikri"),
      ("total_revenue", "transaction_count")),
@@ -127,14 +141,17 @@ def infer_product_id(question: str, df: pd.DataFrame) -> Optional[str]:
     return best
 
 
-def _records_to_frame(records: List[Dict[str, Any]]) -> pd.DataFrame:
+def _records_to_frame(records: Any) -> pd.DataFrame:
     """
-    Build a canonical-shaped DataFrame from retrieved knowledge-base records.
+    Build a canonical-shaped DataFrame from retrieved knowledge-base records or DataFrame.
 
     KB metadata preserves the canonical field names plus `source_file`/`source_row`,
     so provenance survives the round trip through retrieval.
     """
-    df = pd.DataFrame(records)
+    if isinstance(records, pd.DataFrame):
+        df = records
+    else:
+        df = pd.DataFrame(records)
     if "source_row" in df.columns:
         df["source_row"] = pd.to_numeric(df["source_row"], errors="coerce")
     return df
@@ -238,7 +255,7 @@ class AnalyticsRouter:
         self,
         question: str,
         filters: Dict[str, Any],
-        kb_records: list,
+        kb_records: Any,
         domain: str = "",
     ) -> Tuple[Optional[Dict[str, Any]], list]:
         """
@@ -248,7 +265,7 @@ class AnalyticsRouter:
             question:   The user's question (already normalized by RAGChat).
             filters:    Filters extracted by `app.rag.router.extract_filters`
                         (e.g. {"month": 1}). Unknown keys are ignored.
-            kb_records: Retrieved knowledge-base record metadata (canonical fields
+            kb_records: Retrieved knowledge-base record metadata or DataFrame (canonical fields
                         plus source_file/source_row).
             domain:     Active domain, so domain KPIs and domain question vocabulary
                         apply. Optional and defaulted, so pre-existing 3-argument
@@ -259,10 +276,16 @@ class AnalyticsRouter:
             is nothing to compute over, matching the 6.5 contract so the chatbot
             replies "no records found" instead of guessing.
         """
-        if not kb_records:
+        if kb_records is None:
             return None, []
-
-        df = _records_to_frame(kb_records)
+        if isinstance(kb_records, pd.DataFrame):
+            if kb_records.empty:
+                return None, []
+            df = kb_records
+        else:
+            if not kb_records:
+                return None, []
+            df = _records_to_frame(kb_records)
         if df.empty:
             return None, []
 

@@ -88,39 +88,50 @@ def test_sql_connector_discovery(temp_pharmacy_db):
 
 def test_api_sql_discover_and_ingest(temp_pharmacy_db):
     client = TestClient(app)
-    
-    # 1. Discover endpoint
-    res = client.post("/api/sources/sql/discover", json={
-        "connection_string": f"sqlite:///{temp_pharmacy_db}",
-        "db_type": "sqlite",
-        "domain": "pharmacy"
-    })
-    assert res.status_code == 200
-    data = res.json()
-    assert data["database_name"] == "MockTestPOS"
-    assert data["total_tables"] == 3
-    
-    # 2. Ingest database endpoint (all tables in 1 step)
-    ingest_res = client.post("/api/kb/ingest-database", json={
-        "connection_string": f"sqlite:///{temp_pharmacy_db}",
-        "db_type": "sqlite",
-        "domain": "pharmacy",
-        "strategy": "row"
-    })
-    assert ingest_res.status_code == 200
-    ingest_data = ingest_res.json()
-    assert ingest_data["success"] is True
-    assert ingest_data["database_name"] == "MockTestPOS"
-    assert ingest_data["total_tables"] == 3
-    assert ingest_data["total_rows"] == 7
-    assert ingest_data["total_chunks"] >= 7
-    
-    # Verify records in file registry
-    registered_files = file_registry.list_files(include_all=True)
-    db_records = [f for f in registered_files if f.group_name == "MockTestPOS"]
-    assert len(db_records) == 3
-    
-    # 3. Delete database group endpoint
-    del_res = client.delete("/api/kb/database/MockTestPOS")
-    assert del_res.status_code == 200
-    assert del_res.json()["deleted_tables"] == 3
+    # Clean up any leftover records from prior aborted runs
+    try:
+        client.delete("/api/kb/database/MockTestPOS")
+    except Exception:
+        pass
+
+    try:
+        # 1. Discover endpoint
+        res = client.post("/api/sources/sql/discover", json={
+            "connection_string": f"sqlite:///{temp_pharmacy_db}",
+            "db_type": "sqlite",
+            "domain": "pharmacy"
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["database_name"] == "MockTestPOS"
+        assert data["total_tables"] == 3
+        
+        # 2. Ingest database endpoint (all tables in 1 step)
+        ingest_res = client.post("/api/kb/ingest-database", json={
+            "connection_string": f"sqlite:///{temp_pharmacy_db}",
+            "db_type": "sqlite",
+            "domain": "pharmacy",
+            "strategy": "row"
+        })
+        assert ingest_res.status_code == 200
+        ingest_data = ingest_res.json()
+        assert ingest_data["success"] is True
+        assert ingest_data["database_name"] == "MockTestPOS"
+        assert ingest_data["total_tables"] == 3
+        assert ingest_data["total_rows"] == 7
+        assert ingest_data["total_chunks"] >= 7
+        
+        # Verify records in file registry
+        registered_files = file_registry.list_files(include_all=True)
+        db_records = [f for f in registered_files if f.group_name == "MockTestPOS"]
+        assert len(db_records) == 3
+        
+        # 3. Delete database group endpoint
+        del_res = client.delete("/api/kb/database/MockTestPOS")
+        assert del_res.status_code == 200
+        assert del_res.json()["deleted_tables"] == 3
+    finally:
+        try:
+            client.delete("/api/kb/database/MockTestPOS")
+        except Exception:
+            pass

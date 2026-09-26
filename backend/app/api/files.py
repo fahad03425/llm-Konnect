@@ -4,8 +4,9 @@ import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.core.config import get_default_domain
 from app.ingestion.registry import file_registry, FileRecord
 from app.ingestion.store import KnowledgeBase
 from app.connectors.base import detect_connector
@@ -13,6 +14,7 @@ from app.schema.mapper import map_headers
 from app.schema.normalize import apply_mapping
 from app.schema.validate import validate
 from app.schema.domain import get_domain_pack
+from app.security.crypto import is_encrypted_file
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 _kb = KnowledgeBase()
@@ -119,7 +121,7 @@ class FileItem(BaseModel):
 
 class QuickIngestRequest(BaseModel):
     file_path: str
-    domain: str = "pharmacy"
+    domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     strategy: str = "row"
     file_id: Optional[str] = None
 
@@ -150,7 +152,7 @@ def list_all_files():
             registered_files[k_path] = r
         if r.filename.lower() not in registered_by_filename:
             registered_by_filename[r.filename.lower()] = r
-        if r.status == "active" and r.chunk_count > 0 and r.file_hash not in ingested_by_hash:
+        if (r.status == "active" or (r.chunk_count and r.chunk_count > 0)) and r.chunk_count > 0 and r.file_hash not in ingested_by_hash:
             ingested_by_hash[r.file_hash] = r
 
     with _tasks_lock:
@@ -205,7 +207,7 @@ def list_all_files():
                 step_text = "Failed"
                 err_msg = reg.error_message
                 is_ingested = False
-            elif reg and reg.status == "active" and reg.chunk_count > 0:
+            elif reg and (reg.status == "active" or (reg.chunk_count and reg.chunk_count > 0)) and reg.chunk_count > 0:
                 is_processing = False
                 status = "active"
                 progress = 100.0
@@ -238,6 +240,7 @@ def list_all_files():
                 "dir_type": dir_type,
                 "modified_at": mtime,
                 "is_ingested": is_ingested,
+                "is_encrypted": is_encrypted_file(fpath),
                 "is_processing": is_processing,
                 "is_duplicate_of": is_dup_of,
                 "chunk_count": reg.chunk_count if reg else 0,
@@ -318,6 +321,7 @@ def list_all_files():
                 "dir_type": "database" if (reg.source_type == "database" or "sql://" in reg.file_path) else "external",
                 "modified_at": reg.ingested_at,
                 "is_ingested": is_ing,
+                "is_encrypted": is_encrypted_file(reg.file_path) if os.path.exists(reg.file_path) else False,
                 "is_processing": is_proc,
                 "is_duplicate_of": None,
                 "chunk_count": reg.chunk_count,
@@ -358,19 +362,24 @@ async def upload_file(file: UploadFile = File(...)):
     safe_filename = file.filename.replace("/", "").replace("\\", "")
     file_path = os.path.join(upload_dir, safe_filename)
 
+    contents = await file.read()
+    from app.security.crypto import encrypt_bytes, is_encrypted_file
+    encrypted_data = encrypt_bytes(contents)
+
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(encrypted_data)
 
     normalized_path = file_path.replace("\\", "/")
     size_bytes = os.path.getsize(file_path)
 
     return {
-        "message": "File uploaded successfully",
+        "message": "File uploaded and encrypted at rest successfully",
         "filename": safe_filename,
         "file_path": normalized_path,
         "file_size_bytes": size_bytes,
         "file_size_formatted": format_bytes(size_bytes),
         "is_ingested": False,
+        "is_encrypted": True,
         "progress": 0.0,
         "status": "not_ingested"
     }

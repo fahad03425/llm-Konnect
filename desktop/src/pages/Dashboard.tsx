@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
@@ -102,6 +102,15 @@ export default function Dashboard() {
     const [errorKpis, setErrorKpis] = useState<string | null>(null);
     const [dbDatasets, setDbDatasets] = useState<Array<{ name: string; path: string }>>([]);
     const [fileDatasets, setFileDatasets] = useState<Array<{ name: string; path: string }>>([]);
+
+    const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const hasRetriedRef = useRef(false);
+
+    useEffect(() => {
+        return () => {
+            if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        };
+    }, []);
 
     // Load available datasets and auto-select if none active or current is invalid
     useEffect(() => {
@@ -303,11 +312,20 @@ export default function Dashboard() {
             setKpis(fetchedKpis);
             setExpiry(fetchedExpiry);
             setLoadingKpis(false);
+            hasRetriedRef.current = false;
         } catch (err: any) {
             setErrorKpis(err.message);
             setKpis(null);
             setExpiry(null);
             setLoadingKpis(false);
+
+            // Auto-retry once after 2.5s if backend was still warming up on initial load
+            if (!hasRetriedRef.current && activePath) {
+                hasRetriedRef.current = true;
+                retryTimeoutRef.current = setTimeout(() => {
+                    void fetchAllData(false, range, gran);
+                }, 2500);
+            }
         }
 
         // Fetch Trend with current range and granularity

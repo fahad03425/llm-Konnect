@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Any, Optional
+from app.core.config import get_default_domain
 from app.schema.domain import get_domain_pack
 
 # Module 6.6 supersedes the temporary in-module pandas fallback that used to live
@@ -58,7 +59,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     """
     q_lower = question.lower()
     
-    # Chit-chat keywords
+    # Chit-chat & assistant capability keywords
     chitchat_patterns = [
         r"^(hello|hi|hey|salam|assalam|aoa)\b",
         r"\bhow are you\b",
@@ -69,7 +70,13 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\bwho are you\b",
         r"\bthank(s| you)?\b",
         r"\bshukriya\b",
-        r"\bgood (morning|afternoon|evening|night)\b"
+        r"\bgood (morning|afternoon|evening|night)\b",
+        r"\b(how fast|kitni taizi|kitna tez|kitni tez)\b",
+        r"\b(kaam kr skte|kaam kar sakte|kaam kr sakty)\b",
+        r"\b(kya kr skte|kya kar sakte|madad kr skte)\b",
+        r"\b(tum kon ho|tm kon ho|aap kon hain|ap kon hain|who made you)\b",
+        r"\b(english\s+me\s+(ku|kyu|kyun)|english\s+mein\s+(ku|kyu|kyun)|urdu\s+me\s+bolo|roman\s+urdu)\b",
+        r"\b(why\s+in\s+english|speak\s+urdu|reply\s+in\s+urdu)\b"
     ]
     for pattern in chitchat_patterns:
         if re.search(pattern, q_lower):
@@ -85,7 +92,10 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
                 return RouteType.ANALYTICS
 
     # Explicit batch/record lookup patterns (prioritized to RAG)
-    if re.search(r"^(list|show|fetch|find|display)\s+(all\s+)?(batches|records|files|data)\b", q_lower):
+    if (
+        re.search(r"\b(batch|batches|invoice|invoices|record|records)\b\s+#?[a-zA-Z0-9\-_]*\d+[a-zA-Z0-9\-_]*", q_lower)
+        or re.search(r"^(list|show|fetch|find|display)\s+(all\s+)?(batches|records|files|data)\b", q_lower)
+    ):
         return RouteType.RAG
 
     # Explicit listing / lookup / informational patterns (prioritized over incidental keyword matches)
@@ -99,8 +109,11 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     ]
     numeric_or_inventory_guard = (
         r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|revenue|"
-        r"expire|expiry|expired|expiring|velocity|reorder|stockout|supply|days supply|days of supply|"
-        r"running below|low stock|dead stock|liquidation|kam stock)\b"
+        r"expire|expiry|expired|expiring|expire ho|expire hone|expire ho chuk|expire ho gaya|"
+        r"velocity|reorder|stockout|supply|days supply|days of supply|"
+        r"running below|low stock|dead stock|liquidation|kam stock|"
+        r"most|highest|lowest|max|min|top|best|least|qty|quantity|"
+        r"sb se|sab se|sabse|sbse|ziada|zyada|zayada|sale hwi|sale hui|dawai ki sale)\b"
     )
     for pattern in lookup_patterns:
         if re.search(pattern, q_lower) and not re.search(numeric_or_inventory_guard, q_lower):
@@ -112,14 +125,28 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\baverage\b", r"\bavg\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
         r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b", r"\bexpiry\b", r"\bexpired\b",
         r"\bcount\b", r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
-        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b",
+        r"\bhighest\b", r"\blowest\b", r"\bmax\b", r"\bmin\b", r"\bmost\b", r"\btop\b", r"\bbest\b",
+        r"\b(top|best|largest|highest)\s+(supplier|vendor|product|medicine)\b",
+        r"\b(buy|bought|purchased?)\s+(the\s+)?(most|highest|least)\b",
+        r"\b(sb se|sab se|sabse|sbse)\s+(ziada|zyada|zayada|bara|barri|kam)\b",
+        r"\b(ziada|zyada|zayada)\s+sale\b",
+        r"\bsale\s+(hwi|hui|ha)\b",
+        r"\bdawai\s+ki\s+sale\b",
+        r"\bqty\b", r"\bquantity\b",
         r"\bforecast\b", r"\bpredict\b", r"\btrend\b", r"\bgrowth\b",
         r"\brevenue\b", r"\bbreakdown\b", r"\btotal sales\b", r"\bsales amount\b", r"\bsales total\b",
         r"\brow count\b", r"\bdataset size\b", r"\bnumber of rows\b", r"\bnumber of records\b",
         r"\bvelocity\b", r"\breorder\b", r"\bstockout\b", r"\bliquidat(e|ion)\b",
         r"\b(day|days) supply\b", r"\b(day|days) of supply\b", r"\brunning below\b",
         r"\blow stock\b", r"\bkam stock\b", r"\bdead stock\b", r"\bshort expiry\b",
-        r"\bnear expiry\b", r"\bnear-expiry\b", r"\bkhatam hone\b", r"\bstock khatam\b"
+        r"\bnear expiry\b", r"\bnear-expiry\b", r"\bkhatam hone\b", r"\bstock khatam\b",
+        # Roman Urdu expiry / batch phrases
+        r"\bexpire ho chuk", r"\bexpire ho gaya\b", r"\bexpire ho raha\b",
+        r"\bexpire hone wali\b", r"\bexpire hone\b",
+        r"\bbatch expire\b", r"\bmiyad\b", r"\bmeyad\b",
+        r"\banomal(y|ies)\b", r"\boutlier(s)?\b", r"\bduplicate invoice(s)?\b",
+        r"\bunusual spike(s)?\b", r"\btransaction spike(s)?\b", r"\babnormal refund\b",
+        r"\bfraud\b", r"\birregularit(y|ies)\b"
     ]
     for pattern in analytics_patterns:
         if re.search(pattern, q_lower):
@@ -127,10 +154,11 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
             
     return RouteType.RAG
 
-def extract_filters(question: str, domain: str = "pharmacy") -> Dict[str, Any]:
+def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract exact-match filters, date intervals, and inventory threshold options from the question.
     """
+    effective_domain = domain or get_default_domain()
     filters: Dict[str, Any] = {}
     options: Dict[str, Any] = {}
     q_lower = question.lower()

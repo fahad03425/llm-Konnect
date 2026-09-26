@@ -91,6 +91,9 @@ _CORE_SPECS: List[KPISpec] = [
     KPISpec("revenue_breakdown_by_product", "Revenue Breakdown by Product", "PKR",
             "Sale amount grouped by product_id, top-N by amount.", core_kpis.revenue_breakdown_by_product,
             tags=("breakdown",)),
+    KPISpec("quantity_breakdown_by_product", "Quantity Breakdown by Product", "units",
+            "Sale/purchase quantity grouped by product_id, top-N by quantity.", core_kpis.quantity_breakdown_by_product,
+            tags=("breakdown", "volume")),
     KPISpec("revenue_by_month", "Revenue by Month", "PKR",
             "Sale amount grouped by calendar month. A historical aggregation, not a forecast.",
             core_kpis.revenue_by_month, tags=("breakdown", "time")),
@@ -119,6 +122,13 @@ _CORE_SPECS: List[KPISpec] = [
             "Estimated units for ONE product (requires a product_id filter), from that "
             "product's own history. Sparse sellers return insufficient-history.",
             forecast_kpis.product_demand_forecast, tags=("time", "forecast")),
+    # --- anomalies (Module 6.7: Z-score, IQR, duplicates, abnormal patterns) -
+    KPISpec("anomaly_count", "Statistical Anomalies Count", "count",
+            "Total count of statistically detected anomalies (duplicates, spikes, abnormal refunds).",
+            core_kpis.anomaly_count, tags=("volume", "risk", "anomaly")),
+    KPISpec("anomaly_breakdown", "Statistical Anomaly Breakdown", "count",
+            "Itemized list of top statistical anomalies with provenance and explanations.",
+            core_kpis.anomaly_breakdown, tags=("breakdown", "risk", "anomaly")),
 ]
 
 

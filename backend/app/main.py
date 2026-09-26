@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 import app.schema  # ensures all domain packs (pharmacy, etc.) register on startup
-from app.api import routes, kb, chat, analytics, report, files
+from app.api import routes, kb, chat, analytics, report, files, anomaly, security
 from app.ingestion.store import KnowledgeBase
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -53,6 +53,8 @@ app.include_router(chat.router)
 app.include_router(analytics.router)
 app.include_router(report.router)
 app.include_router(files.router)
+app.include_router(anomaly.router)
+app.include_router(security.router)
 
 @app.get("/")
 def read_root():
@@ -61,4 +63,15 @@ def read_root():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "app": settings.app_name}
-# reload trigger v5 - routes updated with sql discover and ingest-database
+
+@app.get("/api/domains")
+@app.get("/domains")
+def get_domains():
+    from app.schema.domain import registry
+    from app.core.config import get_default_domain
+    return {
+        "default_domain": get_default_domain(),
+        "active_domain": get_default_domain(),
+        "domains": registry.available_domains(),
+        "domain_details": registry.get_domain_details(),
+    }

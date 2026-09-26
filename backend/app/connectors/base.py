@@ -50,5 +50,8 @@ def detect_connector(path: str) -> Connector:
     elif ext in ('.mdb', '.accdb'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="access")
+    elif ext == '.xml' or path.startswith("tally://") or path.startswith("http://") or path.startswith("https://"):
+        from app.connectors.tally import TallyConnector
+        return TallyConnector(path)
     else:
         raise ValueError(f"Unsupported file extension: {ext}. Cannot detect appropriate connector.")

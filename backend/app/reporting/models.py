@@ -24,6 +24,8 @@ except ImportError:
     UNIT_PERCENT = "percent"
     UNIT_COUNT = "count"
 
+from app.core.config import get_default_domain
+
 
 @dataclass
 class ExecutiveMetrics:
@@ -90,8 +92,8 @@ class ReportData:
     """
 
     kpis: Dict[str, Any] = field(default_factory=dict)
-    domain: str = "pharmacy"
-    business_name: str = "Pharmacy Performance Report"
+    domain: str = field(default_factory=get_default_domain)
+    business_name: str = "Business Performance Report"
     period: Optional[Any] = None
     filters: Dict[str, Any] = field(default_factory=dict)
     anomalies: Optional[List[Dict[str, Any]]] = None

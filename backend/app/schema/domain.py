@@ -266,17 +266,33 @@ class DomainRegistry:
     def register(self, pack: DomainPack):
         self._packs[pack.name] = pack
 
-    def get(self, name: str) -> DomainPack:
+    def get(self, name: Optional[str] = None) -> DomainPack:
+        if not name:
+            from app.core.config import get_default_domain
+            name = get_default_domain()
         if name not in self._packs:
-            raise ValueError(f"Domain pack '{name}' not found.")
+            raise ValueError(f"Domain pack '{name}' not found. Available: {list(self._packs.keys())}")
         return self._packs[name]
 
     def available_domains(self) -> List[str]:
         return list(self._packs.keys())
 
+    def get_domain_details(self) -> List[Dict[str, Any]]:
+        details = []
+        for name, pack in self._packs.items():
+            details.append({
+                "id": name,
+                "name": name.replace("_", " ").title(),
+                "extra_fields": getattr(pack, "extra_fields", []),
+                "searchable_fields": getattr(pack, "searchable_fields", []),
+                "filter_metadata_fields": getattr(pack, "filter_metadata_fields", []),
+                "report_sections": getattr(pack, "report_sections", []),
+            })
+        return details
+
 
 registry = DomainRegistry()
 
-def get_domain_pack(name: str) -> DomainPack:
+def get_domain_pack(name: Optional[str] = None) -> DomainPack:
     return registry.get(name)
 

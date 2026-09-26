@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
+from app.core.config import get_default_domain
+
 class SourceReference(BaseModel):
     source_file: str = Field(..., description="The original file name.")
     source_row: Optional[int] = Field(None, description="The original row index.")
@@ -9,7 +11,7 @@ class SourceReference(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., description="The user's question.")
     session_id: str = Field(..., description="The conversation session ID.")
-    domain: str = Field("pharmacy", description="The domain context (default pharmacy).")
+    domain: str = Field(default_factory=get_default_domain, description="The domain context (defaults to active domain).")
     file_ids: Optional[List[str]] = Field(None, description="Optional list of file IDs to scope the answer to.")
     source_files: Optional[List[str]] = Field(None, description="Optional list of source file paths/names to scope the answer to.")
 

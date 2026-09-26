@@ -35,3 +35,8 @@ Every RAG answer is accompanied by structured source references. The system trac
 ## 4. Domain Agnosticism
 
 The chatbot core contains no pharmacy-specific vocabulary. All domain rules (like recognizing the word "panadol" or knowing to extract specific filters) are mediated through the injected `DomainPack` (e.g., `PharmacyDomainPack`), making the chatbot immediately compatible with grocery or other domains.
+
+## 5. Performance & Empirical Benchmark (Requirement R14)
+
+For detailed empirical benchmark evaluation comparing local models (`qwen2.5:3b`, `gemma3:1b`) against cloud baselines (`gpt-4o-mini`, `gemini-1.5-flash`) across 91 standardized pharmacy POS queries, see:
+- [Cloud vs. Local LLM Benchmark Evaluation (Requirement R14)](file:///docs/BENCHMARK_CLOUD_VS_LOCAL.md)

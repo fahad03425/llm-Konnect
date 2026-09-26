@@ -293,9 +293,10 @@ def test_e5_prefix_applied_correctly(monkeypatch, tmp_path):
     captured.clear()
     kb.add_dataframe(df, source_meta=meta, domain="pharmacy")
 
-    # Stored document must carry the passage: prefix
+    # Stored document must carry the passage: prefix (decrypted if encrypted at rest)
+    from app.security.crypto import decrypt_string
     collection = kb._get_chroma()
-    stored_docs = [d["document"] for d in collection.data]
+    stored_docs = [decrypt_string(d["document"]) for d in collection.data]
     assert any(doc.startswith("passage: ") for doc in stored_docs), \
         "Stored chunks should start with 'passage: '"
 

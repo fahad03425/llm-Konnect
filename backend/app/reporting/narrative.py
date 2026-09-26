@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from app.core.config import settings
+from app.core.config import settings, get_default_domain
 from app.core.llm import llm
 
 try:
@@ -144,20 +144,21 @@ def _format_ground_truth_summary(data: Union[Dict[str, Any], Any], domain: str) 
 
 def generate_narrative(
     report_data_or_kpis: Union[Dict[str, Any], Any],
-    domain: str = "pharmacy",
+    domain: Optional[str] = None,
     business_name: Optional[str] = None,
     correction_feedback: Optional[str] = None,
 ) -> str:
     """
     Generate a grounded, LLM-written business narrative from computed analytics.
     """
+    eff_default = get_default_domain()
     if hasattr(report_data_or_kpis, "kpis"):
         kpis = report_data_or_kpis.kpis
-        effective_domain = getattr(report_data_or_kpis, "domain", domain) or domain
+        effective_domain = getattr(report_data_or_kpis, "domain", domain) or domain or eff_default
         effective_name = getattr(report_data_or_kpis, "business_name", business_name) or business_name
     else:
         kpis = report_data_or_kpis
-        effective_domain = domain
+        effective_domain = domain or eff_default
         effective_name = business_name
 
     # Check if there is anything to narrate

@@ -147,3 +147,54 @@ def test_confirmation_followup_route():
     # Standalone without prior analytics defaults to RAG
     assert classify_route("are you sure") == RouteType.RAG
 
+def test_detect_query_language():
+    chat = RAGChat()
+    # English
+    assert chat._detect_query_language("hi") == "english"
+    assert chat._detect_query_language("hello there") == "english"
+    assert chat._detect_query_language("what can you do") == "english"
+    assert chat._detect_query_language("tell me about the doctors") == "english"
+    assert chat._detect_query_language("show me sales summary") == "english"
+    
+    # Roman-Urdu
+    assert chat._detect_query_language("me kis kism k data se deal kr rha hu") == "roman_urdu"
+    assert chat._detect_query_language("sab se ziada sale kis branch ki hai") == "roman_urdu"
+    assert chat._detect_query_language("tm kese ho") == "roman_urdu"
+    assert chat._detect_query_language("kya hal hai") == "roman_urdu"
+    assert chat._detect_query_language("konsi dawai expire hone wali hai") == "roman_urdu"
+    
+    # Urdu script
+    assert chat._detect_query_language("سب سے زیادہ فروخت کس برانچ کی ہے") == "urdu_script"
+    assert chat._detect_query_language("کس ڈیٹا سے ڈیل کر رہے ہیں") == "urdu_script"
+
+def test_language_targeted_system_prompt():
+    chat = RAGChat()
+    # English prompt should demand English and disallow Namaste / Roman-Urdu
+    en_prompt = chat._get_system_prompt("pharmacy", RouteType.CHITCHAT, lang="english")
+    assert "The user wrote in English" in en_prompt
+    assert "Namaste" in en_prompt
+    assert "strictly in natural, professional English" in en_prompt
+
+    # Roman-Urdu prompt should demand Latin letters, forbid Urdu script and forbid Hindi words
+    ru_prompt = chat._get_system_prompt("pharmacy", RouteType.RAG, lang="roman_urdu")
+    assert "The user wrote in Roman-Urdu" in ru_prompt
+    assert "Latin letters (A-Z, a-z) only" in ru_prompt
+    assert "DO NOT use Urdu/Arabic script" in ru_prompt
+    assert "STRICT PROHIBITION ON HINDI VOCABULARY" in ru_prompt
+    assert "jaankari" in ru_prompt
+    assert "maloomat" in ru_prompt
+
+def test_clean_roman_urdu_vocabulary():
+    chat = RAGChat()
+    hindi_reply = "Haan, main aapki ismein adhik jankari pradaan kar sakta hoon. Data sources mein uplabdh hai aur anya jaankari bhi."
+    cleaned = chat._clean_roman_urdu_vocabulary(hindi_reply)
+    assert "adhik" not in cleaned
+    assert "jankari" not in cleaned
+    assert "jaankari" not in cleaned
+    assert "uplabdh" not in cleaned
+    assert "anya" not in cleaned
+    assert "maloomat" in cleaned
+    assert "ziada" in cleaned
+    assert "dastyab" in cleaned
+
+
