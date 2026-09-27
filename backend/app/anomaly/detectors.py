@@ -23,6 +23,19 @@ from app.core.config import get_default_domain
 from app.anomaly.models import AnomalyRecord, AnomalyScanResult, AnomalyType, Severity
 
 
+# ---------------------------------------------------------------------------
+# Tolerance constants for inventory shrinkage / stock movement mismatch
+# ---------------------------------------------------------------------------
+SHRINKAGE_TOLERANCE_PCT: float = 0.05  # Allow up to 5% relative variance between stock decrease and recorded sales
+SHRINKAGE_TOLERANCE_ABS: float = 0.01  # Small absolute buffer for float precision / minimal unit variations
+
+if not hasattr(AnomalyType, "STOCK_MOVEMENT_MISMATCH"):
+    try:
+        setattr(AnomalyType, "STOCK_MOVEMENT_MISMATCH", "stock_movement_mismatch")
+    except Exception:
+        pass
+
+
 def _safe_float(val: Any) -> Optional[float]:
     try:
         f = float(val)
@@ -393,6 +406,111 @@ def detect_negative_or_zero_prices(df: pd.DataFrame) -> List[AnomalyRecord]:
     return anomalies
 
 
+def detect_stock_movement_mismatch(df: pd.DataFrame) -> List[AnomalyRecord]:
+    """
+    Detect physical inventory shrinkage / stock movement mismatch:
+    For each product_id, compares (opening_stock_qty - closing_stock_qty) against
+    the actual quantity sold recorded in transactions over the same period.
+    Flags products where stock decrease exceeds recorded sales by more than
+    SHRINKAGE_TOLERANCE_PCT (5%) and SHRINKAGE_TOLERANCE_ABS.
+
+    Returns an empty list if required stock columns are missing.
+    """
+    anomalies: List[AnomalyRecord] = []
+    if df is None or df.empty:
+        return anomalies
+
+    # Graceful handling: required columns missing
+    if "opening_stock_qty" not in df.columns or "closing_stock_qty" not in df.columns:
+        return anomalies
+    if "product_id" not in df.columns:
+        return anomalies
+
+    clean_df = df.copy()
+
+    # Pre-parse numeric columns
+    clean_df["_open"] = pd.to_numeric(clean_df["opening_stock_qty"], errors="coerce")
+    clean_df["_close"] = pd.to_numeric(clean_df["closing_stock_qty"], errors="coerce")
+    if clean_df["_open"].dropna().empty or clean_df["_close"].dropna().empty:
+        return anomalies
+
+    if "quantity" in clean_df.columns:
+        clean_df["_qty"] = pd.to_numeric(clean_df["quantity"], errors="coerce").fillna(0.0)
+    else:
+        clean_df["_qty"] = 0.0
+
+    # Handle txn_type if present
+    is_refund = pd.Series(False, index=clean_df.index)
+    if "txn_type" in clean_df.columns:
+        txn_str = clean_df["txn_type"].astype(str).str.lower().str.strip()
+        is_refund = txn_str.isin(["refund", "refunds", "return", "returns"])
+
+    for pid, grp in clean_df.groupby("product_id"):
+        if pd.isna(pid) or str(pid).strip() in ("", "nan", "none", "null"):
+            continue
+
+        open_vals = grp["_open"].dropna()
+        close_vals = grp["_close"].dropna()
+        if open_vals.empty or close_vals.empty:
+            continue
+
+        opening = float(open_vals.iloc[0])
+        closing = float(close_vals.iloc[-1])
+        stock_decrease = opening - closing
+
+        # No stock decrease (stock increased or stayed same) -> no shrinkage
+        if stock_decrease <= 0:
+            continue
+
+        # Compute net quantity sold
+        grp_refunds = is_refund.loc[grp.index]
+        sales_qty = float(grp.loc[~grp_refunds, "_qty"].sum())
+        refund_qty = float(grp.loc[grp_refunds, "_qty"].sum())
+        qty_sold = max(0.0, sales_qty - refund_qty)
+
+        discrepancy = stock_decrease - qty_sold
+        # Tolerance check: must exceed both absolute buffer and relative percentage
+        tol_threshold = max(SHRINKAGE_TOLERANCE_ABS, qty_sold * SHRINKAGE_TOLERANCE_PCT)
+
+        if discrepancy > tol_threshold:
+            first_idx = grp.index[0]
+            first_row = grp.loc[first_idx]
+            row_ref = _get_row_ref(first_row, int(first_idx) if isinstance(first_idx, int) else 0)
+
+            discrepancy_pct = ((discrepancy / qty_sold) * 100.0) if qty_sold > 0 else 100.0
+            severity = Severity.HIGH if (discrepancy >= 10.0 or discrepancy_pct > 20.0) else Severity.MEDIUM
+
+            anom_type = getattr(AnomalyType, "STOCK_MOVEMENT_MISMATCH", "stock_movement_mismatch")
+            prod_name = str(first_row.get("description") or first_row.get("product_name") or pid)
+
+            anomalies.append(
+                AnomalyRecord(
+                    id=f"anom_stk_{uuid.uuid4().hex[:8]}",
+                    anomaly_type=anom_type,
+                    severity=severity,
+                    metric_name="stock_movement_mismatch",
+                    observed_value=round(discrepancy, 2),
+                    expected_range=f"Stock decrease <= {qty_sold:.2f} units (+{int(SHRINKAGE_TOLERANCE_PCT * 100)}% tolerance)",
+                    statistical_score=round(discrepancy, 2),
+                    method="inventory_reconciliation",
+                    source_row=row_ref,
+                    source_file=str(first_row.get("source_file") or ""),
+                    metadata={
+                        "product_id": str(pid),
+                        "product_name": prod_name,
+                        "opening_stock_qty": round(opening, 2),
+                        "closing_stock_qty": round(closing, 2),
+                        "stock_decrease": round(stock_decrease, 2),
+                        "quantity_sold": round(qty_sold, 2),
+                        "discrepancy_units": round(discrepancy, 2),
+                        "discrepancy_pct": round(discrepancy_pct, 2),
+                    },
+                )
+            )
+
+    return anomalies
+
+
 def detect_all_anomalies(df: pd.DataFrame, domain: Optional[str] = None) -> AnomalyScanResult:
     """
     Master runner: Executes all statistical detectors, compiles summary,
@@ -418,6 +536,10 @@ def detect_all_anomalies(df: pd.DataFrame, domain: Optional[str] = None) -> Anom
 
     # 5. Zero or Negative Pricing
     all_anomalies.extend(detect_negative_or_zero_prices(df))
+
+    # 6. Domain-specific checks (Pharmacy inventory shrinkage)
+    if effective_domain and str(effective_domain).strip().lower() == "pharmacy":
+        all_anomalies.extend(detect_stock_movement_mismatch(df))
 
     # Severity ordering: HIGH > MEDIUM > LOW
     severity_order = {Severity.HIGH: 0, Severity.MEDIUM: 1, Severity.LOW: 2}

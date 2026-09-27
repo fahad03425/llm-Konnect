@@ -24,6 +24,7 @@ from app.anomaly.detectors import (
     detect_all_anomalies,
     detect_duplicate_invoices,
     detect_negative_or_zero_prices,
+    detect_stock_movement_mismatch,
     detect_transaction_spikes,
     detect_unusual_discounts,
 )
@@ -268,3 +269,91 @@ def test_api_anomaly_explain(client):
     assert data["id"] == "anom_api_1"
     assert "INV-777" in data["explanation"]
     assert "2 times" in data["explanation"]
+
+
+# ---------------------------------------------------------------------------
+# 9. Stock Movement Mismatch (Physical Shrinkage) Detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_stock_movement_mismatch_clear_shrinkage():
+    # Product P1: Opening 100, Closing 70 -> Stock decrease = 30
+    # Sales recorded: 20 units total across 2 transactions
+    # Discrepancy: 10 units (> 5% tolerance) -> Shrinkage!
+    # Product P2: Opening 50, Closing 40 -> Stock decrease = 10
+    # Sales recorded: 10 units -> Exact match, no shrinkage
+    df = pd.DataFrame([
+        {"invoice_id": "INV-201", "product_id": "PRD-SHRINK", "description": "Amoxicillin 500mg",
+         "opening_stock_qty": 100.0, "closing_stock_qty": 70.0, "quantity": 12.0, "unit_price": 50.0},
+        {"invoice_id": "INV-202", "product_id": "PRD-SHRINK", "description": "Amoxicillin 500mg",
+         "opening_stock_qty": 100.0, "closing_stock_qty": 70.0, "quantity": 8.0, "unit_price": 50.0},
+        {"invoice_id": "INV-203", "product_id": "PRD-OK", "description": "Paracetamol 500mg",
+         "opening_stock_qty": 50.0, "closing_stock_qty": 40.0, "quantity": 10.0, "unit_price": 20.0},
+    ])
+    df["source_row"] = df.index + 2
+
+    anomalies = detect_stock_movement_mismatch(df)
+    assert len(anomalies) == 1
+
+    anom = anomalies[0]
+    assert anom.metric_name == "stock_movement_mismatch"
+    assert anom.observed_value == 10.0
+    assert anom.metadata["product_id"] == "PRD-SHRINK"
+    assert anom.metadata["opening_stock_qty"] == 100.0
+    assert anom.metadata["closing_stock_qty"] == 70.0
+    assert anom.metadata["stock_decrease"] == 30.0
+    assert anom.metadata["quantity_sold"] == 20.0
+    assert anom.metadata["discrepancy_units"] == 10.0
+    assert anom.severity == Severity.HIGH
+
+    # Verify domain gating in detect_all_anomalies:
+    # 1) When domain == "pharmacy", stock shrinkage is detected
+    res_pharm = detect_all_anomalies(df, domain="pharmacy")
+    stk_anoms_pharm = [a for a in res_pharm.anomalies if a.metric_name == "stock_movement_mismatch"]
+    assert len(stk_anoms_pharm) == 1
+
+    # 2) When domain == "retail" or other, stock shrinkage detector is not invoked
+    res_other = detect_all_anomalies(df, domain="retail")
+    stk_anoms_other = [a for a in res_other.anomalies if a.metric_name == "stock_movement_mismatch"]
+    assert len(stk_anoms_other) == 0
+
+
+def test_detect_stock_movement_mismatch_no_discrepancy():
+    # All products have stock decreases perfectly matching or within 5% tolerance of sales
+    df = pd.DataFrame([
+        # Exact match: decrease 20, sold 20
+        {"invoice_id": "INV-301", "product_id": "PRD-EXACT", "opening_stock_qty": 100.0, "closing_stock_qty": 80.0, "quantity": 20.0},
+        # Within tolerance: decrease 20, sold 19.5 (discrepancy 0.5 <= 19.5 * 0.05 = 0.975)
+        {"invoice_id": "INV-302", "product_id": "PRD-TOL", "opening_stock_qty": 50.0, "closing_stock_qty": 30.0, "quantity": 19.5},
+        # Stock increased (restocked): opening 40, closing 60, sold 5
+        {"invoice_id": "INV-303", "product_id": "PRD-RESTOCK", "opening_stock_qty": 40.0, "closing_stock_qty": 60.0, "quantity": 5.0},
+    ])
+    df["source_row"] = df.index + 2
+
+    anomalies = detect_stock_movement_mismatch(df)
+    assert len(anomalies) == 0
+
+
+def test_detect_stock_movement_mismatch_missing_columns_graceful():
+    # Dataset completely missing opening_stock_qty and closing_stock_qty
+    df_missing_all = pd.DataFrame([
+        {"invoice_id": "INV-401", "product_id": "PRD-A", "quantity": 10.0, "amount": 500.0},
+        {"invoice_id": "INV-402", "product_id": "PRD-B", "quantity": 5.0, "amount": 250.0},
+    ])
+    assert detect_stock_movement_mismatch(df_missing_all) == []
+
+    # Dataset missing only closing_stock_qty
+    df_missing_close = pd.DataFrame([
+        {"invoice_id": "INV-403", "product_id": "PRD-A", "opening_stock_qty": 100.0, "quantity": 10.0},
+    ])
+    assert detect_stock_movement_mismatch(df_missing_close) == []
+
+    # Dataset missing only product_id
+    df_missing_pid = pd.DataFrame([
+        {"invoice_id": "INV-404", "opening_stock_qty": 100.0, "closing_stock_qty": 80.0, "quantity": 10.0},
+    ])
+    assert detect_stock_movement_mismatch(df_missing_pid) == []
+
+    # Empty dataframe
+    assert detect_stock_movement_mismatch(pd.DataFrame()) == []
+

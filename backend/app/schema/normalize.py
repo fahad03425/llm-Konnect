@@ -8,6 +8,7 @@ Offline, no network calls. Encoding-safe (handles Urdu digits).
 import pandas as pd
 import numpy as np
 import re
+import warnings
 from typing import Optional, Dict
 
 # ---------------------------------------------------------------------------
@@ -110,9 +111,23 @@ def _clean_date(val: any) -> pd.Timestamp:
         except Exception:
             pass
 
-    # General parse — dayfirst for Pakistani convention (DD/MM/YYYY or DD-MM-YYYY)
+    # Date with delimiters: determine if month-first (e.g. 09-20-2026 where 20 > 12) or day-first
+    dmy_match = re.match(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', val_str)
+    if dmy_match:
+        first, second = int(dmy_match.group(1)), int(dmy_match.group(2))
+        is_day_first = False if (first <= 12 < second) else True
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                return pd.to_datetime(val_str, dayfirst=is_day_first)
+        except Exception:
+            pass
+
+    # General parse fallback
     try:
-        return pd.to_datetime(val_str, dayfirst=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            return pd.to_datetime(val_str, dayfirst=True)
     except Exception:
         return pd.NaT
 

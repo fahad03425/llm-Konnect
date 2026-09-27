@@ -96,6 +96,13 @@ class CSVConnector(Connector):
         enc_badge = " (Encrypted At Rest)" if is_encrypted_file(self.file_path) else ""
         return f"CSV/Text Connector reading from {os.path.basename(self.file_path)}{enc_badge}"
 
+    def total_rows(self, **kwargs) -> int:
+        try:
+            lines = self._text.count('\n')
+            return max(0, lines - self.header_idx)
+        except Exception:
+            return 0
+
 
 def _find_excel_header(df: pd.DataFrame) -> int:
     """Heuristic to find the true header row in an Excel sheet to skip branding."""
@@ -120,15 +127,21 @@ class ExcelConnector(Connector):
         return io.BytesIO(self._bytes)
 
     def _read_sheet(self, sheet_name: Optional[str] = None, nrows: Optional[int] = None) -> pd.DataFrame:
+        target_sheet = sheet_name or 0
+        if sheet_name:
+            sheets = self.list_sheets()
+            if sheet_name not in sheets:
+                target_sheet = sheets[0] if sheets else 0
+
         # First read a chunk to find header
-        preview_df = pd.read_excel(self._get_stream(), sheet_name=sheet_name or 0, nrows=30, header=None)
+        preview_df = pd.read_excel(self._get_stream(), sheet_name=target_sheet, nrows=30, header=None)
         if preview_df.empty:
             return pd.DataFrame()
 
         header_idx = _find_excel_header(preview_df)
 
         # Now read properly
-        df = pd.read_excel(self._get_stream(), sheet_name=sheet_name or 0, skiprows=header_idx, nrows=nrows)
+        df = pd.read_excel(self._get_stream(), sheet_name=target_sheet, skiprows=header_idx, nrows=nrows)
         # Drop columns that are completely unnamed and empty
         df = df.dropna(axis=1, how='all')
 
@@ -152,3 +165,15 @@ class ExcelConnector(Connector):
     def describe(self) -> str:
         enc_badge = " (Encrypted At Rest)" if is_encrypted_file(self.file_path) else ""
         return f"Excel Connector reading from {os.path.basename(self.file_path)}{enc_badge}"
+
+    def total_rows(self, sheet_name: Optional[str] = None, **kwargs) -> int:
+        try:
+            target_sheet = sheet_name or 0
+            if sheet_name:
+                sheets = self.list_sheets()
+                if sheet_name not in sheets:
+                    target_sheet = sheets[0] if sheets else 0
+            df = pd.read_excel(self._get_stream(), sheet_name=target_sheet, usecols=[0])
+            return len(df)
+        except Exception:
+            return 0

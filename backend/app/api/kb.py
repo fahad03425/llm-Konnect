@@ -131,15 +131,46 @@ def ingest_source(req: IngestRequest):
             "source_file": req.file_path,
             "source_connector": connector.__class__.__name__
         }
-        
-        summary = _kb.add_dataframe(
-            canonical_df,
-            source_meta=source_meta,
-            domain=req.domain,
-            strategy=req.strategy,
-            merge_key=req.merge_key,
-            file_id=active_file_id,
+
+        total_rows = len(canonical_df)
+        file_registry.set_file_status(
+            file_path=req.file_path,
+            status="processing",
+            progress=15.0,
+            step_text=f"Ingesting chunks: 0 / {total_rows} (15%)...",
+            file_id=active_file_id
         )
+
+        def on_kb_progress(pct: float, step: str):
+            try:
+                file_registry.set_file_status(
+                    file_path=req.file_path,
+                    status="processing",
+                    progress=pct,
+                    step_text=step,
+                    file_id=active_file_id
+                )
+            except Exception:
+                pass
+        
+        try:
+            summary = _kb.add_dataframe(
+                canonical_df,
+                source_meta=source_meta,
+                domain=req.domain,
+                strategy=req.strategy,
+                merge_key=req.merge_key,
+                file_id=active_file_id,
+                progress_callback=on_kb_progress,
+            )
+        except Exception as ingest_err:
+            file_registry.set_file_status(
+                file_path=req.file_path,
+                status="failed",
+                error_message=str(ingest_err),
+                file_id=active_file_id
+            )
+            raise ingest_err
 
         # Register in file registry
         reg_record = file_registry.register_or_update(
@@ -147,6 +178,14 @@ def ingest_source(req: IngestRequest):
             chunk_count=summary.total_chunks,
             domain=req.domain,
             strategy=req.strategy,
+            file_id=active_file_id
+        )
+
+        file_registry.set_file_status(
+            file_path=req.file_path,
+            status="active",
+            progress=100.0,
+            step_text=f"Completed ({summary.total_chunks} chunks)",
             file_id=active_file_id
         )
         
@@ -160,7 +199,27 @@ def ingest_source(req: IngestRequest):
     except HTTPException:
         raise
     except Exception as e:
+        file_registry.set_file_status(
+            file_path=req.file_path,
+            status="failed",
+            error_message=str(e),
+            file_id=active_file_id
+        )
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/ingest-progress")
+def get_ingest_progress(file_path: str = Query(...)):
+    """Return live ingestion progress for a specific file."""
+    record = file_registry.get_file_by_path(file_path)
+    if not record:
+        return {"status": "idle", "progress": 0.0, "step_text": "", "chunk_count": 0}
+    return {
+        "status": record.status,
+        "progress": record.progress,
+        "step_text": record.step_text,
+        "chunk_count": record.chunk_count,
+        "file_id": record.file_id
+    }
 
 @router.post("/search")
 def search_kb(req: SearchRequest):

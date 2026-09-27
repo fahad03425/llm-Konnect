@@ -260,7 +260,7 @@ def list_all_files():
     for reg in all_registered:
         if reg.filename.startswith("."):
             continue
-        norm = os.path.abspath(reg.file_path).replace("\\", "/").lower()
+        norm = file_registry.normalize_path(reg.file_path).lower()
         if norm not in seen_paths:
             seen_paths.add(norm)
             exists = os.path.exists(reg.file_path)
@@ -359,10 +359,31 @@ def list_all_files():
 async def upload_file(file: UploadFile = File(...)):
     """Upload a file to data/uploads."""
     _, upload_dir, _, _ = get_base_dirs()
-    safe_filename = file.filename.replace("/", "").replace("\\", "")
-    file_path = os.path.join(upload_dir, safe_filename)
+    safe_filename = file.filename.replace("/", "").replace("\\", "").strip()
+    if not safe_filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # Reject duplicate uploads (by filename or identical content)
+    dup = file_registry.find_duplicate(safe_filename, contents)
+    if dup:
+        dup_type, existing_name = dup
+        if dup_type == "content":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file: An identical file already exists as '{existing_name}'."
+            )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file: A file named '{existing_name}' already exists. Please delete it first or rename your file."
+            )
+
+    file_path = os.path.join(upload_dir, safe_filename)
+
     from app.security.crypto import encrypt_bytes, is_encrypted_file
     encrypted_data = encrypt_bytes(contents)
 
@@ -672,17 +693,21 @@ def delete_file_and_source(
 ):
     """Delete the physical file from disk AND un-ingest from Chroma/registry."""
     try:
-        target_path = file_path
+        eff_file_id = file_id if isinstance(file_id, str) and file_id.strip() else None
+        eff_file_path = file_path if isinstance(file_path, str) and file_path.strip() else None
+        eff_filename = filename if isinstance(filename, str) and filename.strip() else None
+
+        target_path = eff_file_path
         reg = None
-        if file_id:
-            reg = file_registry.get_file_by_id(file_id)
+        if eff_file_id:
+            reg = file_registry.get_file_by_id(eff_file_id)
             if reg and not target_path:
                 target_path = reg.file_path
         
-        if not target_path and filename:
+        if not target_path and eff_filename:
             _, upload_dir, samples_dir, _ = get_base_dirs()
-            candidate1 = os.path.join(upload_dir, filename)
-            candidate2 = os.path.join(samples_dir, filename)
+            candidate1 = os.path.join(upload_dir, eff_filename)
+            candidate2 = os.path.join(samples_dir, eff_filename)
             if os.path.exists(candidate1):
                 target_path = candidate1
             elif os.path.exists(candidate2):
@@ -691,14 +716,33 @@ def delete_file_and_source(
         if not reg and target_path:
             reg = file_registry.get_file_by_path(target_path)
 
-        # 1. Un-ingest from Chroma & registry ONLY if file was registered/ingested
+        eff_filename = eff_filename or (os.path.basename(target_path) if target_path else None) or (reg.filename if reg else None)
+
+        # 1. Un-ingest from Chroma & registry
+        ids_to_clean = set()
         if reg:
-            _kb.delete_source(reg.file_id)
-            _kb.delete_source(reg.filename)
-            file_registry.delete_file(reg.file_id)
-        elif file_id:
-            _kb.delete_source(file_id)
-            file_registry.delete_file(file_id)
+            if reg.file_id:
+                ids_to_clean.add(reg.file_id)
+            if reg.filename:
+                ids_to_clean.add(reg.filename)
+            if reg.file_path:
+                ids_to_clean.add(reg.file_path)
+        if eff_file_id:
+            ids_to_clean.add(eff_file_id)
+        if target_path:
+            ids_to_clean.add(target_path)
+        if eff_filename:
+            ids_to_clean.add(eff_filename)
+
+        for item_id in ids_to_clean:
+            try:
+                _kb.delete_source(item_id)
+            except Exception:
+                pass
+            try:
+                file_registry.delete_file(item_id)
+            except Exception:
+                pass
 
         if target_path:
             norm = _norm_key(target_path)
@@ -708,8 +752,23 @@ def delete_file_and_source(
         # 2. Delete file from disk if it exists
         deleted_from_disk = False
         if target_path and os.path.exists(target_path):
-            os.remove(target_path)
-            deleted_from_disk = True
+            try:
+                os.remove(target_path)
+                deleted_from_disk = True
+            except Exception:
+                pass
+
+        # Also remove matching files from upload_dir or samples_dir
+        if eff_filename:
+            _, upload_dir, samples_dir, _ = get_base_dirs()
+            for directory in (upload_dir, samples_dir):
+                candidate = os.path.join(directory, eff_filename)
+                if os.path.exists(candidate):
+                    try:
+                        os.remove(candidate)
+                        deleted_from_disk = True
+                    except Exception:
+                        pass
 
         return {
             "status": "success",

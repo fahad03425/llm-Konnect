@@ -69,6 +69,50 @@ Ground Truth Data (computed deterministically from the POS ledger):
 Write the fluent, insight-rich executive performance narrative now, following all executive writing and grounding rules.
 """
 
+_WEEKLY_PHARMACY_SYSTEM_PROMPT_TEMPLATE = """\
+You are a senior executive pharmaceutical retail analyst and report writer for {business_name}.
+
+You are writing a concise, 3-4 sentence plain-language executive lead for the weekly pharmacy performance report. \
+This executive lead opens the report presented directly to the pharmacy owner.
+
+═══════════════════════════════════════════════
+WEEKLY LEAD WRITING & GROUNDING RULES
+═══════════════════════════════════════════════
+
+1. WRITE A 3-4 SENTENCE EXECUTIVE LEAD.
+   Write a flowing 3-4 sentence plain-language lead summarizing the week's critical actions.
+   Aim for this shape in natural business prose:
+   "You made PKR {{profit}} this week. PKR {{dead/near-expiry value}} of stock needs attention. {{item}} is about to run out. You owe {{supplier}} PKR {{amount}}, due {{date}}."
+   Do NOT output literal template braces or placeholders — write fluent, professional English prose.
+
+2. ABSOLUTE GROUNDING — NARRATE, DO NOT CALCULATE OR INVENT.
+   Every single number, currency amount, percentage, and count in your narrative MUST \
+   come directly from the "Ground Truth Data" block below. Do NOT invent estimations, \
+   do NOT invent days (e.g. 30 days, 60 days), do NOT invent percentages. \
+   If a number is not in Ground Truth, DO NOT WRITE IT.
+
+3. UNAVAILABLE MEANS UNAVAILABLE — NEVER WRITE ZERO.
+   If a metric is unavailable, state plainly that it could not be determined. Never substitute an estimate.
+
+4. CONDITIONAL OMISSION — OMIT MISSING FACTS CLEANLY.
+   Every clause is conditionally omittable: if a given fact or metric isn't in Ground Truth \
+   (for example, no supplier payable data available, or no stock is near expiry), skip that \
+   clause entirely rather than writing "unavailable" awkwardly into the lead sentence.
+
+5. FORMATTING & TONE.
+   - Use "PKR" before monetary amounts.
+   - Maintain a direct, confident executive tone for pharmacy ownership.
+"""
+
+_WEEKLY_PHARMACY_USER_PROMPT_TEMPLATE = """\
+Ground Truth Data (computed deterministically from the POS ledger):
+
+{ground_truth_summary}
+
+{correction_block}
+Write the concise 3-4 sentence weekly executive lead now, strictly adhering to the grounding and conditional omission rules.
+"""
+
 _FALLBACK_MESSAGE = (
     "This report analyzes point-of-sale data across your operations. "
     "All computed KPI metrics and dimensional charts are detailed below."
@@ -142,15 +186,153 @@ def _format_ground_truth_summary(data: Union[Dict[str, Any], Any], domain: str) 
     return "\n".join(lines)
 
 
-def generate_narrative(
+def _format_weekly_ground_truth_summary(data: Union[Dict[str, Any], Any]) -> str:
+    """Format key weekly focal points (profit, at-risk stock, stockout, payables)."""
+    lines: List[str] = []
+    kpis = getattr(data, "kpis", data if isinstance(data, dict) else {})
+
+    # 1. Weekly Profit & Revenue
+    profit_kpi = kpis.get("net_profit") or kpis.get("gross_profit")
+    if profit_kpi:
+        v = getattr(profit_kpi, "value", None) if not isinstance(profit_kpi, dict) else profit_kpi.get("value")
+        if v is not None:
+            name = getattr(profit_kpi, "name", "Profit") if not isinstance(profit_kpi, dict) else profit_kpi.get("name", "Profit")
+            lines.append(f"• Weekly {name}: PKR {float(v):,.2f}")
+
+    rev_kpi = kpis.get("total_revenue")
+    if rev_kpi:
+        v = getattr(rev_kpi, "value", None) if not isinstance(rev_kpi, dict) else rev_kpi.get("value")
+        if v is not None:
+            lines.append(f"• Weekly Revenue: PKR {float(v):,.2f}")
+
+    # 2. Stock needing attention (near expiry / expired / dead stock)
+    at_risk: List[str] = []
+    for k in ("near_expiry_total", "expired_stock_value", "dead_stock_value"):
+        res = kpis.get(k)
+        if res:
+            v = getattr(res, "value", None) if not isinstance(res, dict) else res.get("value")
+            name = getattr(res, "name", k) if not isinstance(res, dict) else res.get("name", k)
+            if v is not None and float(v) > 0:
+                at_risk.append(f"{name}: PKR {float(v):,.2f}")
+    if at_risk:
+        lines.append(f"• Stock Needing Attention: {', '.join(at_risk)}")
+
+    # 3. Running out (reorder alerts)
+    alerts = getattr(data, "reorder_alerts", [])
+    if alerts:
+        top_alert = alerts[0]
+        p_name = top_alert.get("product_name") or top_alert.get("product_id")
+        days = top_alert.get("days_until_stockout")
+        if days is not None:
+            lines.append(f"• Running Out: {p_name} has {float(days):.1f} days of supply remaining")
+        else:
+            lines.append(f"• Running Out: {p_name} is at critical reorder point")
+
+    # 4. Supplier payables
+    payables = getattr(data, "supplier_payables", [])
+    if payables:
+        top_sp = payables[0]
+        s_name = top_sp.get("supplier_name") or top_sp.get("supplier_id")
+        amt = top_sp.get("total_payable") or top_sp.get("payable_amount")
+        due = top_sp.get("earliest_due_date")
+        if amt is not None:
+            due_str = f", due {due}" if due else ""
+            lines.append(f"• Supplier Payable: Owe {s_name} PKR {float(amt):,.2f}{due_str}")
+
+    # Also append standard ledger totals for complete verifiable grounding
+    std_summary = _format_ground_truth_summary(data, "pharmacy")
+    if std_summary:
+        lines.append("\n[All Available Ledger Figures]")
+        lines.append(std_summary)
+
+    return "\n".join(lines)
+
+
+def generate_weekly_executive_lead(
     report_data_or_kpis: Union[Dict[str, Any], Any],
     domain: Optional[str] = None,
     business_name: Optional[str] = None,
     correction_feedback: Optional[str] = None,
 ) -> str:
     """
+    Generate a grounded 3-4 sentence plain-language weekly executive lead
+    specifically focused on profit, at-risk stock, reorder alerts, and supplier payables.
+    """
+    eff_default = get_default_domain()
+    if hasattr(report_data_or_kpis, "kpis"):
+        kpis = report_data_or_kpis.kpis
+        effective_domain = getattr(report_data_or_kpis, "domain", domain) or domain or eff_default
+        effective_name = getattr(report_data_or_kpis, "business_name", business_name) or business_name
+    else:
+        kpis = report_data_or_kpis
+        effective_domain = domain or eff_default
+        effective_name = business_name
+
+    has_available = False
+    for res in kpis.values():
+        v = getattr(res, "value", None) if not isinstance(res, dict) else res.get("value")
+        s = getattr(res, "status", "") if not isinstance(res, dict) else res.get("status")
+        if s == "ok" and v is not None:
+            has_available = True
+            break
+
+    if not has_available:
+        return "This weekly pharmacy summary analyzes point-of-sale and inventory movements across your operations."
+
+    biz_name = effective_name or f"the {effective_domain.title()} business"
+
+    system_prompt = _WEEKLY_PHARMACY_SYSTEM_PROMPT_TEMPLATE.format(
+        business_name=biz_name,
+        domain=effective_domain,
+    )
+
+    ground_truth_summary = _format_weekly_ground_truth_summary(report_data_or_kpis)
+
+    correction_block = ""
+    if correction_feedback:
+        correction_block = (
+            f"⚠️ CORRECTION REQUIRED FROM PREVIOUS ATTEMPT:\n"
+            f"{correction_feedback}\n"
+            f"You MUST ensure every number cited exactly matches the ground truth values above.\n"
+        )
+
+    user_prompt = _WEEKLY_PHARMACY_USER_PROMPT_TEMPLATE.format(
+        ground_truth_summary=ground_truth_summary,
+        correction_block=correction_block,
+    )
+
+    try:
+        lead = llm.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            keep_alive=settings.llm_keep_alive,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Weekly executive lead generation failed — Ollama inference error: {exc}"
+        ) from exc
+
+    return lead.strip()
+
+
+def generate_narrative(
+    report_data_or_kpis: Union[Dict[str, Any], Any],
+    domain: Optional[str] = None,
+    business_name: Optional[str] = None,
+    correction_feedback: Optional[str] = None,
+    report_type: str = "standard",
+) -> str:
+    """
     Generate a grounded, LLM-written business narrative from computed analytics.
     """
+    if report_type == "weekly_pharmacy":
+        return generate_weekly_executive_lead(
+            report_data_or_kpis,
+            domain=domain,
+            business_name=business_name,
+            correction_feedback=correction_feedback,
+        )
+
     eff_default = get_default_domain()
     if hasattr(report_data_or_kpis, "kpis"):
         kpis = report_data_or_kpis.kpis

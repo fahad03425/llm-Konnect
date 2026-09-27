@@ -63,6 +63,7 @@ from app.analytics.kpi import build_provenance
 from app.analytics.models import (
     UNIT_COUNT,
     UNIT_CURRENCY,
+    UNIT_PERCENT,
     KPIResult,
     Period,
     unavailable,
@@ -150,6 +151,8 @@ class _StockView:
     reference_date: Optional[pd.Timestamp] = None
     columns_used: Tuple[str, ...] = ()
     notes: Tuple[str, ...] = ()
+    last_sold_date: Optional[pd.Series] = None
+    days_since_sale: Optional[pd.Series] = None
 
 
 def _resolve_reference_date(filters: KPIFilters) -> Tuple[pd.Timestamp, List[str]]:
@@ -168,9 +171,14 @@ def _resolve_reference_date(filters: KPIFilters) -> Tuple[pd.Timestamp, List[str
     return pd.Timestamp(datetime.date.today()), notes
 
 
-def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
+def _prepare_stock(
+    df: pd.DataFrame,
+    filters: KPIFilters,
+    require_expiry: bool = True,
+    require_last_sold: bool = False,
+) -> _StockView:
     """
-    Validate the frame and derive expiry/value series once for every expiry KPI.
+    Validate the frame and derive expiry/value series once for every stock KPI.
 
     Consumes the ALREADY-NORMALIZED `expiry_date` produced by the schema pipeline
     (which handles mm/yy, mm-yyyy, Excel serials, day-first strings). No date
@@ -178,7 +186,7 @@ def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
     """
     reference_date, notes = _resolve_reference_date(filters)
 
-    if "expiry_date" not in df.columns:
+    if require_expiry and "expiry_date" not in df.columns:
         return _StockView(
             ok=False,
             reason="canonical 'expiry_date' column is not present, so expiry cannot be assessed",
@@ -193,6 +201,22 @@ def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
             notes=tuple(notes),
         )
 
+    work_df = df
+    if require_last_sold:
+        if "last_sold_date" not in work_df.columns or work_df["last_sold_date"].isna().all():
+            try:
+                from app.schema.pharmacy import derive_last_sold_date
+                work_df = derive_last_sold_date(work_df)
+            except Exception:
+                pass
+        if "last_sold_date" not in work_df.columns or work_df["last_sold_date"].isna().all():
+            return _StockView(
+                ok=False,
+                reason="canonical 'last_sold_date' column is not present and cannot be derived (no transaction date)",
+                reference_date=reference_date,
+                notes=tuple(notes),
+            )
+
     # --- value basis --------------------------------------------------------
     requested = str(filters.option("value_basis", settings.expiry_value_basis)).strip().casefold()
     if requested not in ("cost", "mrp"):
@@ -201,9 +225,9 @@ def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
     fallback = "mrp" if requested == "cost" else "cost"
 
     def _usable_column(name: str) -> Optional[pd.Series]:
-        if name not in df.columns:
+        if name not in work_df.columns:
             return None
-        series = pd.to_numeric(df[name], errors="coerce")
+        series = pd.to_numeric(work_df[name], errors="coerce")
         return series if series.notna().any() else None
 
     basis = requested
@@ -228,44 +252,73 @@ def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
         )
 
     # --- derived series -----------------------------------------------------
-    expiry = pd.to_datetime(df["expiry_date"], errors="coerce")
-    quantity = pd.to_numeric(df["quantity"], errors="coerce")
-
-    has_expiry = expiry.notna()
+    quantity = pd.to_numeric(work_df["quantity"], errors="coerce")
     has_qty = quantity.notna() & (quantity > 0)
     has_value = unit_value.notna()
-    usable = has_expiry & has_qty & has_value
 
-    # --- report every exclusion --------------------------------------------
-    total = len(df)
-    missing_expiry = int((~has_expiry).sum())
-    if missing_expiry:
-        notes.append(
-            f"{missing_expiry} of {total} row(s) excluded: expiry date is missing or "
-            f"could not be parsed. Their value is NOT included in any expiry figure."
-        )
-    missing_qty = int((has_expiry & ~has_qty).sum())
+    columns = ["quantity", basis]
+
+    expiry = None
+    days = None
+    if require_expiry or "expiry_date" in work_df.columns:
+        columns.append("expiry_date")
+        expiry = pd.to_datetime(work_df["expiry_date"], errors="coerce") if "expiry_date" in work_df.columns else pd.Series(pd.NaT, index=work_df.index)
+        has_expiry = expiry.notna()
+        days = (expiry.dt.normalize() - reference_date).dt.days
+    else:
+        has_expiry = pd.Series(True, index=work_df.index)
+
+    last_sold = None
+    days_since_sale = None
+    if require_last_sold or "last_sold_date" in work_df.columns:
+        columns.append("last_sold_date")
+        last_sold = pd.to_datetime(work_df["last_sold_date"], errors="coerce") if "last_sold_date" in work_df.columns else pd.Series(pd.NaT, index=work_df.index)
+        has_last_sold = last_sold.notna()
+        days_since_sale = (reference_date - last_sold.dt.normalize()).dt.days
+    else:
+        has_last_sold = pd.Series(True, index=work_df.index)
+
+    usable = has_qty & has_value
+    if require_expiry:
+        usable = usable & has_expiry
+    if require_last_sold:
+        usable = usable & has_last_sold
+
+    # --- report exclusions ---
+    total = len(work_df)
+    if require_expiry:
+        missing_expiry = int((~has_expiry).sum())
+        if missing_expiry:
+            notes.append(
+                f"{missing_expiry} of {total} row(s) excluded: expiry date is missing or "
+                f"could not be parsed. Their value is NOT included in any expiry figure."
+            )
+    if require_last_sold:
+        missing_last_sold = int((~has_last_sold).sum())
+        if missing_last_sold:
+            notes.append(
+                f"{missing_last_sold} of {total} row(s) excluded: last sold date is missing."
+            )
+
+    missing_qty = int((~has_qty).sum())
     if missing_qty:
         notes.append(
             f"{missing_qty} row(s) excluded: quantity is missing, non-numeric, or not greater than zero"
         )
-    missing_value = int((has_expiry & has_qty & ~has_value).sum())
+    missing_value = int((has_qty & ~has_value).sum())
     if missing_value:
         notes.append(f"{missing_value} row(s) excluded: no '{basis}' value to price the stock with")
 
     # Stock-on-hand check: an invoice column means these are transactions, not shelf stock.
-    if "invoice_id" in df.columns and df["invoice_id"].notna().any():
+    if "invoice_id" in work_df.columns and work_df["invoice_id"].notna().any():
         notes.append(
             "this data carries invoice ids, so it looks like transactions rather than "
             "stock on hand; expiry values describe the rows present, which may not be "
             "current shelf stock"
         )
 
-    days = (expiry.dt.normalize() - reference_date).dt.days
-
-    columns = ["expiry_date", "quantity", basis]
     for optional in ("batch_no", "product_id"):
-        if optional in df.columns:
+        if optional in work_df.columns:
             columns.append(optional)
 
     return _StockView(
@@ -280,6 +333,8 @@ def _prepare_stock(df: pd.DataFrame, filters: KPIFilters) -> _StockView:
         reference_date=reference_date,
         columns_used=tuple(columns),
         notes=tuple(notes),
+        last_sold_date=last_sold,
+        days_since_sale=days_since_sale,
     )
 
 
@@ -982,10 +1037,12 @@ def low_stock_reorder_predictions(
             daily_velocity = round(sold_units / span_days, 2)
             
             # If inventory stock is present as an extra column (or reorder level is set)
-            if "stock" in p_rows.columns:
-                stock_val = float(pd.to_numeric(p_rows["stock"], errors="coerce").dropna().iloc[0])
-            elif "closing_stock" in p_rows.columns:
-                stock_val = float(pd.to_numeric(p_rows["closing_stock"], errors="coerce").dropna().iloc[0])
+            stock_series = pd.to_numeric(p_rows["stock"], errors="coerce").dropna() if "stock" in p_rows.columns else pd.Series([], dtype="float64")
+            closing_series = pd.to_numeric(p_rows["closing_stock"], errors="coerce").dropna() if "closing_stock" in p_rows.columns else pd.Series([], dtype="float64")
+            if not stock_series.empty:
+                stock_val = float(stock_series.iloc[0])
+            elif not closing_series.empty:
+                stock_val = float(closing_series.iloc[0])
             else:
                 # In absence of separate stock column in a pure POS file, compare against reorder_level or velocity
                 stock_val = max(0.0, reorder_lvl)
@@ -1075,6 +1132,423 @@ def stockout_risk_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "ph
 
 
 # ---------------------------------------------------------------------------
+# Supplier Credit (Accounts Payable) KPIs
+# ---------------------------------------------------------------------------
+
+
+def supplier_payable_total(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Sum of outstanding payable amount to suppliers / distributors.
+    """
+    key, name = "supplier_payable_total", "Total Supplier Payable"
+    formula = "sum of supplier_payable_amount across supplier accounts"
+
+    pay_col = next((c for c in ("supplier_payable_amount", "payable_amount", "outstanding_payable", "balance_payable", "payable") if c in df.columns), None)
+    if pay_col is None:
+        return unavailable(
+            key, name, UNIT_CURRENCY, formula,
+            "canonical 'supplier_payable_amount' column is not present in data",
+            build_provenance(df, pd.Series(False, index=df.index), filters, [], []),
+        )
+
+    pay_series = pd.to_numeric(df[pay_col], errors="coerce")
+    mask = pay_series.notna() & (pay_series > 0)
+    provenance = build_provenance(df, mask, filters, [pay_col], [])
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_CURRENCY, formula=formula, provenance=provenance
+        )
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=_round_money(pay_series[mask].sum()),
+        unit=UNIT_CURRENCY,
+        formula=formula,
+        provenance=provenance,
+    )
+
+
+def supplier_payable_by_supplier(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Outstanding supplier payable breakdown grouped by supplier_id,
+    with earliest due date per supplier.
+    """
+    key, name = "supplier_payable_by_supplier", "Supplier Payable by Supplier"
+    formula = "sum of supplier_payable_amount grouped by supplier_id with earliest due date"
+
+    pay_col = next((c for c in ("supplier_payable_amount", "payable_amount", "outstanding_payable", "balance_payable", "payable") if c in df.columns), None)
+    supp_col = next((c for c in ("supplier_id", "supplier_name", "supplier", "distributor", "vendor") if c in df.columns), None)
+
+    if pay_col is None or supp_col is None:
+        missing = []
+        if pay_col is None:
+            missing.append("'supplier_payable_amount'")
+        if supp_col is None:
+            missing.append("'supplier_id'")
+        return unavailable(
+            key, name, UNIT_CURRENCY, formula,
+            f"required column(s) {', '.join(missing)} not present in data",
+            build_provenance(df, pd.Series(False, index=df.index), filters, [], []),
+        )
+
+    due_col = next((c for c in ("supplier_payment_due_date", "payment_due_date", "due_date", "credit_due_date") if c in df.columns), None)
+    columns_used = [pay_col, supp_col]
+    if due_col:
+        columns_used.append(due_col)
+
+    pay_series = pd.to_numeric(df[pay_col], errors="coerce")
+    mask = pay_series.notna() & (pay_series > 0) & df[supp_col].notna()
+    provenance = build_provenance(df, mask, filters, columns_used, [])
+
+    breakdown_columns = ["supplier_id", "payable_amount", "earliest_due_date", "record_count"]
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_CURRENCY, formula=formula,
+            provenance=provenance, breakdown=[], breakdown_columns=breakdown_columns,
+        )
+
+    sub = pd.DataFrame({
+        "supplier": df.loc[mask, supp_col].astype(str),
+        "payable": pay_series[mask],
+    })
+    if due_col:
+        sub["due_date"] = pd.to_datetime(df.loc[mask, due_col], errors="coerce")
+    else:
+        sub["due_date"] = pd.NaT
+
+    grouped_rows = []
+    for s_name, grp in sub.groupby("supplier"):
+        tot_pay = float(grp["payable"].sum())
+        valid_dates = grp["due_date"].dropna()
+        earliest = valid_dates.min().strftime("%Y-%m-%d") if not valid_dates.empty else None
+        grouped_rows.append({
+            "supplier_id": str(s_name),
+            "payable_amount": _round_money(tot_pay),
+            "earliest_due_date": earliest,
+            "record_count": int(len(grp)),
+        })
+
+    grouped_rows.sort(key=lambda r: (-r["payable_amount"], r["supplier_id"]))
+    total_val = _round_money(sum(r["payable_amount"] for r in grouped_rows))
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=total_val,
+        unit=UNIT_CURRENCY,
+        formula=formula,
+        provenance=provenance,
+        breakdown=grouped_rows,
+        breakdown_columns=breakdown_columns,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dead Stock Analysis (Unsold Inventory >= 60 Days)
+# ---------------------------------------------------------------------------
+
+
+def dead_stock_value(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Value of shelf stock items that have not had any sales for >= 60 days
+    (measured against reference date).
+    """
+    key, name = "dead_stock_value", "Dead Stock Value (60+ Days)"
+    raw_thresh = filters.option("dead_stock_days", 60)
+    try:
+        threshold_days = int(raw_thresh)
+    except (TypeError, ValueError):
+        threshold_days = 60
+
+    formula = (
+        f"sum(quantity x cost) for inventory rows where days_since_last_sale >= {threshold_days}, "
+        f"measured from reference date"
+    )
+
+    view = _prepare_stock(df, filters, require_expiry=False, require_last_sold=True)
+    if not view.ok:
+        return unavailable(
+            key, name, UNIT_CURRENCY, formula, view.reason,
+            build_provenance(df, pd.Series(False, index=df.index), filters, [], list(view.notes)),
+        )
+
+    mask = view.usable & (view.days_since_sale >= threshold_days)
+    provenance = build_provenance(df, mask, filters, list(view.columns_used), list(view.notes))
+
+    breakdown_columns = [
+        "product_id", "batch_no", "last_sold_date", "days_since_last_sale",
+        "quantity", "unit_value", "line_value", "source_row"
+    ]
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_CURRENCY, formula=formula,
+            provenance=provenance, breakdown=[], breakdown_columns=breakdown_columns,
+        )
+
+    table = pd.DataFrame(
+        {
+            "product_id": (
+                df.loc[mask, "product_id"].astype(str) if "product_id" in df.columns else "(unknown)"
+            ),
+            "batch_no": (
+                df.loc[mask, "batch_no"].astype(str) if "batch_no" in df.columns else "(unknown)"
+            ),
+            "last_sold_date": view.last_sold_date[mask].dt.strftime("%Y-%m-%d"),
+            "days_since_last_sale": view.days_since_sale[mask].astype(int),
+            "quantity": view.quantity[mask],
+            "unit_value": view.unit_value[mask],
+            "line_value": view.line_value[mask],
+            "source_row": (
+                pd.to_numeric(df.loc[mask, "source_row"], errors="coerce")
+                if "source_row" in df.columns
+                else pd.Series(pd.NA, index=df.index[mask])
+            ),
+        }
+    ).sort_values(
+        ["days_since_last_sale", "product_id"], ascending=[False, True], kind="mergesort"
+    )
+
+    breakdown_rows = []
+    for _, r in table.iterrows():
+        breakdown_rows.append(
+            {
+                "product_id": r["product_id"],
+                "batch_no": r["batch_no"],
+                "last_sold_date": r["last_sold_date"],
+                "days_since_last_sale": int(r["days_since_last_sale"]),
+                "quantity": float(r["quantity"]),
+                "unit_value": _round_money(r["unit_value"]),
+                "line_value": _round_money(r["line_value"]),
+                "source_row": None if pd.isna(r["source_row"]) else int(r["source_row"]),
+            }
+        )
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=_round_money(view.line_value[mask].sum()),
+        unit=UNIT_CURRENCY,
+        formula=formula,
+        provenance=provenance,
+        breakdown=breakdown_rows,
+        breakdown_columns=breakdown_columns,
+    )
+
+
+def dead_stock_item_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Count of distinct products or product-batch pairs with no sales for >= 60 days.
+    """
+    key, name = "dead_stock_item_count", "Dead Stock Item Count (60+ Days)"
+    raw_thresh = filters.option("dead_stock_days", 60)
+    try:
+        threshold_days = int(raw_thresh)
+    except (TypeError, ValueError):
+        threshold_days = 60
+
+    formula = f"count of distinct products/batches where days_since_last_sale >= {threshold_days}"
+
+    view = _prepare_stock(df, filters, require_expiry=False, require_last_sold=True)
+    if not view.ok:
+        return unavailable(
+            key, name, UNIT_COUNT, formula, view.reason,
+            build_provenance(df, pd.Series(False, index=df.index), filters, [], list(view.notes)),
+        )
+
+    mask = view.usable & (view.days_since_sale >= threshold_days)
+    provenance = build_provenance(df, mask, filters, list(view.columns_used), list(view.notes))
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_COUNT, formula=formula, provenance=provenance
+        )
+
+    product = df.loc[mask, "product_id"].astype(str) if "product_id" in df.columns else ""
+    batch = df.loc[mask, "batch_no"].astype(str) if "batch_no" in df.columns else ""
+    pairs = pd.DataFrame({"p": product, "b": batch}) if "product_id" in df.columns else None
+    value = float(len(pairs.drop_duplicates())) if pairs is not None else float(int(mask.sum()))
+
+    return KPIResult(
+        key=key, name=name, value=value, unit=UNIT_COUNT, formula=formula, provenance=provenance
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gross Margin by Category & Payment Method Mix KPIs
+# ---------------------------------------------------------------------------
+
+
+def gross_margin_by_category(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Gross margin percentage grouped by product category, reusing core COGS matching.
+    """
+    from app.analytics.kpi import (
+        classify_transactions,
+        _amount_series,
+        _cogs_series,
+        _no_rows,
+        _round_pct,
+        _round_money,
+    )
+
+    key, name = "gross_margin_by_category", "Gross Margin by Category"
+    formula = "(category_revenue - category_cogs) / category_revenue x 100 grouped by category"
+
+    cat_col = next((c for c in ("category", "therapeutic_class", "type") if c in df.columns), None)
+    if cat_col is None:
+        return unavailable(
+            key, name, UNIT_PERCENT, formula,
+            "canonical 'category' column is not present in data",
+            build_provenance(df, _no_rows(df), filters, [], []),
+        )
+
+    txn = classify_transactions(df)
+    amounts, amount_cols, amount_notes = _amount_series(df)
+    cogs, cost_cols, cost_notes = _cogs_series(df)
+
+    if amounts is None or cogs is None:
+        return unavailable(
+            key, name, UNIT_PERCENT, formula,
+            "a required column ('amount'/'unit_price'+'quantity', or 'cost') is not present",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+
+    mask = txn.sale & amounts.notna() & cogs.notna() & df[cat_col].notna()
+    columns_used = amount_cols + cost_cols + [cat_col]
+    provenance = build_provenance(df, mask, filters, columns_used, txn.notes + amount_notes + cost_notes)
+
+    breakdown_columns = ["category", "revenue", "cogs", "profit", "margin_pct", "item_count"]
+
+    if not mask.any():
+        return unavailable(
+            key, name, UNIT_PERCENT, formula,
+            "no sale rows have both an amount and a cost grouped by category",
+            provenance,
+        )
+
+    sub = pd.DataFrame({
+        "category": df.loc[mask, cat_col].astype(str),
+        "amount": amounts[mask],
+        "cogs": cogs[mask],
+    })
+
+    grouped_rows = []
+    tot_rev = 0.0
+    tot_cost = 0.0
+
+    for cat_name, grp in sub.groupby("category"):
+        cat_rev = float(grp["amount"].sum())
+        cat_cost = float(grp["cogs"].sum())
+        cat_profit = cat_rev - cat_cost
+        cat_margin = (cat_profit / cat_rev * 100.0) if cat_rev > 0 else 0.0
+        tot_rev += cat_rev
+        tot_cost += cat_cost
+        grouped_rows.append({
+            "category": str(cat_name),
+            "revenue": _round_money(cat_rev),
+            "cogs": _round_money(cat_cost),
+            "profit": _round_money(cat_profit),
+            "margin_pct": _round_pct(cat_margin),
+            "item_count": int(len(grp)),
+        })
+
+    grouped_rows.sort(key=lambda r: (-r["revenue"], r["category"]))
+    overall_profit = tot_rev - tot_cost
+    overall_margin = (overall_profit / tot_rev * 100.0) if tot_rev > 0 else 0.0
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=_round_pct(overall_margin),
+        unit=UNIT_PERCENT,
+        formula=formula,
+        provenance=provenance,
+        breakdown=grouped_rows,
+        breakdown_columns=breakdown_columns,
+    )
+
+
+def payment_method_mix(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """
+    Revenue share and breakdown by payment method / client type.
+    """
+    from app.analytics.kpi import (
+        classify_transactions,
+        _amount_series,
+        _no_rows,
+        _round_pct,
+        _round_money,
+    )
+
+    key, name = "payment_method_mix", "Payment Method Mix"
+    formula = "sum of revenue grouped by payment_method with percentage share"
+
+    pay_col = next((c for c in ("payment_method", "client_type", "payment_type", "mode_of_payment") if c in df.columns), None)
+    if pay_col is None:
+        return unavailable(
+            key, name, UNIT_CURRENCY, formula,
+            "neither 'payment_method' nor 'client_type' is present in data",
+            build_provenance(df, _no_rows(df), filters, [], []),
+        )
+
+    txn = classify_transactions(df)
+    amounts, cols, notes = _amount_series(df)
+    if amounts is None:
+        return unavailable(
+            key, name, UNIT_CURRENCY, formula,
+            "no monetary column available: need 'amount', or both 'unit_price' and 'quantity'",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+
+    mask = txn.sale & amounts.notna() & df[pay_col].notna()
+    columns_used = cols + [pay_col]
+    provenance = build_provenance(df, mask, filters, columns_used, txn.notes + notes)
+
+    breakdown_columns = ["payment_method", "revenue", "share_pct", "transaction_count"]
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_CURRENCY, formula=formula,
+            provenance=provenance, breakdown=[], breakdown_columns=breakdown_columns,
+        )
+
+    sub = pd.DataFrame({
+        "method": df.loc[mask, pay_col].astype(str),
+        "amount": amounts[mask],
+    })
+
+    tot_rev = float(sub["amount"].sum())
+    grouped_rows = []
+
+    for m_name, grp in sub.groupby("method"):
+        m_rev = float(grp["amount"].sum())
+        m_share = (m_rev / tot_rev * 100.0) if tot_rev > 0 else 0.0
+        grouped_rows.append({
+            "payment_method": str(m_name),
+            "revenue": _round_money(m_rev),
+            "share_pct": _round_pct(m_share),
+            "transaction_count": int(len(grp)),
+        })
+
+    grouped_rows.sort(key=lambda r: (-r["revenue"], r["payment_method"]))
+
+    return KPIResult(
+        key=key,
+        name=name,
+        value=_round_money(tot_rev),
+        unit=UNIT_CURRENCY,
+        formula=formula,
+        provenance=provenance,
+        breakdown=grouped_rows,
+        breakdown_columns=breakdown_columns,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -1145,6 +1619,36 @@ def register(engine, domain: str = "pharmacy") -> None:
             "stockout_risk_count", "Critical Stockout Risk Count", UNIT_COUNT,
             "Count of fast-moving products running below critical supply threshold.",
             stockout_risk_count, domain=domain, tags=("volume", "risk"),
+        ),
+        KPISpec(
+            "supplier_payable_total", "Total Supplier Payable", UNIT_CURRENCY,
+            "Total outstanding accounts payable to distributors/suppliers.",
+            supplier_payable_total, domain=domain, tags=("money", "credit", "payable"),
+        ),
+        KPISpec(
+            "supplier_payable_by_supplier", "Supplier Payable by Supplier", UNIT_CURRENCY,
+            "Outstanding supplier payable grouped by supplier with earliest due date.",
+            supplier_payable_by_supplier, domain=domain, tags=("money", "credit", "breakdown"),
+        ),
+        KPISpec(
+            "dead_stock_value", "Dead Stock Value (60+ Days)", UNIT_CURRENCY,
+            "Value of shelf stock items unsold for 60+ days based on last sale date.",
+            dead_stock_value, domain=domain, tags=("money", "inventory", "dead_stock"),
+        ),
+        KPISpec(
+            "dead_stock_item_count", "Dead Stock Item Count (60+ Days)", UNIT_COUNT,
+            "Count of distinct inventory items unsold for 60+ days.",
+            dead_stock_item_count, domain=domain, tags=("volume", "inventory", "dead_stock"),
+        ),
+        KPISpec(
+            "gross_margin_by_category", "Gross Margin by Category", UNIT_PERCENT,
+            "Gross margin percentage grouped by product category.",
+            gross_margin_by_category, domain=domain, tags=("margin", "category", "breakdown"),
+        ),
+        KPISpec(
+            "payment_method_mix", "Payment Method Mix", UNIT_CURRENCY,
+            "Revenue and percentage share by payment method (cash vs card vs credit).",
+            payment_method_mix, domain=domain, tags=("money", "sales", "breakdown"),
         ),
     ]
 

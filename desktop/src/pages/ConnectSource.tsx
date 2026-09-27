@@ -24,7 +24,7 @@ import { UploadZone } from '../components/connect/UploadZone';
 import { PreviewTable } from '../components/connect/PreviewTable';
 import { MappingTable } from '../components/connect/MappingTable';
 import { KBStatus } from '../components/connect/KBStatus';
-import { useConnectSession, idleStep as idle } from '../context/FileContext';
+import { useConnectSession, idleStep as idle, markDataChanged } from '../context/FileContext';
 import { useUser } from '../context/UserContext';
 import '../Connect.css';
 
@@ -56,7 +56,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
         this.state = { hasError: false, message: '' };
     }
     static getDerivedStateFromError(err: Error) {
-        return { hasError: true, message: err.message };
+        return { hasError: true, message: err?.message || 'An unexpected rendering error occurred' };
     }
     render() {
         if (this.state.hasError) {
@@ -64,17 +64,27 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
                 <div className="error-card" style={{ margin: '2rem' }}>
                     <AlertCircle size={20} />
                     <div>
-                        <strong>Something went wrong.</strong>
+                        <strong>Something went wrong in the Connect Source wizard.</strong>
                         <div style={{ marginTop: '0.25rem', fontFamily: 'monospace', fontSize: '0.82rem' }}>
                             {this.state.message}
                         </div>
-                        <button
-                            className="btn-secondary"
-                            style={{ marginTop: '0.75rem' }}
-                            onClick={() => this.setState({ hasError: false, message: '' })}
-                        >
-                            Try Again
-                        </button>
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+                            <button
+                                className="btn-secondary"
+                                onClick={() => this.setState({ hasError: false, message: '' })}
+                            >
+                                Try Again
+                            </button>
+                            <button
+                                className="btn-danger-outline"
+                                onClick={() => {
+                                    try { sessionStorage.removeItem('llm_konnect_connect_session'); } catch {}
+                                    window.location.reload();
+                                }}
+                            >
+                                Reset Wizard &amp; Session
+                            </button>
+                        </div>
                     </div>
                 </div>
             );
@@ -101,9 +111,9 @@ const ErrorCard = ({ msg, onRetry }: { msg: string; onRetry: () => void }) => (
 );
 
 // ============================================================
-//  ConnectSource — main wizard component
+//  ConnectSourceContent — main wizard component
 // ============================================================
-export default function ConnectSource() {
+function ConnectSourceContent() {
     const navigate = useNavigate();
     const {
         step, setStep,
@@ -152,6 +162,13 @@ export default function ConnectSource() {
     const [watchDir, setWatchDir] = useState('');
     const [pendingFiles, setPendingFiles] = useState<string[]>([]);
 
+    const [ingestProgress, setIngestProgress] = useState<{
+        percent: number;
+        currentChunks: number;
+        totalChunks: number;
+        stepText: string;
+    } | null>(null);
+
     // ── Load KB stats on mount ─────────────────────────────────────
     useEffect(() => {
         document.title = 'Connect Source — LLM-KONNECT';
@@ -164,6 +181,51 @@ export default function ConnectSource() {
             if (res.ok) setKbStats(await res.json());
         } catch { /* non-critical */ }
     };
+
+    // ── Continuous sync with active background ingestion for this file ────────
+    useEffect(() => {
+        const activeFp = filePath || file?.name;
+        if (!activeFp) return;
+
+        let isMounted = true;
+        const checkActiveIngest = async () => {
+            try {
+                const res = await fetch(`/api/kb/ingest-progress?file_path=${encodeURIComponent(activeFp)}`);
+                if (!res.ok) return;
+                const pData = await res.json();
+                if (!isMounted) return;
+
+                if (pData && pData.status === 'processing') {
+                    const stepStr = pData.step_text || '';
+                    const match = stepStr.match(/(\d+)\s*\/\s*(\d+)/);
+                    const tot = match ? parseInt(match[2], 10) : (previewData?.total_rows || 100);
+                    let pct = typeof pData.progress === 'number' && pData.progress > 0 ? pData.progress : 15;
+                    let cur = match ? parseInt(match[1], 10) : Math.round((pct / 100) * tot);
+
+                    setIngestSt({ loading: true, error: null });
+                    setStep(5);
+                    setIngestProgress({
+                        percent: pct,
+                        currentChunks: cur,
+                        totalChunks: tot,
+                        stepText: stepStr || `Ingesting chunks: ${cur} / ${tot} (${Math.round(pct)}%)...`
+                    });
+                } else if (pData && pData.status === 'active' && ingestSt.loading) {
+                    setIngestSt(idle());
+                    setIngestProgress(null);
+                    setStep(6);
+                    void fetchKBStats();
+                }
+            } catch {}
+        };
+
+        void checkActiveIngest();
+        const interval = setInterval(checkActiveIngest, 1000);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [filePath, file, ingestSt.loading, previewData?.total_rows]);
 
     // ── Helper: reset file and restart wizard ──────────────────────
     const resetFile = (f: File | null) => {
@@ -187,14 +249,18 @@ export default function ConnectSource() {
 
         try {
             const res = await fetch('/api/sources/upload', { method: 'POST', body: form });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => null);
+                const errMsg = errJson?.detail || await res.text().catch(() => 'Upload failed');
+                throw new Error(errMsg);
+            }
 
             const data = await res.json();
             const fp: string = data.file_path;
             setFilePath(fp);
 
             let firstSheet: string | null = null;
-            if (/\.(xlsx|xls)$/i.test(file.name)) {
+            if (/\.(xlsx|xls|xlx|xlsm)$/i.test(file.name)) {
                 try {
                     const sRes = await fetch(
                         `/api/sources/sheets?file_path=${encodeURIComponent(fp)}`,
@@ -283,6 +349,7 @@ export default function ConnectSource() {
                 table_results: data.table_results ?? []
             });
             setStep(6);
+            markDataChanged();
             setUploadSt(idle());
             void fetchKBStats();
         } catch (e: any) {
@@ -318,7 +385,7 @@ export default function ConnectSource() {
             setPreviewData({
                 columns: data.columns || [],
                 sample_rows: data.data ? data.data.map((r: any) => (data.columns || []).map((c: string) => r[c])) : [],
-                total_rows: data.data ? data.data.length : 0
+                total_rows: data.total_rows || (data.data ? data.data.length : 0)
             });
 
             const proposedMap: Record<string, string> = {};
@@ -389,7 +456,7 @@ export default function ConnectSource() {
             setPreviewData({
                 columns: data.columns || [],
                 sample_rows: sampleRows,
-                total_rows: data.data ? data.data.length : 0
+                total_rows: data.total_rows || (data.data ? data.data.length : 0)
             });
 
             const proposedMap: Record<string, string> = {};
@@ -515,7 +582,11 @@ export default function ConnectSource() {
             if (!res.ok) throw new Error(await res.text());
             const data = await res.json();
 
-            const problemStrings = data.problems?.map((p: any) => typeof p === 'string' ? p : p.description) || [];
+            const problemStrings = (data.problems || []).map((p: any) => {
+                if (!p) return '';
+                if (typeof p === 'string') return p;
+                return p.message || p.description || p.problem || (typeof p === 'object' ? JSON.stringify(p) : String(p));
+            }).filter(Boolean);
 
             setValidateResult({
                 verdict: data.verdict,
@@ -549,6 +620,54 @@ export default function ConnectSource() {
 
         setIngestSt({ loading: true, error: null });
         setStep(5);
+
+        const estimatedTotal = previewData?.total_rows || 100;
+        setIngestProgress({
+            percent: 15,
+            currentChunks: 0,
+            totalChunks: estimatedTotal,
+            stepText: `Ingesting chunks: 0 / ${estimatedTotal.toLocaleString()} (15%)...`
+        });
+
+        // Live progress poller for single-file ingestion
+        const pollInterval = setInterval(async () => {
+            try {
+                const pRes = await fetch(`/api/kb/ingest-progress?file_path=${encodeURIComponent(currentFp)}`);
+                if (pRes.ok) {
+                    const pData = await pRes.json();
+                    if (pData && pData.status === 'active') {
+                        clearInterval(pollInterval);
+                        setIngestProgress(null);
+                        setIngestMsg(pData.step_text || 'Completed');
+                        setActivePath(currentFp);
+                        setIngestSt(idle());
+                        setStep(6);
+                        markDataChanged();
+                        void fetchKBStats();
+                    } else if (pData && pData.status === 'processing') {
+                        const stepStr = pData.step_text || '';
+                        const match = stepStr.match(/(\d+)\s*\/\s*(\d+)/);
+                        let cur = match ? parseInt(match[1], 10) : 0;
+                        let tot = match ? parseInt(match[2], 10) : estimatedTotal;
+                        let pct = typeof pData.progress === 'number' && pData.progress > 0 ? pData.progress : 15;
+                        if (!match && pct > 0) {
+                            cur = Math.round((pct / 100) * tot);
+                        }
+                        setIngestProgress({
+                            percent: pct,
+                            currentChunks: cur,
+                            totalChunks: tot,
+                            stepText: stepStr || `Ingesting chunks: ${cur} / ${tot} (${Math.round(pct)}%)...`
+                        });
+                    } else if (pData && pData.status === 'failed') {
+                        clearInterval(pollInterval);
+                        setIngestProgress(null);
+                        setIngestSt({ loading: false, error: pData.error_message || 'Ingestion was interrupted. Please retry.' });
+                    }
+                }
+            } catch {}
+        }, 500);
+
         try {
             const res = await fetch('/api/kb/ingest', {
                 method: 'POST',
@@ -578,9 +697,41 @@ export default function ConnectSource() {
             setActivePath(currentFp);
             setIngestSt(idle());
             setStep(6);
+            markDataChanged();
             void fetchKBStats();
         } catch (e: unknown) {
             setIngestSt({ loading: false, error: String((e as Error).message ?? 'Ingest failed.') });
+        } finally {
+            clearInterval(pollInterval);
+            setIngestProgress(null);
+        }
+    };
+    const handleStartChatting = () => {
+        if (sourceType === 'sql' && discoveredDb?.database_name) {
+            const dbN = discoveredDb.database_name;
+            navigate('/chat', {
+                state: {
+                    dbName: dbN,
+                    domain
+                }
+            });
+        } else if (filePath) {
+            navigate('/chat', {
+                state: {
+                    filePath,
+                    fileName,
+                    domain
+                }
+            });
+        } else if (fileName) {
+            navigate('/chat', {
+                state: {
+                    fileName,
+                    domain
+                }
+            });
+        } else {
+            navigate('/chat');
         }
     };
 
@@ -591,8 +742,7 @@ export default function ConnectSource() {
     //  RENDER
     // ==============================================================
     return (
-        <ErrorBoundary>
-            <div className="connect-page">
+        <div className="connect-page">
 
                 {/* ── Header with Execution Mode Selector & Active Niche Info ── */}
                 <div className="connect-page-header">
@@ -1332,10 +1482,10 @@ export default function ConnectSource() {
 
                                         {validateResult.problems.length > 0 && (
                                             <ul className="problems-list">
-                                                {validateResult.problems.map((p, i) => (
+                                                {validateResult.problems.map((p: any, i: number) => (
                                                     <li key={i}>
                                                         <AlertTriangle size={13} style={{ flexShrink: 0 }} />
-                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : JSON.stringify(p)}</span>
+                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : p?.message || p?.description || (p ? JSON.stringify(p) : '')}</span>
                                                     </li>
                                                 ))}
                                             </ul>
@@ -1416,7 +1566,7 @@ export default function ConnectSource() {
                                                 {validateResult.problems.slice(0, 5).map((p: any, i: number) => (
                                                     <li key={i}>
                                                         <AlertTriangle size={13} style={{ flexShrink: 0 }} />
-                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : p.message || p.description || JSON.stringify(p)}</span>
+                                                        <span style={{ marginLeft: '0.5rem' }}>{typeof p === 'string' ? p : p?.message || p?.description || (p ? JSON.stringify(p) : '')}</span>
                                                     </li>
                                                 ))}
                                                 {validateResult.problems.length > 5 && (
@@ -1519,8 +1669,69 @@ export default function ConnectSource() {
                         )}
 
                         {ingestSt.loading && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
-                                <span className="spinner dark" /> Ingesting data into the {domain.toUpperCase()} knowledge base…
+                            <div style={{
+                                background: '#F8FAFC',
+                                border: '1px solid #E2E8F0',
+                                borderRadius: '12px',
+                                padding: '1.25rem 1.5rem',
+                                marginTop: '1rem',
+                                animation: 'fadeIn 0.2s ease'
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                                        <span className="spinner dark" />
+                                        <span style={{ fontWeight: 600, color: '#1E293B', fontSize: '0.92rem' }}>
+                                            Ingesting data into {domain.toUpperCase()} Knowledge Base...
+                                        </span>
+                                    </div>
+                                    <div style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.4rem',
+                                        background: 'var(--accent-teal, #0D7377)',
+                                        color: '#FFFFFF',
+                                        padding: '0.35rem 0.85rem',
+                                        borderRadius: '9999px',
+                                        fontSize: '0.78rem',
+                                        fontWeight: 600,
+                                        boxShadow: '0 1px 3px rgba(13, 115, 119, 0.25)'
+                                    }}>
+                                        <Zap size={13} />
+                                        <span>
+                                            {ingestProgress
+                                                ? `${ingestProgress.currentChunks.toLocaleString()} / ${ingestProgress.totalChunks.toLocaleString()} chunks ingested (${Math.round(ingestProgress.percent)}%)`
+                                                : `0 / ${(previewData?.total_rows || 100).toLocaleString()} chunks ingested (15%)`}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Progress Bar Track */}
+                                <div style={{
+                                    width: '100%',
+                                    height: '8px',
+                                    background: '#E2E8F0',
+                                    borderRadius: '9999px',
+                                    overflow: 'hidden',
+                                    marginBottom: '0.6rem'
+                                }}>
+                                    <div style={{
+                                        width: `${Math.min(100, Math.max(5, ingestProgress?.percent ?? 15))}%`,
+                                        height: '100%',
+                                        background: 'linear-gradient(90deg, var(--accent-teal, #0D7377), #10B981)',
+                                        borderRadius: '9999px',
+                                        transition: 'width 0.3s ease'
+                                    }} />
+                                </div>
+
+                                {/* Bottom Subtitle and Percentage */}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', color: '#64748B' }}>
+                                    <span>
+                                        {ingestProgress?.stepText || `Ingesting chunks: 0 / ${(previewData?.total_rows || 100).toLocaleString()} (15%)...`}
+                                    </span>
+                                    <span style={{ fontWeight: 600, color: 'var(--accent-teal, #0D7377)' }}>
+                                        {Math.round(ingestProgress?.percent ?? 15)}%
+                                    </span>
+                                </div>
                             </div>
                         )}
 
@@ -1576,7 +1787,7 @@ export default function ConnectSource() {
                                     </p>
                                 )}
                                 <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-primary" onClick={() => navigate('/chat')}>
+                                    <button className="btn-primary" onClick={handleStartChatting}>
                                         Start Chatting <ArrowRight size={15} />
                                     </button>
                                     <button
@@ -1607,6 +1818,13 @@ export default function ConnectSource() {
                     collectionName={kbStats?.collection_name ?? null}
                 />
             </div>
+    );
+}
+
+export default function ConnectSource() {
+    return (
+        <ErrorBoundary>
+            <ConnectSourceContent />
         </ErrorBoundary>
     );
 }

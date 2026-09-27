@@ -1,0 +1,36 @@
+{
+  "top_level_keys": [
+    "domain",
+    "download_url",
+    "download_url_html",
+    "download_url_pdf",
+    "file_path",
+    "mapping_used",
+    "report",
+    "total_rows",
+    "validation_report"
+  ],
+  "report_keys": [
+    "charts",
+    "html_path",
+    "kpi_snapshot",
+    "narrative",
+    "pdf_path",
+    "regenerated",
+    "verification",
+    "verification_passed",
+    "warnings"
+  ],
+  "verification_keys": [
+    "all_verified",
+    "claims",
+    "mismatch_count",
+    "unmatched_count",
+    "verified_count"
+  ],
+  "domain": "pharmacy",
+  "file_path": "../data/samples/sample_pharmacy.csv",
+  "total_rows": 30,
+  "has_html_download": true,
+  "has_pdf_download": true
+}

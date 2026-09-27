@@ -2,12 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
-    Database, Activity, Minus, ShoppingBag, Briefcase, ArrowRight, Calendar
+    Database, Activity, Minus, ShoppingBag, Briefcase, ArrowRight, Calendar,
+    RefreshCw
 } from 'lucide-react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { useFilePath } from '../context/FileContext';
+import { useFilePath, getDataVersion } from '../context/FileContext';
 import { useUser } from '../context/UserContext';
 import './Dashboard.css';
 
@@ -53,8 +54,8 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}) => {
 };
 
 // ----------------------------------------------------------------------
-// ----------------------------------------------------------------------
-// In-Memory Dashboard Cache (Prevents reload flashes on page navigation)
+// Session Dashboard Cache (Preserves metrics across route navigation)
+// Only invalidates when underlying data changes or user requests refresh
 // ----------------------------------------------------------------------
 
 interface DashboardCacheEntry {
@@ -66,9 +67,47 @@ interface DashboardCacheEntry {
     trendGranularity?: 'daily' | 'monthly';
     kbStats: KBStats | null;
     timestamp: number;
+    dataVersion: string;
 }
 
-const dashboardCache: Record<string, DashboardCacheEntry> = {};
+const DASHBOARD_CACHE_KEY = 'llm_konnect_dashboard_cache_v1';
+
+function getDashboardCache(): Record<string, DashboardCacheEntry> {
+    try {
+        const raw = sessionStorage.getItem(DASHBOARD_CACHE_KEY);
+        if (raw) return JSON.parse(raw);
+    } catch {}
+    return {};
+}
+
+function getCachedEntry(key: string): DashboardCacheEntry | null {
+    const cache = getDashboardCache();
+    return cache[key] || null;
+}
+
+function saveCachedEntry(key: string, patch: Partial<DashboardCacheEntry>) {
+    try {
+        const cache = getDashboardCache();
+        const existing = cache[key] || {
+            kpis: null,
+            expiry: null,
+            trend: null,
+            rangeTotalRevenue: null,
+            trendRange: '28d',
+            trendGranularity: 'daily',
+            kbStats: null,
+            timestamp: Date.now(),
+            dataVersion: getDataVersion()
+        };
+        cache[key] = {
+            ...existing,
+            ...patch,
+            timestamp: Date.now(),
+            dataVersion: patch.dataVersion !== undefined ? patch.dataVersion : (existing.dataVersion || getDataVersion())
+        };
+        sessionStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(cache));
+    } catch {}
+}
 
 // Helper Components
 // ----------------------------------------------------------------------
@@ -84,19 +123,23 @@ export default function Dashboard() {
     const { activePath, setActivePath } = useFilePath();
     const { user, activeDomainMeta } = useUser();
     const cacheKey = `${activePath || ''}:${user.domain}`;
-    const cached = dashboardCache[cacheKey];
+    const currentVersion = getDataVersion();
+    const cached = getCachedEntry(cacheKey);
+    const isCacheFresh = Boolean(cached && cached.dataVersion === currentVersion);
 
-    const [kpis, setKpis] = useState<Record<string, KPIValue> | null>(() => cached?.kpis || null);
-    const [expiry, setExpiry] = useState<Record<string, KPIValue> | null>(() => cached?.expiry || null);
-    const [trend, setTrend] = useState<TrendDataPoint[] | null>(() => cached?.trend || null);
-    const [kbStats, setKbStats] = useState<KBStats | null>(() => cached?.kbStats || null);
+    const [kpis, setKpis] = useState<Record<string, KPIValue> | null>(() => isCacheFresh ? cached!.kpis : null);
+    const [expiry, setExpiry] = useState<Record<string, KPIValue> | null>(() => isCacheFresh ? cached!.expiry : null);
+    const [trend, setTrend] = useState<TrendDataPoint[] | null>(() => isCacheFresh ? cached!.trend : null);
+    const [kbStats, setKbStats] = useState<KBStats | null>(() => isCacheFresh ? cached!.kbStats : null);
 
-    const [trendRange, setTrendRange] = useState<'7d' | '28d' | '6m' | 'all'>(() => cached?.trendRange || '28d');
-    const [trendGranularity, setTrendGranularity] = useState<'daily' | 'monthly'>(() => cached?.trendGranularity || 'daily');
-    const [rangeTotalRevenue, setRangeTotalRevenue] = useState<number | null>(() => cached?.rangeTotalRevenue ?? null);
+    const [trendRange, setTrendRange] = useState<'7d' | '28d' | '6m' | 'all'>(() => (isCacheFresh && cached!.trendRange) ? cached!.trendRange : '28d');
+    const [trendGranularity, setTrendGranularity] = useState<'daily' | 'monthly'>(() => (isCacheFresh && cached!.trendGranularity) ? cached!.trendGranularity : 'daily');
+    const [rangeTotalRevenue, setRangeTotalRevenue] = useState<number | null>(() => isCacheFresh ? (cached!.rangeTotalRevenue ?? null) : null);
 
-    const [loadingKpis, setLoadingKpis] = useState(() => !cached && Boolean(activePath && activePath.trim() !== ''));
-    const [loadingTrend, setLoadingTrend] = useState(() => !cached && Boolean(activePath && activePath.trim() !== ''));
+    const [loadingKpis, setLoadingKpis] = useState(() => !isCacheFresh && Boolean(activePath && activePath.trim() !== ''));
+    const [loadingTrend, setLoadingTrend] = useState(() => !isCacheFresh && Boolean(activePath && activePath.trim() !== ''));
+    const [isRefreshing, setIsRefreshing] = useState(false);
+
 
 
     const [errorKpis, setErrorKpis] = useState<string | null>(null);
@@ -163,8 +206,10 @@ export default function Dashboard() {
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} Dashboard — LLM-KONNECT`;
-        const currentCached = dashboardCache[cacheKey];
-        if (currentCached) {
+        const activeVer = getDataVersion();
+        const currentCached = getCachedEntry(cacheKey);
+
+        if (currentCached && currentCached.dataVersion === activeVer) {
             setKpis(currentCached.kpis);
             setExpiry(currentCached.expiry);
             setTrend(currentCached.trend);
@@ -174,10 +219,7 @@ export default function Dashboard() {
             setKbStats(currentCached.kbStats);
             setLoadingKpis(false);
             setLoadingTrend(false);
-            // If cache is older than 60 seconds, refresh quietly in background without flashing skeletons
-            if (Date.now() - currentCached.timestamp > 60000) {
-                void fetchAllData(true);
-            }
+            // Persistent session cache matches underlying data; do NOT re-fetch
         } else {
             void fetchAllData(false);
         }
@@ -239,12 +281,12 @@ export default function Dashboard() {
             setRangeTotalRevenue(total);
             setLoadingTrend(false);
 
-            if (dashboardCache[cacheKey]) {
-                dashboardCache[cacheKey].trend = fetched;
-                dashboardCache[cacheKey].rangeTotalRevenue = total;
-                dashboardCache[cacheKey].trendRange = range;
-                dashboardCache[cacheKey].trendGranularity = gran;
-            }
+            saveCachedEntry(cacheKey, {
+                trend: fetched,
+                rangeTotalRevenue: total,
+                trendRange: range,
+                trendGranularity: gran
+            });
             return { trend: fetched, total };
         } catch (err) {
             console.error("Failed to fetch trend:", err);
@@ -341,8 +383,8 @@ export default function Dashboard() {
             setKbStats(null);
         }
 
-        // Save to in-memory cache
-        dashboardCache[cacheKey] = {
+        // Save to persistent session cache with current dataset version
+        saveCachedEntry(cacheKey, {
             kpis: fetchedKpis,
             expiry: fetchedExpiry,
             trend: trendResult?.trend ?? null,
@@ -350,8 +392,18 @@ export default function Dashboard() {
             trendRange: range,
             trendGranularity: gran,
             kbStats: fetchedKbStats,
-            timestamp: Date.now()
-        };
+            dataVersion: getDataVersion()
+        });
+    };
+
+    const handleManualRefresh = async () => {
+        if (isRefreshing || loadingKpis) return;
+        setIsRefreshing(true);
+        try {
+            await fetchAllData(false);
+        } finally {
+            setIsRefreshing(false);
+        }
     };
 
     const handleRangeChange = (newRange: '7d' | '28d' | '6m' | 'all') => {
@@ -460,6 +512,29 @@ export default function Dashboard() {
                             </select>
                         </div>
                     )}
+                    <button
+                        type="button"
+                        onClick={handleManualRefresh}
+                        disabled={isRefreshing || loadingKpis}
+                        title="Refresh metrics manually"
+                        style={{
+                            background: 'rgba(30, 41, 59, 0.7)',
+                            border: '1px solid #334155',
+                            borderRadius: '8px',
+                            padding: '0.4rem 0.75rem',
+                            color: isRefreshing ? '#10b981' : '#94a3b8',
+                            cursor: (isRefreshing || loadingKpis) ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            fontSize: '0.8rem',
+                            fontWeight: 600,
+                            transition: 'all 0.2s ease'
+                        }}
+                    >
+                        <RefreshCw size={13} className={isRefreshing ? 'spin-icon' : ''} />
+                        <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+                    </button>
                     <div className="status-badge">
                         <div className="status-dot"></div>
                         Ollama Engine: RUNNING

@@ -21,9 +21,9 @@ export const UploadZone = ({ file, onFileChange }: Props) => {
     const handle = (f: File | null) => {
         if (!f) return onFileChange(null);
         // Only accept CSV, Excel, JSON, SQLite
-        const ok = /\.(csv|xlsx|xls|json|db)$/i.test(f.name);
+        const ok = /\.(csv|xlsx|xls|xlx|json|db)$/i.test(f.name);
         if (ok) onFileChange(f);
-        else alert('Unsupported file type. Please use CSV, Excel (.xlsx), JSON, or SQLite (.db)');
+        else alert('Unsupported file type. Please use CSV, Excel (.xlsx, .xls), JSON, or SQLite (.db)');
     };
 
     const onDrop = (e: React.DragEvent) => {
@@ -43,7 +43,7 @@ export const UploadZone = ({ file, onFileChange }: Props) => {
             <input
                 ref={inputRef}
                 type="file"
-                accept=".csv,.xlsx,.xls,.json,.db"
+                accept=".csv,.xlsx,.xls,.xlx,.json,.db"
                 className="file-hidden"
                 onChange={e => handle(e.target.files?.[0] ?? null)}
                 onClick={e => e.stopPropagation()}

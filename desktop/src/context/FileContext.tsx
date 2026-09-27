@@ -11,7 +11,7 @@ export interface PreviewData {
 
 export interface ValidateResult {
     verdict: Verdict;
-    problems: string[];
+    problems: any[];
     null_counts: Record<string, number>;
 }
 
@@ -22,6 +22,22 @@ export interface KBStats {
 
 export type StepState = { loading: boolean; error: string | null };
 export const idleStep = (): StepState => ({ loading: false, error: null });
+
+export const KB_DATA_VERSION_KEY = 'llm_konnect_kb_updated';
+
+export function markDataChanged(): void {
+    try {
+        localStorage.setItem(KB_DATA_VERSION_KEY, Date.now().toString());
+    } catch {}
+}
+
+export function getDataVersion(): string {
+    try {
+        return localStorage.getItem(KB_DATA_VERSION_KEY) || '0';
+    } catch {
+        return '0';
+    }
+}
 
 interface FileContextType {
     // Active file selection across app
@@ -107,7 +123,17 @@ export function FileProvider({ children }: { children: ReactNode }) {
     const loadSavedWizardState = () => {
         try {
             const raw = sessionStorage.getItem(WIZARD_STORAGE_KEY);
-            if (raw) return JSON.parse(raw);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') {
+                    if (parsed.validateResult?.problems && Array.isArray(parsed.validateResult.problems)) {
+                        parsed.validateResult.problems = parsed.validateResult.problems
+                            .map((p: any) => typeof p === 'string' ? p : p?.message || p?.description || (p ? JSON.stringify(p) : ''))
+                            .filter(Boolean);
+                    }
+                    return parsed;
+                }
+            }
         } catch {}
         return null;
     };

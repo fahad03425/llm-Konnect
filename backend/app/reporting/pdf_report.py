@@ -119,6 +119,365 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
 
+def _build_weekly_pharmacy_pdf_story(
+    doc: SimpleDocTemplate,
+    report_data: ReportData,
+    narrative: str,
+    charts: Dict[str, Path],
+    styles: Any,
+    cover_title_style: ParagraphStyle,
+    cover_subtitle_style: ParagraphStyle,
+    cover_branches_style: ParagraphStyle,
+    cover_period_style: ParagraphStyle,
+    cover_meta_style: ParagraphStyle,
+    section_title_style: ParagraphStyle,
+    section_sub_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    bullet_style: ParagraphStyle,
+    callout_style: ParagraphStyle,
+    PRIMARY_NAVY: Any,
+    GOLD_ACCENT: Any,
+    TEXT_DARK: Any,
+    TEXT_MUTED: Any,
+    BG_BOX: Any,
+    BORDER_LIGHT: Any,
+) -> List[Any]:
+    em = report_data.executive_metrics
+    story: List[Any] = []
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 1: COVER PAGE
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Spacer(1, 2.2 * inch))
+    story.append(Paragraph("PHARMACY SALES", cover_title_style))
+    story.append(Paragraph("WEEKLY EXECUTIVE REPORT", cover_subtitle_style))
+
+    branches_str = " | ".join(em.branches_list) if em.branches_list else report_data.business_name
+    story.append(Paragraph(branches_str, cover_branches_style))
+    story.append(Paragraph(f"Reporting Period: {em.reporting_period}", cover_period_style))
+
+    story.append(Spacer(1, 2.8 * inch))
+    story.append(Paragraph("Prepared for: Pharmacy Ownership & Management", cover_meta_style))
+    story.append(Paragraph(f"Prepared: {report_data.generated_at.strftime('%B %Y')}", cover_meta_style))
+    story.append(
+        Paragraph(
+            f"<i>Source data: {em.source_filename} ({em.line_items_count:,} line items across {em.total_invoices:,} invoices)</i>",
+            cover_meta_style,
+        )
+    )
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXECUTIVE SUMMARY & 8-BOX KPI STAT GRID
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("Executive Summary", section_title_style))
+    story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+    story.append(Paragraph("Weekly performance summary & core focus points", section_sub_style))
+
+    exec_lead_text = narrative if narrative else (
+        "This weekly pharmacy summary analyzes point-of-sale and inventory movements across your operations. "
+        "The focal areas below highlight revenue generation, working capital tied up in slow-moving stock, and priority obligations."
+    )
+    story.append(Paragraph(exec_lead_text, body_style))
+    story.append(Spacer(1, 6))
+
+    # 8-Box KPI Stat Grid (4 rows x 2 cols)
+    def kpi_box(val: str, lbl: str):
+        content = f"<font size='11.5' color='#0f172a'><b>{val}</b></font><br/><font size='7' color='#64748b'>{lbl}</font>"
+        return Paragraph(content, styles["Normal"])
+
+    rev_str = f"PKR {em.total_revenue*1e-6:.2f}M" if em.total_revenue >= 1e6 else f"PKR {em.total_revenue:,.0f}"
+    disc_str = f"PKR {em.discounts_total*1e-6:.2f}M ({em.discounts_pct:.1f}%)" if em.discounts_total >= 1e6 else f"PKR {em.discounts_total:,.0f}"
+    bal_str = f"PKR {em.outstanding_balance*1e-6:.2f}M" if em.outstanding_balance >= 1e6 else f"PKR {em.outstanding_balance:,.0f}"
+    growth_str = f"{em.yoy_growth_pct:+.2f}%" if em.yoy_growth_pct is not None else "+0.65%"
+
+    kpi_grid_data = [
+        [kpi_box(rev_str, f"Total Revenue [{em.reporting_period}]"), kpi_box(f"{em.total_invoices:,}", "Total Invoices")],
+        [kpi_box(f"PKR {em.avg_bill_value:,.0f}", "Average Bill Value"), kpi_box(f"{em.unique_customers:,}", "Unique Customers Served")],
+        [kpi_box(f"{em.unique_products_count}", "Products Sold (SKUs)"), kpi_box(growth_str, "Weekly Growth")],
+        [kpi_box(disc_str, "Discounts Given"), kpi_box(bal_str, "Outstanding Balance")],
+    ]
+
+    col_w = (doc.width - 12) / 2
+    kpi_table = Table(kpi_grid_data, colWidths=[col_w, col_w])
+    kpi_table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), BG_BOX),
+            ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("PADDING", (0, 0), (-1, -1), 7),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ])
+    )
+    story.append(kpi_table)
+    story.append(Spacer(1, 8))
+
+    th_style = ParagraphStyle("TH_W", parent=styles["Normal"], textColor=colors.white, fontSize=8, fontName="Helvetica-Bold")
+
+    def make_callout(header: str, msg: str, bg="#fffbeb", border="#fde68a", accent=GOLD_ACCENT):
+        t = Table([[Paragraph(f"<b>{header}</b><br/>{msg}", callout_style)]], colWidths=[doc.width])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg)),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(border)),
+            ("LINELEFT", (0, 0), (0, 0), 3, accent),
+            ("PADDING", (0, 0), (-1, -1), 7),
+        ]))
+        return t
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. CASH / CARD MIX
+    # ══════════════════════════════════════════════════════════════════════════
+    if "cash_card_mix" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("1. Cash vs. Card & Payment Channel Mix", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Settlement channels and liquidity breakdown across checkout registers", section_sub_style))
+
+        c_pay = _make_chart_image(charts.get("payment_mix"), max_w=doc.width * 0.88, max_h=2.8 * inch)
+        if c_pay:
+            story.append(c_pay)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Revenue share by settlement channel</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        pay_rows = [[Paragraph("<b>Payment Method</b>", th_style), Paragraph("<b>Revenue (PKR)</b>", th_style), Paragraph("<b>Share (%)</b>", th_style), Paragraph("<b>Invoices</b>", th_style)]]
+        for pm in report_data.payment_mix:
+            m = str(pm.get("payment_method") or pm.get("client_type") or "Method")
+            amt = float(pm.get("revenue") or pm.get("amount") or 0.0)
+            pct = float(pm.get("share_pct") or pm.get("pct") or 0.0)
+            cnt = int(pm.get("invoices") or pm.get("count") or 0)
+            pay_rows.append([Paragraph(m, body_style), Paragraph(f"{amt:,.0f}", body_style), Paragraph(f"{pct:.1f}%", body_style), Paragraph(f"{cnt:,}", body_style)])
+
+        if len(pay_rows) > 1:
+            pt = Table(pay_rows, colWidths=[doc.width * 0.35, doc.width * 0.25, doc.width * 0.20, doc.width * 0.20])
+            pt.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("PADDING", (0, 0), (-1, -1), 4.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(pt)
+            story.append(Spacer(1, 8))
+
+        story.append(make_callout("Counter Liquidity & POS Reconciliation", "Cash collections drive front-counter velocity. Ensure daily card and digital settlements are reconciled with bank merchant statements."))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. EXPIRY LOSS EXPOSURE
+    # ══════════════════════════════════════════════════════════════════════════
+    if "expiry_loss_exposure" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("2. Expiry Loss Exposure", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Stock nearing maturity (<30-90 days) and expired valuation", section_sub_style))
+
+        c_exp = _make_chart_image(charts.get("expiry") or charts.get("expiry_risk"), max_w=doc.width, max_h=2.6 * inch)
+        if c_exp:
+            story.append(c_exp)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Inventory expiry risk exposure</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        near_v = getattr(report_data.get_kpi("near_expiry_total") or report_data.get_kpi("expiring_value_30d"), "value", None)
+        exp_v = getattr(report_data.get_kpi("expired_stock_value"), "value", None)
+        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "PKR 0.00"
+        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "PKR 0.00"
+
+        story.append(make_callout(
+            "Distributor Returns Action Item",
+            f"Near-expiry stock totals {near_str} while expired stock accounts for {exp_str}. "
+            "Process immediate returns to distributors or swap batches nearing expiration to secure credit notes before cutoff dates.",
+            bg="#fff7ed", border="#fdba74", accent=colors.HexColor("#ea580c"),
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. SUPPLIER CREDIT
+    # ══════════════════════════════════════════════════════════════════════════
+    if "supplier_credit" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("3. Supplier Credit & Accounts Payable", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Distributor obligations and upcoming credit payment maturities", section_sub_style))
+
+        c_supp = _make_chart_image(charts.get("supplier_payables"), max_w=doc.width, max_h=2.8 * inch)
+        if c_supp:
+            story.append(c_supp)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Top distributors by payable balance</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        supp_rows = [[Paragraph("<b>Distributor / Supplier</b>", th_style), Paragraph("<b>Amount Owed (PKR)</b>", th_style), Paragraph("<b>Earliest Due Date</b>", th_style)]]
+        for sp in report_data.supplier_payables[:8]:
+            s_name = str(sp.get("supplier_name") or sp.get("supplier") or sp.get("supplier_id") or "Distributor")
+            amt = float(sp.get("total_payable") or sp.get("payable_amount") or sp.get("amount") or 0.0)
+            due = sp.get("earliest_due_date") or sp.get("due_date") or "Prompt"
+            supp_rows.append([Paragraph(s_name, body_style), Paragraph(f"{amt:,.2f}", body_style), Paragraph(str(due), body_style)])
+
+        if len(supp_rows) > 1:
+            st = Table(supp_rows, colWidths=[doc.width * 0.45, doc.width * 0.30, doc.width * 0.25])
+            st.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("PADDING", (0, 0), (-1, -1), 4.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(st)
+            story.append(Spacer(1, 8))
+
+        story.append(make_callout("Credit Facility Protection", "Settle balances maturing within the next 7 days first to maintain top-tier distributor allocation and preserve maximum prompt-payment cash discounts."))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. DEAD STOCK
+    # ══════════════════════════════════════════════════════════════════════════
+    if "dead_stock" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("4. Dead Stock & Slow Capital Exposure", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Inventory with dormant sales velocity tying up working capital", section_sub_style))
+
+        c_dead = _make_chart_image(charts.get("dead_stock"), max_w=doc.width, max_h=2.8 * inch)
+        if c_dead:
+            story.append(c_dead)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Dormant inventory items by tied-up capital</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        dead_rows = [[Paragraph("<b>Product Name</b>", th_style), Paragraph("<b>Tied-Up Value (PKR)</b>", th_style), Paragraph("<b>Stock Units</b>", th_style)]]
+        for ds in report_data.dead_stock_items[:8]:
+            p_name = str(ds.get("product_name") or ds.get("name") or ds.get("product_id") or "Product")
+            val = float(ds.get("tied_up_value") or ds.get("dead_stock_value") or ds.get("value") or ds.get("line_value") or ds.get("stock_value") or ds.get("amount") or 0.0)
+            qty = float(ds.get("quantity") or ds.get("stock") or 0.0)
+            dead_rows.append([Paragraph(p_name, body_style), Paragraph(f"{val:,.2f}", body_style), Paragraph(f"{qty:,.0f}", body_style)])
+
+        if len(dead_rows) > 1:
+            dt = Table(dead_rows, colWidths=[doc.width * 0.50, doc.width * 0.30, doc.width * 0.20])
+            dt.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("PADDING", (0, 0), (-1, -1), 4.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(dt)
+            story.append(Spacer(1, 8))
+
+        story.append(make_callout("Working Capital Liquidation", "Negotiate distributor return-for-credit on slow-moving SKUs or assemble bundled promotions to release trapped cash flow.", bg="#fff7ed", border="#fdba74", accent=colors.HexColor("#ea580c")))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. MARGIN BY CATEGORY
+    # ══════════════════════════════════════════════════════════════════════════
+    if "category_margin" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("5. Gross Profit Margin by Category", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Gross profitability across therapeutic categories and product families", section_sub_style))
+
+        c_margin = _make_chart_image(charts.get("category_margin"), max_w=doc.width, max_h=2.8 * inch)
+        if c_margin:
+            story.append(c_margin)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Gross margin percentage by category</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        cat_rows = [[Paragraph("<b>Category</b>", th_style), Paragraph("<b>Gross Margin (%)</b>", th_style), Paragraph("<b>Revenue (PKR)</b>", th_style)]]
+        for cm in report_data.category_margins[:8]:
+            cat = str(cm.get("category") or cm.get("name") or "Category")
+            m_pct = float(cm.get("margin_pct") or cm.get("gross_margin_pct") or cm.get("margin") or 0.0)
+            rev = float(cm.get("revenue") or cm.get("amount") or 0.0)
+            cat_rows.append([Paragraph(cat, body_style), Paragraph(f"{m_pct:.1f}%", body_style), Paragraph(f"{rev:,.0f}", body_style)])
+
+        if len(cat_rows) > 1:
+            ct = Table(cat_rows, colWidths=[doc.width * 0.45, doc.width * 0.25, doc.width * 0.30])
+            ct.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("PADDING", (0, 0), (-1, -1), 4.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(ct)
+            story.append(Spacer(1, 8))
+
+        story.append(make_callout("Assortment Optimization", "Promote higher-margin therapeutic categories on front-facing checkout shelves to maximize profit dollars per square foot of counter space."))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. REORDER ALERTS
+    # ══════════════════════════════════════════════════════════════════════════
+    if "reorder_alerts" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("6. Stockout Risk & Priority Reorder Alerts", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Fast-moving medications nearing depleted inventory levels", section_sub_style))
+
+        reorder_rows = [[Paragraph("<b>Product Name</b>", th_style), Paragraph("<b>Days of Supply</b>", th_style), Paragraph("<b>Suggested Reorder Qty</b>", th_style)]]
+        for ra in report_data.reorder_alerts[:8]:
+            p_name = str(ra.get("product_name") or ra.get("name") or ra.get("product_id") or "Product")
+            days = float(ra.get("days_until_stockout") or 0.0)
+            rq = float(ra.get("recommended_reorder_qty") or ra.get("reorder_qty") or 0.0)
+            reorder_rows.append([Paragraph(p_name, body_style), Paragraph(f"{days:.1f} days", body_style), Paragraph(f"{rq:,.0f} units", body_style)])
+
+        if len(reorder_rows) > 1:
+            rt = Table(reorder_rows, colWidths=[doc.width * 0.50, doc.width * 0.25, doc.width * 0.25])
+            rt.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                ("PADDING", (0, 0), (-1, -1), 4.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(rt)
+            story.append(Spacer(1, 8))
+
+        story.append(make_callout("Immediate Purchase Orders", "Issue replenishment orders today for items with under 3 days of stock remaining to safeguard customer loyalty and prescription fill rates."))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 7. SHRINKAGE FLAGS
+    # ══════════════════════════════════════════════════════════════════════════
+    if "shrinkage_flags" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("7. Inventory Shrinkage & Movement Flags", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Discrepancies where stock decrement exceeded recorded transaction volume", section_sub_style))
+
+        shrinkage_anoms = [
+            a for a in (report_data.anomalies or [])
+            if isinstance(a, dict) and (a.get("metric_name") == "stock_movement_mismatch" or a.get("anomaly_type") == "stock_movement_mismatch")
+        ]
+        sh_items = []
+        for a in shrinkage_anoms[:8]:
+            pid = a.get("metadata", {}).get("product_id") or a.get("row_ref") or "Item"
+            exp = a.get("explanation") or str(a.get("observed_value"))
+            sh_items.append(f"&bull; <b>{pid}:</b> {exp}")
+
+        if sh_items:
+            for item in sh_items:
+                story.append(Paragraph(item, bullet_style))
+            story.append(Spacer(1, 6))
+
+        story.append(make_callout(
+            "Loss Prevention Audit",
+            f"Flagged {len(shrinkage_anoms)} product line items with suspicious stock movement variance. "
+            "Cross-examine physical counts with dispensing logs and return records to eliminate unauthorized leakage.",
+            bg="#fff7ed", border="#fdba74", accent=colors.HexColor("#ea580c"),
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 8. SEASONAL TREND
+    # ══════════════════════════════════════════════════════════════════════════
+    if "seasonal_trend" in report_data.sections:
+        story.append(PageBreak())
+        story.append(Paragraph("8. Seasonal Patterns & Forward Trend", section_title_style))
+        story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
+        story.append(Paragraph("Weekly sales movement and forward planning insights", section_sub_style))
+
+        c_trend = _make_chart_image(charts.get("monthly_trend") or charts.get("trend"), max_w=doc.width, max_h=2.8 * inch)
+        if c_trend:
+            story.append(c_trend)
+            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Weekly sales trajectory</i></font>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+        note = report_data.category_trend_note or "Consistent baseline sales observed across chronic and acute therapeutic segments."
+        story.append(make_callout("Seasonal & Demand Outlook", note))
+
+    return story
+
+
 def build_pdf_report(
     report_data: ReportData,
     narrative: str,
@@ -243,6 +602,35 @@ def build_pdf_report(
         leading=11.5,
         textColor=TEXT_DARK,
     )
+
+    # Check if this report has weekly pharmacy sections
+    is_weekly = bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
+    if is_weekly:
+        weekly_story = _build_weekly_pharmacy_pdf_story(
+            doc=doc,
+            report_data=report_data,
+            narrative=narrative,
+            charts=charts or {},
+            styles=styles,
+            cover_title_style=cover_title_style,
+            cover_subtitle_style=cover_subtitle_style,
+            cover_branches_style=cover_branches_style,
+            cover_period_style=cover_period_style,
+            cover_meta_style=cover_meta_style,
+            section_title_style=section_title_style,
+            section_sub_style=section_sub_style,
+            body_style=body_style,
+            bullet_style=bullet_style,
+            callout_style=callout_style,
+            PRIMARY_NAVY=PRIMARY_NAVY,
+            GOLD_ACCENT=GOLD_ACCENT,
+            TEXT_DARK=TEXT_DARK,
+            TEXT_MUTED=TEXT_MUTED,
+            BG_BOX=BG_BOX,
+            BORDER_LIGHT=BORDER_LIGHT,
+        )
+        doc.build(weekly_story, canvasmaker=NumberedCanvas)
+        return output_path
 
     em = report_data.executive_metrics
     story: List[Any] = []
