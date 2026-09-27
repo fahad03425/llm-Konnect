@@ -12,6 +12,7 @@ reports/
 chroma/
 *.db
 *.sqlite3
+*.sqlite3-*
 
 debug.json
 

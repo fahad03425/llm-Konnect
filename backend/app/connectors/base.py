@@ -28,6 +28,10 @@ class Connector(ABC):
         """Return a dict describing what this connector supports (e.g. multi-sheet, auth)."""
         return {}
 
+    def total_rows(self, **kwargs) -> int:
+        """Return total row count of the data source if available, or 0."""
+        return 0
+
 
 def detect_connector(path: str) -> Connector:
     """
@@ -38,7 +42,7 @@ def detect_connector(path: str) -> Connector:
     if ext in ('.csv', '.txt', '.tsv'):
         from app.connectors.csv_excel import CSVConnector
         return CSVConnector(path)
-    elif ext in ('.xlsx', '.xls', '.xlsm'):
+    elif ext in ('.xlsx', '.xls', '.xlsm', '.xlx'):
         from app.connectors.csv_excel import ExcelConnector
         return ExcelConnector(path)
     elif ext in ('.json', '.jsonl'):

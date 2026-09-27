@@ -121,6 +121,7 @@ export default function ReportExport() {
                 const historyList: ReportHistoryItem[] = diskReports.map(r => ({
                     id: r.id || r.stem,
                     stem: r.stem,
+                    timestamp: r.created_formatted || 'Recently',
                     businessName: businessName || user?.organization || 'Business Analytics Report',
                     domain: user?.domain || 'pharmacy',
                     sourceFile: 'Pharmacy_Sales_Dataset.xlsx',

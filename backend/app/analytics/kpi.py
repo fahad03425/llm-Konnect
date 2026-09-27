@@ -743,6 +743,51 @@ def transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -
     )
 
 
+def purchase_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """
+    Number of purchase transactions.
+    Counts distinct invoice_id / purchase_order_no over expense/purchase rows.
+    """
+    formula = "count of distinct invoice_id over purchase rows"
+    txn = classify_transactions(df)
+    notes = list(txn.notes)
+
+    if df.empty:
+        return unavailable(
+            "purchase_count", "Purchase Count", UNIT_COUNT, formula,
+            "no rows are available to count",
+            build_provenance(df, _no_rows(df), filters, [], notes),
+        )
+
+    contributing = txn.expense if txn.expense.any() else pd.Series(True, index=df.index)
+
+    if "invoice_id" in df.columns:
+        valid_inv = contributing & df["invoice_id"].notna()
+        value = int(df.loc[valid_inv, "invoice_id"].astype(str).nunique())
+        columns = ["invoice_id"]
+    elif "purchase_order_no" in df.columns:
+        valid_po = contributing & df["purchase_order_no"].notna()
+        value = int(df.loc[valid_po, "purchase_order_no"].astype(str).nunique())
+        columns = ["purchase_order_no"]
+    else:
+        formula = "count of purchase rows"
+        value = int(contributing.sum())
+        columns = []
+        notes.append("canonical 'invoice_id' column is absent; each row counted as one purchase")
+
+    provenance = build_provenance(df, contributing, filters, columns, notes)
+    if not contributing.any():
+        return unavailable(
+            "purchase_count", "Purchase Count", UNIT_COUNT, formula,
+            "no purchase rows matched the requested filter", provenance,
+        )
+
+    return KPIResult(
+        key="purchase_count", name="Purchase Count", value=float(value),
+        unit=UNIT_COUNT, formula=formula, provenance=provenance, period=_period(df, contributing),
+    )
+
+
 def row_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """Total count of rows/records in the dataset matching the active filter."""
     formula = "count of rows in dataset matching filter"

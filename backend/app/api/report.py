@@ -17,6 +17,7 @@ from app.api.analytics import (
     _envelope,
     _filters,
     _load_canonical,
+    _sanitize_json,
 )
 from app.core.config import settings
 from app.reporting.report import generate_report
@@ -34,15 +35,20 @@ class ReportRequest(KPIRequest):
         default_factory=lambda: ["html", "pdf"],
         description="Target report formats: ['html', 'pdf']"
     )
+    report_type: Optional[str] = Field(
+        "standard", description="Report variant: 'standard' or 'weekly_pharmacy'"
+    )
 
 
 @router.post("/generate")
-def generate(req: ReportRequest):
+def generate(req: ReportRequest, report_type: Optional[str] = None):
     """
     Generate a verified HTML and PDF analytics report.
     Returns the KPI snapshot, verification status, and download URLs.
     """
     try:
+        effective_report_type = report_type if report_type is not None else (req.report_type or "standard")
+
         # 1. Load canonical data using existing analytics pipeline
         canonical, mapping = _load_canonical(req)
 
@@ -69,6 +75,7 @@ def generate(req: ReportRequest):
             business_name=req.business_name,
             max_regeneration_attempts=req.max_regeneration_attempts,
             formats=tuple(req.formats),
+            report_type=effective_report_type,
         )
 
         # 3. Wrap with metadata envelope
@@ -87,7 +94,7 @@ def generate(req: ReportRequest):
             pdf_fn = Path(report_result.pdf_path).name
             body["download_url_pdf"] = f"/api/report/download/{pdf_fn}"
 
-        return body
+        return _sanitize_json(body)
 
     except HTTPException:
         raise

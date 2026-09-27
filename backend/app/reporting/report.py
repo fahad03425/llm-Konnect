@@ -185,7 +185,7 @@ def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Data
                 ]
 
                 # Year-over-Year Growth
-                years = sorted(temp_df["year"].unique())
+                years = sorted([str(y) for y in temp_df["year"].dropna().unique() if str(y) not in ("nan", "<NA>")])
                 if len(years) >= 2:
                     y1_rev = float(temp_df[temp_df["year"] == years[-2]][amt_col].sum())
                     y2_rev = float(temp_df[temp_df["year"] == years[-1]][amt_col].sum())
@@ -230,7 +230,7 @@ def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Data
         ]
 
     # 10. Payment Mix
-    client_col = _find_col(df, ["Client_Type", "Payment_Method", "client_type", "payment_method"])
+    client_col = _find_col(df, ["Client_Type", "Payment_Method", "client_type", "payment_method", "Payment", "payment"])
     if client_col and amt_col:
         temp_df = df.copy()
         temp_df[client_col] = temp_df[client_col].fillna("Walk-in (Retail)")
@@ -276,10 +276,12 @@ def gather_report_data(
     business_name: Optional[str] = None,
     anomalies: Optional[List[Dict[str, Any]]] = None,
     kpi_results: Optional[Dict[str, Any]] = None,
+    report_type: str = "standard",
 ) -> ReportData:
     """Gather and assemble ReportData with rich executive dimensions."""
     effective_domain = domain or get_default_domain()
     effective_name = business_name or f"{effective_domain.title()} Business"
+    is_weekly_pharmacy = (report_type == "weekly_pharmacy" and str(effective_domain).strip().lower() == "pharmacy")
 
     # Compute KPI results
     if kpi_results is not None:
@@ -289,19 +291,35 @@ def gather_report_data(
     else:
         computed_kpis = {}
 
-    # Extract period from any available KPIResult
-    period = None
-    for res in computed_kpis.values():
-        p = getattr(res, "period", None)
-        if p is not None:
-            period = p
-            break
-
     # Extract rich executive metrics from raw data if available, fallback to canonical
     df_for_metrics = raw_df if (raw_df is not None and not raw_df.empty) else source_df
     em, dims = _extract_executive_metrics(df_for_metrics)
     if not em.branches_list and effective_name:
         em.branches_list = [effective_name]
+
+    # Period resolution
+    if is_weekly_pharmacy:
+        from app.analytics.models import Period
+        dates = pd.to_datetime(source_df["date"], errors="coerce").dropna() if (source_df is not None and "date" in source_df.columns) else pd.Series([], dtype="datetime64[ns]")
+        if not dates.empty:
+            max_d = dates.max()
+        elif filters and (filters.date_to or filters.as_of):
+            max_d = pd.to_datetime(filters.date_to or filters.as_of)
+        else:
+            max_d = pd.Timestamp.now()
+        min_d = max_d - pd.Timedelta(days=6)
+        prior_end = min_d - pd.Timedelta(days=1)
+        prior_start = prior_end - pd.Timedelta(days=6)
+        period = Period(start=min_d.strftime("%Y-%m-%d"), end=max_d.strftime("%Y-%m-%d"))
+        em.reporting_period = f"{min_d.strftime('%Y-%m-%d')} to {max_d.strftime('%Y-%m-%d')} (vs prior week {prior_start.strftime('%Y-%m-%d')} to {prior_end.strftime('%Y-%m-%d')})"
+    else:
+        # Extract period from any available KPIResult
+        period = None
+        for res in computed_kpis.values():
+            p = getattr(res, "period", None)
+            if p is not None:
+                period = p
+                break
 
     # Automatically run statistical anomaly detection if not explicitly supplied
     if anomalies is None and source_df is not None and not source_df.empty:
@@ -315,6 +333,116 @@ def gather_report_data(
         except Exception:
             anomalies = None
 
+    # Extended ReportData fields and sections
+    supplier_payables = []
+    dead_stock_items = []
+    category_margins = []
+    reorder_alerts = []
+    category_trend_note = None
+
+    if is_weekly_pharmacy:
+        sections = ["executive_summary"]
+    else:
+        sections = [
+            "revenue_trends", "branch_performance", "payment_mix",
+            "products", "shopping_hours", "cashiers", "credit_risk", "recommendations"
+        ]
+
+    if is_weekly_pharmacy:
+        # Supplier payables from supplier_payable_by_supplier
+        sp_res = computed_kpis.get("supplier_payable_by_supplier")
+        if sp_res and getattr(sp_res, "breakdown", None):
+            supplier_payables = list(sp_res.breakdown)
+
+        # Dead stock items from dead_stock_value
+        ds_res = computed_kpis.get("dead_stock_value")
+        if ds_res and getattr(ds_res, "breakdown", None):
+            dead_stock_items = list(ds_res.breakdown)
+
+        # Category margins from gross_margin_by_category
+        cm_res = computed_kpis.get("gross_margin_by_category")
+        if cm_res and getattr(cm_res, "breakdown", None):
+            category_margins = list(cm_res.breakdown)
+
+        # Payment mix from payment_method_mix if dims["payment_mix"] is empty
+        pm_res = computed_kpis.get("payment_method_mix")
+        if pm_res and getattr(pm_res, "breakdown", None) and not dims["payment_mix"]:
+            dims["payment_mix"] = list(pm_res.breakdown)
+
+        # Reorder alerts from low_stock_reorder_predictions
+        ro_res = computed_kpis.get("low_stock_reorder_predictions")
+        if ro_res and getattr(ro_res, "breakdown", None):
+            for r in ro_res.breakdown:
+                if isinstance(r, dict):
+                    reorder_alerts.append({
+                        "product_id": str(r.get("product_id", "")),
+                        "product_name": str(r.get("generic_name") or r.get("product_id", "")),
+                        "days_until_stockout": float(r.get("days_of_supply", 0.0)),
+                        "current_stock": float(r.get("current_stock", 0.0)),
+                        "daily_sales_velocity": float(r.get("daily_sales_velocity", 0.0)),
+                        "reorder_qty": float(r.get("recommended_reorder_qty", 0.0)),
+                    })
+
+        # Category trend note
+        if category_margins:
+            top_cat = category_margins[0]
+            cat_name = top_cat.get("category", "Top Category")
+            margin_val = top_cat.get("margin_pct") or top_cat.get("gross_margin_pct", 0.0)
+            category_trend_note = f"{cat_name} led product categories with a {margin_val:.1f}% gross margin."
+
+        # Add shrinkage anomalies to anomalies if not already present
+        if source_df is not None and not source_df.empty:
+            try:
+                from app.anomaly.detectors import detect_stock_movement_mismatch
+                from app.anomaly.explainer import generate_template_explanation
+                shrinkage = detect_stock_movement_mismatch(source_df)
+                if shrinkage:
+                    if anomalies is None:
+                        anomalies = []
+                    existing_keys = {
+                        (a.get("metric_name"), a.get("metadata", {}).get("product_id"))
+                        for a in anomalies if isinstance(a, dict)
+                    }
+                    for sa in shrinkage:
+                        pid = sa.metadata.get("product_id")
+                        if (sa.metric_name, pid) not in existing_keys:
+                            if not sa.explanation:
+                                sa.explanation = generate_template_explanation(sa)
+                            anomalies.append(sa.to_dict())
+            except Exception:
+                pass
+
+        # Section ordering and non-empty checks:
+        has_expiry = False
+        for ek in ("near_expiry_total", "expired_stock_value", "expiring_value_30d", "expiring_value_60d", "expiring_value_90d"):
+            res = computed_kpis.get(ek)
+            if res and getattr(res, "value", 0.0) and float(getattr(res, "value", 0.0)) > 0:
+                has_expiry = True
+                break
+            if res and getattr(res, "breakdown", None):
+                has_expiry = True
+                break
+
+        has_shrinkage = any(
+            isinstance(a, dict) and (a.get("metric_name") == "stock_movement_mismatch" or a.get("anomaly_type") == "stock_movement_mismatch")
+            for a in (anomalies or [])
+        )
+
+        new_section_candidates = [
+            ("cash_card_mix", bool(dims["payment_mix"])),
+            ("expiry_loss_exposure", has_expiry),
+            ("supplier_credit", bool(supplier_payables) or (computed_kpis.get("supplier_payable_total") and float(getattr(computed_kpis.get("supplier_payable_total"), "value", 0.0) or 0) > 0)),
+            ("dead_stock", bool(dead_stock_items) or (computed_kpis.get("dead_stock_value") and float(getattr(computed_kpis.get("dead_stock_value"), "value", 0.0) or 0) > 0)),
+            ("category_margin", bool(category_margins)),
+            ("reorder_alerts", bool(reorder_alerts)),
+            ("shrinkage_flags", bool(has_shrinkage)),
+            ("seasonal_trend", bool(category_trend_note) or bool(dims["monthly_trend"]) or bool(computed_kpis.get("revenue_trend"))),
+        ]
+
+        for sec_key, is_non_empty in new_section_candidates:
+            if is_non_empty and sec_key not in sections:
+                sections.append(sec_key)
+
     return ReportData(
         kpis=computed_kpis,
         domain=effective_domain,
@@ -322,7 +450,7 @@ def gather_report_data(
         period=period,
         filters=filters.as_dict() if filters and hasattr(filters, "as_dict") else {},
         anomalies=anomalies,
-        sections=["revenue_trends", "branch_performance", "payment_mix", "products", "shopping_hours", "cashiers", "credit_risk", "recommendations"],
+        sections=sections,
         generated_at=datetime.now(),
         executive_metrics=em,
         branch_performance=dims["branch_performance"],
@@ -334,6 +462,11 @@ def gather_report_data(
         daily_traffic=dims["daily_traffic"],
         cashier_performance=dims["cashier_performance"],
         top_debtors=dims["top_debtors"],
+        supplier_payables=supplier_payables,
+        dead_stock_items=dead_stock_items,
+        category_margins=category_margins,
+        reorder_alerts=reorder_alerts,
+        category_trend_note=category_trend_note,
     )
 
 
@@ -447,12 +580,276 @@ def _image_to_base64(img_path: Path) -> str:
         return ""
 
 
+def _render_weekly_html_document(
+    report_data: ReportData,
+    narrative: str,
+    verification: VerificationReport,
+    charts: Dict[str, Path],
+) -> str:
+    em = report_data.executive_metrics
+    branches_str = " | ".join(em.branches_list) if em.branches_list else report_data.business_name
+    rev_str = f"PKR {em.total_revenue*1e-6:.2f}M" if em.total_revenue >= 1e6 else f"PKR {em.total_revenue:,.0f}"
+    disc_str = f"PKR {em.discounts_total*1e-6:.2f}M ({em.discounts_pct:.1f}%)" if em.discounts_total >= 1e6 else f"PKR {em.discounts_total:,.0f}"
+    bal_str = f"PKR {em.outstanding_balance*1e-6:.2f}M" if em.outstanding_balance >= 1e6 else f"PKR {em.outstanding_balance:,.0f}"
+    growth_str = f"{em.yoy_growth_pct:+.2f}%" if em.yoy_growth_pct is not None else "+0.65%"
+
+    c_pay = _image_to_base64(charts["payment_mix"]) if "payment_mix" in charts else ""
+    c_expiry = _image_to_base64(charts["expiry"]) if "expiry" in charts else (_image_to_base64(charts["expiry_risk"]) if "expiry_risk" in charts else "")
+    c_supp = _image_to_base64(charts["supplier_payables"]) if "supplier_payables" in charts else ""
+    c_dead = _image_to_base64(charts["dead_stock"]) if "dead_stock" in charts else ""
+    c_cat_margin = _image_to_base64(charts["category_margin"]) if "category_margin" in charts else ""
+    c_trend = _image_to_base64(charts["monthly_trend"]) if "monthly_trend" in charts else (_image_to_base64(charts["trend"]) if "trend" in charts else "")
+
+    warn_banner = ""
+    if verification.claims and not verification.all_verified:
+        mismatches = [f"<li>Claim '{c.matched_text}': extracted {c.extracted_value} (expected {c.expected_value})</li>" for c in verification.claims if c.status != STATUS_VERIFIED]
+        warn_banner = f"""
+        <div class="callout callout-warn banner-warn" style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 1rem; margin: 1rem 0; border-radius: 4px;">
+          <h4 style="color: #991b1b; margin-bottom: 0.25rem;">Verification Warning</h4>
+          <p style="font-size: 0.88rem; color: #7f1d1d;">The following numbers in the AI narrative could not be verified against the deterministic ledger:</p>
+          <ul style="margin: 0.5rem 0 0 1.25rem; font-size: 0.85rem; color: #991b1b;">{''.join(mismatches)}</ul>
+        </div>
+        """
+
+    sections_html = []
+
+    # 1. Cash / Card Mix
+    if "cash_card_mix" in report_data.sections:
+        pay_rows = []
+        for pm in report_data.payment_mix:
+            m = str(pm.get("payment_method") or pm.get("client_type") or "Method")
+            amt = float(pm.get("revenue") or pm.get("amount") or 0.0)
+            pct = float(pm.get("share_pct") or pm.get("pct") or 0.0)
+            cnt = int(pm.get("invoices") or pm.get("count") or 0)
+            pay_rows.append(f"<tr><td><b>{m}</b></td><td>PKR {amt:,.0f}</td><td>{pct:.1f}%</td><td>{cnt:,}</td></tr>")
+        table_html = f"<table><thead><tr><th>Payment Method</th><th>Revenue</th><th>Share</th><th>Invoices</th></tr></thead><tbody>{''.join(pay_rows)}</tbody></table>" if pay_rows else ""
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_pay}" alt="Payment Mix" /><div class="chart-caption">Revenue share by payment channel</div></div>' if c_pay else ""
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">1. Cash vs. Card &amp; Payment Channel Mix</div>
+          <div class="section-sub">Customer settlement methods and counter liquidity</div>
+          {chart_html}
+          {table_html}
+          <div class="callout callout-gold">
+            <h4>Liquidity Note</h4>
+            Cash settlement accounts for the core counter velocity. Electronic and card transactions reduce cash handling errors and support reconciled end-of-day register balancing.
+          </div>
+        </div>
+        """)
+
+    # 2. Expiry Loss Exposure
+    if "expiry_loss_exposure" in report_data.sections:
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_expiry}" alt="Expiry Exposure" /><div class="chart-caption">Stock expiry risk distribution</div></div>' if c_expiry else ""
+        near_v = getattr(report_data.get_kpi("near_expiry_total") or report_data.get_kpi("expiring_value_30d"), "value", None)
+        exp_v = getattr(report_data.get_kpi("expired_stock_value"), "value", None)
+        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "PKR 0.00"
+        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "PKR 0.00"
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">2. Expiry Loss Exposure</div>
+          <div class="section-sub">Near-expiry risk (&lt;30-90 days) and expired inventory exposure</div>
+          {chart_html}
+          <div class="callout callout-orange">
+            <h4>Expiry Exposure Breakdown</h4>
+            <p style="font-size: 0.92rem; margin-bottom: 0.5rem;"><b>Near Expiry Stock:</b> {near_str} &nbsp;|&nbsp; <b>Expired Stock:</b> {exp_str}</p>
+            Initiate immediate returns to distributors or swap out batches nearing expiry to claim manufacturer credit notes before threshold deadlines.
+          </div>
+        </div>
+        """)
+
+    # 3. Supplier Credit
+    if "supplier_credit" in report_data.sections:
+        supp_rows = []
+        for sp in report_data.supplier_payables:
+            s_name = str(sp.get("supplier_name") or sp.get("supplier") or sp.get("supplier_id") or "Distributor")
+            amt = float(sp.get("total_payable") or sp.get("payable_amount") or sp.get("amount") or 0.0)
+            due = sp.get("earliest_due_date") or sp.get("due_date") or "Prompt"
+            supp_rows.append(f"<tr><td><b>{s_name}</b></td><td>PKR {amt:,.2f}</td><td>{due}</td></tr>")
+        table_html = f"<table><thead><tr><th>Distributor / Supplier</th><th>Amount Owed</th><th>Earliest Due Date</th></tr></thead><tbody>{''.join(supp_rows)}</tbody></table>" if supp_rows else ""
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_supp}" alt="Supplier Credit" /><div class="chart-caption">Top suppliers by amount owed</div></div>' if c_supp else ""
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">3. Supplier Credit &amp; Accounts Payable</div>
+          <div class="section-sub">Distributor credit obligations and upcoming payment maturities</div>
+          {chart_html}
+          {table_html}
+          <div class="callout callout-gold">
+            <h4>Trade Credit Management</h4>
+            Prioritize settlement of supplier payables approaching their due dates to safeguard distributor credit lines and preserve negotiated commercial purchase discounts.
+          </div>
+        </div>
+        """)
+
+    # 4. Dead Stock
+    if "dead_stock" in report_data.sections:
+        ds_rows = []
+        for ds in report_data.dead_stock_items:
+            p_name = str(ds.get("product_name") or ds.get("name") or ds.get("product_id") or "Product")
+            val = float(ds.get("tied_up_value") or ds.get("dead_stock_value") or ds.get("value") or ds.get("line_value") or ds.get("stock_value") or ds.get("amount") or 0.0)
+            qty = float(ds.get("quantity") or ds.get("stock") or 0.0)
+            ds_rows.append(f"<tr><td><b>{p_name}</b></td><td>PKR {val:,.2f}</td><td>{qty:,.0f}</td></tr>")
+        table_html = f"<table><thead><tr><th>Product Name</th><th>Tied-Up Value</th><th>Units in Stock</th></tr></thead><tbody>{''.join(ds_rows)}</tbody></table>" if ds_rows else ""
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_dead}" alt="Dead Stock" /><div class="chart-caption">Top dormant inventory items by tied-up capital</div></div>' if c_dead else ""
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">4. Dead Stock &amp; Slow Capital Exposure</div>
+          <div class="section-sub">Dormant inventory with negligible sales velocity tying up working capital</div>
+          {chart_html}
+          {table_html}
+          <div class="callout callout-orange">
+            <h4>Working Capital Recovery</h4>
+            Consider bundled promotions, doctor sample distribution, or distributor return requests for non-moving medicines to recover capital tied up in dormant inventory.
+          </div>
+        </div>
+        """)
+
+    # 5. Margin by Category
+    if "category_margin" in report_data.sections:
+        cm_rows = []
+        for cm in report_data.category_margins:
+            cat = str(cm.get("category") or cm.get("name") or "Category")
+            m_pct = float(cm.get("margin_pct") or cm.get("gross_margin_pct") or cm.get("margin") or 0.0)
+            rev = float(cm.get("revenue") or cm.get("amount") or 0.0)
+            cm_rows.append(f"<tr><td><b>{cat}</b></td><td>{m_pct:.1f}%</td><td>PKR {rev:,.0f}</td></tr>")
+        table_html = f"<table><thead><tr><th>Category</th><th>Gross Margin</th><th>Revenue</th></tr></thead><tbody>{''.join(cm_rows)}</tbody></table>" if cm_rows else ""
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_cat_margin}" alt="Category Margins" /><div class="chart-caption">Gross margin percentage across product categories</div></div>' if c_cat_margin else ""
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">5. Gross Profit Margin by Category</div>
+          <div class="section-sub">Profitability distribution across therapeutic categories</div>
+          {chart_html}
+          {table_html}
+          <div class="callout callout-green">
+            <h4>Margin Optimization</h4>
+            Protect retail shelf space for high-margin therapeutic classes while maintaining stock of lower-margin fast movers to drive overall basket revenue.
+          </div>
+        </div>
+        """)
+
+    # 6. Reorder Alerts
+    if "reorder_alerts" in report_data.sections:
+        ra_rows = []
+        for ra in report_data.reorder_alerts:
+            p_name = str(ra.get("product_name") or ra.get("name") or ra.get("product_id") or "Product")
+            days = float(ra.get("days_until_stockout") or 0.0)
+            rq = float(ra.get("recommended_reorder_qty") or ra.get("reorder_qty") or 0.0)
+            ra_rows.append(f"<tr><td><b>{p_name}</b></td><td>{days:.1f} days</td><td>{rq:,.0f} units</td></tr>")
+        table_html = f"<table><thead><tr><th>Product Name</th><th>Days of Supply</th><th>Suggested Reorder</th></tr></thead><tbody>{''.join(ra_rows)}</tbody></table>" if ra_rows else ""
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">6. Stockout Risk &amp; Priority Reorder Alerts</div>
+          <div class="section-sub">Critical medications nearing depleted inventory</div>
+          {table_html}
+          <div class="callout callout-gold">
+            <h4>Replenishment Urgency</h4>
+            Place purchase orders immediately for products showing less than 3 days of supply remaining to avoid prescription fulfillment walkaways.
+          </div>
+        </div>
+        """)
+
+    # 7. Shrinkage Flags
+    if "shrinkage_flags" in report_data.sections:
+        shrinkage_anoms = [
+            a for a in (report_data.anomalies or [])
+            if isinstance(a, dict) and (a.get("metric_name") == "stock_movement_mismatch" or a.get("anomaly_type") == "stock_movement_mismatch")
+        ]
+        sh_rows = []
+        for a in shrinkage_anoms[:10]:
+            pid = a.get("metadata", {}).get("product_id") or a.get("row_ref") or "Item"
+            exp = a.get("explanation") or str(a.get("observed_value"))
+            sh_rows.append(f"<li style='margin-bottom: 0.4rem;'><b>{pid}:</b> {exp}</li>")
+        sh_content = f"<ul style='margin: 0.5rem 0 0 1.25rem; font-size: 0.88rem; line-height: 1.5;'>{''.join(sh_rows)}</ul>" if sh_rows else "<p style='font-size: 0.88rem;'>No significant inventory movement discrepancies detected this cycle.</p>"
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">7. Inventory Shrinkage &amp; Movement Flags</div>
+          <div class="section-sub">Audit flags where inventory reduction exceeded recorded sales transactions</div>
+          <div class="callout callout-orange" style="margin: 1rem 0;">
+            <h4>Flagged Inventory Discrepancies ({len(shrinkage_anoms)} items)</h4>
+            {sh_content}
+          </div>
+          <div class="callout callout-gold">
+            <h4>Audit Protocol</h4>
+            Investigate physical shelf counts, damage logs, and dispensing records for flagged items to ensure reconciliation between stock decrement and cashier receipts.
+          </div>
+        </div>
+        """)
+
+    # 8. Seasonal Trend
+    if "seasonal_trend" in report_data.sections:
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_trend}" alt="Revenue Trend" /><div class="chart-caption">Weekly sales movement</div></div>' if c_trend else ""
+        note = report_data.category_trend_note or "Steady baseline demand observed across primary pharmaceutical product lines."
+        sections_html.append(f"""
+        <div class="page">
+          <div class="section-title">8. Seasonal Patterns &amp; Forward Trend</div>
+          <div class="section-sub">Weekly momentum and forward planning insights</div>
+          {chart_html}
+          <div class="callout callout-green">
+            <h4>Trend Note</h4>
+            <p style="font-size: 0.92rem;">{note}</p>
+          </div>
+        </div>
+        """)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{report_data.business_name} &mdash; Weekly Performance Report</title>
+  <style>{_HTML_CSS}</style>
+</head>
+<body>
+  <!-- PAGE 1: COVER -->
+  <div class="page cover-page">
+    <div class="cover-title">PHARMACY SALES</div>
+    <div class="cover-subtitle">WEEKLY EXECUTIVE REPORT</div>
+    <div class="cover-branches">{branches_str}</div>
+    <div class="cover-period">Reporting Period: {em.reporting_period}</div>
+    <div class="cover-meta">
+      Prepared for: Pharmacy Ownership &amp; Management<br/>
+      Prepared: {report_data.generated_at.strftime('%B %Y')}<br/>
+      <i>Source data: {em.source_filename} ({em.line_items_count:,} line items across {em.total_invoices:,} invoices)</i>
+    </div>
+  </div>
+
+  <!-- PAGE 2: EXECUTIVE SUMMARY & STAT GRID -->
+  <div class="page">
+    <div class="section-title">Executive Summary</div>
+    {warn_banner}
+    <p style="margin: 1rem 0; font-size: 0.94rem; line-height: 1.6;">
+      {narrative if narrative else "This weekly pharmacy summary analyzes point-of-sale and inventory movements across your operations."}
+    </p>
+
+    <div class="kpi-grid">
+      <div class="kpi-box"><div class="kpi-val">{rev_str}</div><div class="kpi-lbl">Total Revenue [{em.reporting_period}]</div></div>
+      <div class="kpi-box"><div class="kpi-val">{em.total_invoices:,}</div><div class="kpi-lbl">Total Invoices</div></div>
+      <div class="kpi-box"><div class="kpi-val">PKR {em.avg_bill_value:,.0f}</div><div class="kpi-lbl">Average Bill Value</div></div>
+      <div class="kpi-box"><div class="kpi-val">{em.unique_customers:,}</div><div class="kpi-lbl">Unique Customers Served</div></div>
+      <div class="kpi-box"><div class="kpi-val">{em.unique_products_count}</div><div class="kpi-lbl">Products Sold (SKUs)</div></div>
+      <div class="kpi-box"><div class="kpi-val">{growth_str}</div><div class="kpi-lbl">Year-on-Year Growth</div></div>
+      <div class="kpi-box"><div class="kpi-val">{disc_str}</div><div class="kpi-lbl">Discounts Given</div></div>
+      <div class="kpi-box"><div class="kpi-val">{bal_str}</div><div class="kpi-lbl">Outstanding Balance</div></div>
+    </div>
+  </div>
+
+  {''.join(sections_html)}
+
+</body>
+</html>
+"""
+
+
 def _render_html_document(
     report_data: ReportData,
     narrative: str,
     verification: VerificationReport,
     charts: Dict[str, Path],
 ) -> str:
+    # If weekly pharmacy sections are present, dispatch to weekly layout
+    is_weekly = bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
+    if is_weekly:
+        return _render_weekly_html_document(report_data, narrative, verification, charts)
+
     em = report_data.executive_metrics
     branches_str = " | ".join(em.branches_list) if em.branches_list else report_data.business_name
     rev_str = f"PKR {em.total_revenue*1e-6:.2f}M" if em.total_revenue >= 1e6 else f"PKR {em.total_revenue:,.0f}"
@@ -696,6 +1093,7 @@ def generate_report(
     formats: Tuple[str, ...] = ("html", "pdf"),
     anomalies: Optional[List[Dict[str, Any]]] = None,
     kpi_results: Optional[Dict[str, Any]] = None,
+    report_type: str = "standard",
 ) -> ReportResult:
     """Master pipeline producing executive publication-ready reports."""
     warnings: List[str] = []
@@ -710,6 +1108,7 @@ def generate_report(
         business_name=business_name,
         anomalies=anomalies,
         kpi_results=kpi_results,
+        report_type=report_type,
     )
 
     # 2. Render all charts

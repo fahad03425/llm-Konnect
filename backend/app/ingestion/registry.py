@@ -3,7 +3,7 @@ import os
 import sqlite3
 import hashlib
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -44,7 +44,8 @@ class DBConnectionRecord(BaseModel):
 _hash_cache: Dict[str, tuple] = {}
 
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CUR_DIR = os.path.abspath(__file__)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_CUR_DIR))))
 
 class FileRegistry:
     def __init__(self, db_path: Optional[str] = None):
@@ -57,8 +58,13 @@ class FileRegistry:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=30000;")
+        except Exception:
+            pass
         return conn
 
     def _init_db(self):
@@ -132,11 +138,17 @@ class FileRegistry:
 
     @staticmethod
     def normalize_path(file_path: str) -> str:
+        if not file_path:
+            return ""
         if not os.path.isabs(file_path):
             # Check if relative to project root or current dir
             proj_cand = os.path.join(PROJECT_ROOT, file_path)
-            if os.path.exists(proj_cand) or file_path.startswith("data"):
+            clean_rel = file_path.replace("\\", "/")
+            if os.path.exists(proj_cand):
                 file_path = proj_cand
+            elif clean_rel.startswith("data/") or clean_rel.startswith("../data/"):
+                sub_path = clean_rel.split("data/", 1)[1]
+                file_path = os.path.join(PROJECT_ROOT, "data", sub_path)
         return os.path.abspath(file_path).replace("\\", "/")
 
     def calculate_hash(self, file_path: str) -> str:
@@ -193,6 +205,60 @@ class FileRegistry:
             return h
         except Exception:
             return ""
+
+    def find_duplicate(self, filename: str, contents: bytes) -> Optional[Tuple[str, str]]:
+        """
+        Check if a file with the same filename or identical content hash already exists.
+        Returns (reason, existing_filename) where reason is 'filename' or 'content',
+        or None if no duplicate exists.
+        """
+        safe_fname = os.path.basename(filename).strip()
+        norm_fname = safe_fname.lower()
+        upload_hash = hashlib.sha256(contents).hexdigest()
+        content_len = len(contents)
+
+        # 1. Check physical disk files in uploads and samples directories
+        upload_dir = os.path.join(PROJECT_ROOT, "data", "uploads")
+        samples_dir = os.path.join(PROJECT_ROOT, "data", "samples")
+
+        for d in (upload_dir, samples_dir):
+            if not os.path.exists(d):
+                continue
+            for f in os.listdir(d):
+                if f.startswith("."):
+                    continue
+                fpath = os.path.join(d, f)
+                if not os.path.isfile(fpath):
+                    continue
+
+                # Check for duplicate filename (case-insensitive)
+                if f.lower() == norm_fname:
+                    return ("filename", f)
+
+                # Check for duplicate content (handles plain and encrypted files)
+                try:
+                    existing_hash = self.calculate_hash(fpath)
+                    if existing_hash and existing_hash == upload_hash:
+                        return ("content", f)
+                except Exception:
+                    pass
+
+        # 2. Check registered active/completed records in SQLite
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """SELECT filename, file_path, file_hash, status 
+                   FROM file_registry 
+                   WHERE status != 'failed'"""
+            )
+            for row in cursor.fetchall():
+                reg_fname = row["filename"] or ""
+                reg_hash = row["file_hash"] or ""
+                if reg_fname.lower() == norm_fname:
+                    return ("filename", reg_fname)
+                if reg_hash and reg_hash == upload_hash:
+                    return ("content", reg_fname)
+
+        return None
 
     def get_file_by_hash(self, file_hash: str, active_only: bool = False) -> Optional[FileRecord]:
         if not file_hash:
@@ -392,8 +458,19 @@ class FileRegistry:
             conn.commit()
 
     def delete_file(self, file_id: str) -> bool:
+        norm_path = self.normalize_path(file_id) if file_id else ""
+        raw_norm = file_id.replace("\\", "/") if file_id else ""
+        fname = os.path.basename(file_id) if file_id else ""
         with self._get_connection() as conn:
-            cursor = conn.execute("DELETE FROM file_registry WHERE file_id = ? OR file_path = ?", (file_id, file_id))
+            cursor = conn.execute(
+                """DELETE FROM file_registry 
+                   WHERE file_id = ? 
+                      OR file_path = ? 
+                      OR LOWER(file_path) = LOWER(?) 
+                      OR LOWER(file_path) = LOWER(?)
+                      OR (file_path != '' AND LOWER(filename) = LOWER(?))""",
+                (file_id, file_id, norm_path, raw_norm, fname)
+            )
             conn.commit()
             return cursor.rowcount > 0
 

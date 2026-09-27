@@ -23,6 +23,8 @@ export interface ScopeFile {
     source_type?: string;
     group_name?: string;
     table_name?: string;
+    file_path?: string;
+    domain?: string;
 }
 
 interface ComposerProps {
@@ -34,6 +36,7 @@ interface ComposerProps {
     availableFiles?: ScopeFile[];
     selectedFileIds?: string[];
     onSelectFiles?: (fileIds: string[]) => void;
+    inputRef?: React.RefObject<HTMLInputElement | null> | React.Ref<HTMLInputElement>;
 }
 
 export const Composer = ({
@@ -44,7 +47,8 @@ export const Composer = ({
     handleKeyDown,
     availableFiles = [],
     selectedFileIds = [],
-    onSelectFiles
+    onSelectFiles,
+    inputRef
 }: ComposerProps) => {
     const [isOpen, setIsOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -630,6 +634,7 @@ export const Composer = ({
 
             <div className="input-box">
                 <input
+                    ref={inputRef}
                     type="text"
                     className="chat-input"
                     value={input}

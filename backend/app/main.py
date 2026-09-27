@@ -27,6 +27,13 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_prewarm, daemon=True).start()
 
+    # Clean up any stale processing tasks left behind by previous crashes or server reloads
+    try:
+        from app.ingestion.registry import file_registry
+        file_registry.cleanup_stale_processing()
+    except Exception as e:
+        print(f"[Startup] Cleanup stale processing notice: {e}")
+
     # Start real-time sync worker
     from app.ingestion.sync_worker import sync_worker
     sync_worker.start()

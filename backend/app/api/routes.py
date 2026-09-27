@@ -26,11 +26,33 @@ async def upload_file(file: UploadFile = File(...)):
     os.makedirs(upload_dir, exist_ok=True)
     
     # Secure the filename or just use it directly for testing
-    safe_filename = file.filename.replace("/", "").replace("\\", "")
+    safe_filename = file.filename.replace("/", "").replace("\\", "").strip()
+    if not safe_filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # Reject duplicate uploads (by filename or identical content)
+    dup = file_registry.find_duplicate(safe_filename, contents)
+    if dup:
+        dup_type, existing_name = dup
+        if dup_type == "content":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file: An identical file already exists as '{existing_name}'."
+            )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file: A file named '{existing_name}' already exists. Please delete it first or rename your file."
+            )
+
     file_path = os.path.join(upload_dir, safe_filename)
     
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(contents)
         
     # Return with normalized slashes so it can be easily copied to other endpoints
     normalized_path = file_path.replace("\\", "/")
@@ -134,10 +156,18 @@ def preview_source(req: PreviewRequest):
         # Generate mapping proposal
         proposal = suggest_mapping(columns, sample_rows, domain_pack)
         
+        total_rows = 0
+        try:
+            if hasattr(connector, "total_rows"):
+                total_rows = connector.total_rows(**kwargs)
+        except Exception:
+            pass
+
         return {
             "connector_description": connector.describe(),
             "columns": columns,
             "data": sample_rows,
+            "total_rows": total_rows,
             "signature": sig,
             "saved_profile": saved_profile,
             "mapping_proposal": proposal.dict()

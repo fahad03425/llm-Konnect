@@ -20,7 +20,7 @@ import {
     X
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
-import { useConnectSession } from '../context/FileContext';
+import { useConnectSession, markDataChanged } from '../context/FileContext';
 import './UploadedFiles.css';
 
 interface FileItem {
@@ -153,6 +153,16 @@ const UploadedFiles: React.FC = () => {
     const handleFileUpload = async (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
         const file = fileList[0];
+
+        // Fast client-side duplicate filename check
+        const normName = file.name.trim().toLowerCase();
+        const existing = filesData.files.find(f => f.filename.toLowerCase() === normName);
+        if (existing) {
+            showToast(`Duplicate file: "${file.name}" already exists in your files list. Please delete it first or rename the file.`, 'error');
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            return;
+        }
+
         const formData = new FormData();
         formData.append('file', file);
 
@@ -168,6 +178,7 @@ const UploadedFiles: React.FC = () => {
                 throw new Error(errData.detail || 'Upload failed');
             }
             showToast(`Uploaded ${file.name} successfully!`, 'success');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
             showToast(err.message || 'Failed to upload file', 'error');
@@ -301,6 +312,7 @@ const UploadedFiles: React.FC = () => {
             }
 
             showToast(`Successfully un-ingested ${file.filename}`, 'success');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
             showToast(err.message || 'Un-ingest error', 'error');
@@ -333,6 +345,7 @@ const UploadedFiles: React.FC = () => {
             }
 
             showToast(`Deleted ${target.filename} from disk and KB!`, 'success');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
             showToast(err.message || 'Delete error', 'error');
@@ -360,6 +373,7 @@ const UploadedFiles: React.FC = () => {
             }
 
             showToast(`Deleted database ${targetDb} from KnowledgeBase!`, 'success');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
             showToast(err.message || 'Delete error', 'error');
@@ -382,6 +396,7 @@ const UploadedFiles: React.FC = () => {
             }
             const data = await res.json();
             showToast(`Successfully synced ${dbName}! (${data.total_chunks} chunks updated)`, 'success');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
             showToast(err.message || 'Sync error', 'error');
@@ -392,14 +407,26 @@ const UploadedFiles: React.FC = () => {
 
     // Navigate to Chatbot with File Filter
     const handleChatWithFile = (file: FileItem) => {
-        setActivePath(file.file_path);
-        navigate('/chat');
+        navigate('/chat', {
+            state: {
+                fileId: file.file_id,
+                filePath: file.file_path,
+                fileName: file.filename,
+                tableName: file.table_name,
+                groupName: file.group_name,
+                domain: file.domain
+            }
+        });
     };
 
     // Navigate to Chatbot with entire Database Filter
     const handleChatWithDatabase = (dbName: string) => {
-        setActivePath(`db://${dbName}`);
-        navigate('/chat');
+        navigate('/chat', {
+            state: {
+                dbName: dbName,
+                domain: user.domain
+            }
+        });
     };
 
     // Navigate to Connect Source for Custom Schema Mapping

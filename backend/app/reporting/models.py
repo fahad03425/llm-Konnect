@@ -112,6 +112,13 @@ class ReportData:
     cashier_performance: List[Dict[str, Any]] = field(default_factory=list)
     top_debtors: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Extended pharmacy credit, inventory, and margin fields
+    supplier_payables: List[Dict[str, Any]] = field(default_factory=list)
+    dead_stock_items: List[Dict[str, Any]] = field(default_factory=list)
+    category_margins: List[Dict[str, Any]] = field(default_factory=list)
+    reorder_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    category_trend_note: Optional[str] = None
+
     def get_kpi(self, key: str) -> Optional[Any]:
         """Fetch a KPI by key, returning None if missing."""
         return self.kpis.get(key)
@@ -131,6 +138,8 @@ class ReportData:
             "average_transaction_value",
             "near_expiry_total",
             "expired_stock_value",
+            "supplier_payable_total",
+            "dead_stock_value",
         ]
         return {k: self.kpis[k] for k in headline_keys if k in self.kpis}
 
@@ -248,6 +257,46 @@ class ReportData:
         if self.anomalies is not None:
             ground_truth.append(("anomaly_count", float(len(self.anomalies)), UNIT_COUNT))
 
+        # 7. Payment mix numbers
+        for pm in self.payment_mix:
+            m_name = str(pm.get("payment_method") or pm.get("client_type") or pm.get("method") or pm.get("name", "payment"))
+            for col, v in pm.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    unit = UNIT_PERCENT if any(w in col for w in ("pct", "percent", "share")) else (UNIT_COUNT if "count" in col else UNIT_CURRENCY)
+                    ground_truth.append((f"payment_mix:{m_name}:{col}", float(v), unit))
+
+        # 8. Supplier payables numbers
+        for sp in self.supplier_payables:
+            s_name = str(sp.get("supplier_name") or sp.get("supplier") or sp.get("supplier_id", "supplier"))
+            for col, v in sp.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    unit = UNIT_PERCENT if ("pct" in col or "percent" in col) else (UNIT_COUNT if any(w in col for w in ("count", "days", "invoices")) else UNIT_CURRENCY)
+                    ground_truth.append((f"supplier:{s_name}:{col}", float(v), unit))
+
+        # 9. Dead stock items numbers
+        for ds in self.dead_stock_items:
+            p_name = str(ds.get("product_name") or ds.get("name") or ds.get("product_id", "product"))
+            for col, v in ds.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    unit = UNIT_COUNT if any(w in col for w in ("count", "qty", "days", "quantity")) else UNIT_CURRENCY
+                    ground_truth.append((f"dead_stock:{p_name}:{col}", float(v), unit))
+
+        # 10. Category margins numbers
+        for cm in self.category_margins:
+            c_name = str(cm.get("category") or cm.get("name", "category"))
+            for col, v in cm.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    unit = UNIT_PERCENT if any(w in col for w in ("pct", "percent", "margin")) else (UNIT_COUNT if "count" in col else UNIT_CURRENCY)
+                    ground_truth.append((f"category_margin:{c_name}:{col}", float(v), unit))
+
+        # 11. Reorder alerts numbers
+        for ra in self.reorder_alerts:
+            p_name = str(ra.get("product_name") or ra.get("name") or ra.get("product_id", "product"))
+            for col, v in ra.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    unit = UNIT_COUNT if any(w in col for w in ("days", "count", "qty", "stock", "units")) else (UNIT_PERCENT if "pct" in col else UNIT_CURRENCY)
+                    ground_truth.append((f"reorder_alert:{p_name}:{col}", float(v), unit))
+
         return ground_truth
 
     def to_dict(self) -> Dict[str, Any]:
@@ -275,4 +324,10 @@ class ReportData:
             "top_products": self.top_products,
             "cashier_performance": self.cashier_performance,
             "top_debtors": self.top_debtors,
+            "payment_mix": self.payment_mix,
+            "supplier_payables": self.supplier_payables,
+            "dead_stock_items": self.dead_stock_items,
+            "category_margins": self.category_margins,
+            "reorder_alerts": self.reorder_alerts,
+            "category_trend_note": self.category_trend_note,
         }

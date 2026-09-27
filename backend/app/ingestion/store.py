@@ -170,8 +170,9 @@ class KnowledgeBase:
         if cancel_check and cancel_check():
             raise InterruptedError("Ingestion cancelled by user")
 
+        total_records = len(canonical_df)
         if progress_callback:
-            progress_callback(35.0, "Preparing records for vectorization...")
+            progress_callback(15.0, f"Ingesting chunks: 0 / {total_records} (15%)...")
 
         pack = get_domain_pack(domain)
         collection = self._get_chroma()
@@ -182,9 +183,9 @@ class KnowledgeBase:
         records = canonical_df.to_dict(orient="records")
         total_records = len(records)
         
-        # Optimized batch sizes for high-throughput tensor encoding and database writing
+        # Optimized batch sizes for high-throughput tensor encoding and responsive progress updates
         encode_batch_size = 512 if torch.cuda.is_available() else 256
-        upsert_batch_size = 1024
+        upsert_batch_size = 256 if total_records > 500 else max(64, min(128, total_records // 4 or 64))
         total_chunks = 0
         
         # Prepare dates for derived metadata
@@ -205,12 +206,44 @@ class KnowledgeBase:
         def _build_row_meta(i: int, row: dict) -> dict:
             source_row = row.get("source_row", i + 1)
             derived_meta: dict = {}
-            if pd.notna(years[i]):
-                derived_meta["year"] = int(years[i])
-            if pd.notna(months[i]):
-                derived_meta["month"] = int(months[i])
-            if pd.notna(exp_ym[i]):
-                derived_meta["expiry_year_month"] = str(exp_ym[i])
+            if 0 <= i < len(years):
+                try:
+                    val = years.iloc[i] if hasattr(years, "iloc") else years[i]
+                    if pd.notna(val):
+                        derived_meta["year"] = int(val)
+                except Exception:
+                    pass
+            if 0 <= i < len(months):
+                try:
+                    val = months.iloc[i] if hasattr(months, "iloc") else months[i]
+                    if pd.notna(val):
+                        derived_meta["month"] = int(val)
+                except Exception:
+                    pass
+            if 0 <= i < len(exp_ym):
+                try:
+                    val = exp_ym.iloc[i] if hasattr(exp_ym, "iloc") else exp_ym[i]
+                    if pd.notna(val):
+                        derived_meta["expiry_year_month"] = str(val)
+                except Exception:
+                    pass
+            # Fallbacks directly from row if series indexing missed
+            if "year" not in derived_meta and row.get("date"):
+                try:
+                    d_val = pd.to_datetime(row["date"], errors="coerce")
+                    if pd.notna(d_val):
+                        derived_meta["year"] = int(d_val.year)
+                        derived_meta["month"] = int(d_val.month)
+                except Exception:
+                    pass
+            if "expiry_year_month" not in derived_meta and row.get("expiry_date"):
+                try:
+                    e_val = pd.to_datetime(row["expiry_date"], errors="coerce")
+                    if pd.notna(e_val):
+                        derived_meta["expiry_year_month"] = str(e_val.strftime('%Y-%m'))
+                except Exception:
+                    pass
+
             base_meta = {
                 "source_file": source_file,
                 "filename": filename,
@@ -245,9 +278,11 @@ class KnowledgeBase:
                 return
             if cancel_check and cancel_check():
                 raise InterruptedError("Ingestion cancelled by user")
+            flushing_count = len(ids)
+            start_row = max(0, current_idx - flushing_count)
             if progress_callback:
-                pct = min(94.0, 35.0 + (58.0 * (current_idx / max(1, total_records))))
-                progress_callback(pct, f"Vectorizing records: {current_idx}/{total_records} ({pct:.0f}%)...")
+                pct = min(94.0, 35.0 + (58.0 * (start_row / max(1, total_records))))
+                progress_callback(pct, f"Vectorizing chunks: {start_row} / {total_records} ({pct:.0f}%)...")
             embeddings = embedder.encode(
                 texts,
                 batch_size=encode_batch_size,
@@ -259,6 +294,9 @@ class KnowledgeBase:
             docs_to_store = [encrypt_string(t) for t in texts] if getattr(settings, "encryption_enabled", True) else texts
             collection.upsert(ids=ids, embeddings=embeddings, documents=docs_to_store, metadatas=metadatas)
             total_chunks += len(ids)
+            if progress_callback:
+                pct_done = min(94.0, 35.0 + (58.0 * (current_idx / max(1, total_records))))
+                progress_callback(pct_done, f"Ingesting chunks: {current_idx} / {total_records} ({pct_done:.0f}%)...")
             ids.clear(); texts.clear(); metadatas.clear()
 
         if strategy == "merge":
@@ -285,6 +323,7 @@ class KnowledgeBase:
             current_texts: List[str] = []
             current_source_rows: List[int] = []
             current_group_rows: List[dict] = []
+            current_record_indices: List[int] = []
             current_token_count = 0
             current_group_key = object()
             chunk_group_idx = 0
@@ -299,10 +338,11 @@ class KnowledgeBase:
                 else:
                     merged_text = " | ".join(current_texts)
                 
-                first_row_idx = current_source_rows[0]
+                first_record_idx = current_record_indices[0] if current_record_indices else 0
+                first_row_idx = current_source_rows[0] if current_source_rows else (first_record_idx + 1)
                 first_row_dict = current_group_rows[0] if current_group_rows else {}
                 
-                meta = _build_row_meta(first_row_idx - 1, first_row_dict)
+                meta = _build_row_meta(first_record_idx, first_row_dict)
                 meta["merged_rows"] = str(current_source_rows)
                 meta["items_in_chunk"] = len(current_texts)
                 meta["chunk_type"] = "merged"
@@ -315,6 +355,7 @@ class KnowledgeBase:
                 current_texts.clear()
                 current_source_rows.clear()
                 current_group_rows.clear()
+                current_record_indices.clear()
 
             for i, row in enumerate(records):
                 if cancel_check and i % 50 == 0 and cancel_check():
@@ -336,6 +377,7 @@ class KnowledgeBase:
                 current_texts.append(row_text)
                 current_source_rows.append(source_row_val)
                 current_group_rows.append(row)
+                current_record_indices.append(i)
                 current_token_count += row_tokens
 
                 if len(ids) >= upsert_batch_size:

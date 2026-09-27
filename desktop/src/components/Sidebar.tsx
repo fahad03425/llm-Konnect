@@ -5,6 +5,7 @@ import {
     Files,
     MessageSquare,
     FileOutput,
+    CalendarDays,
     Settings,
     Shield,
     Lock
@@ -44,6 +45,10 @@ const Sidebar = () => {
                 <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <FileOutput size={18} />
                     <span>Report Export</span>
+                </NavLink>
+                <NavLink to="/weekly-report" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <CalendarDays size={18} />
+                    <span>Weekly Report</span>
                 </NavLink>
             </nav>
 

@@ -458,7 +458,7 @@ def render_top_debtors_chart(report_data: ReportData, out_path: Path) -> Optiona
 
 def render_expiry_chart(report_data: ReportData, out_path: Path) -> Optional[Path]:
     """Figure 10: Stock Expiry Risk."""
-    near_kpi = report_data.get_kpi("expiring_value_30d")
+    near_kpi = report_data.get_kpi("expiring_value_30d") or report_data.get_kpi("near_expiry_total")
     exp_kpi = report_data.get_kpi("expired_stock_value")
     if not near_kpi and not exp_kpi:
         return None
@@ -488,6 +488,180 @@ def render_expiry_chart(report_data: ReportData, out_path: Path) -> Optional[Pat
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2, h * 1.01, f" {_format_rupee_axis(h)}", ha="center", va="bottom", fontsize=7.8, color="#0f172a")
     plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def render_supplier_payables_chart(report_data: ReportData, out_path: Path) -> Optional[Path]:
+    """Figure 11: Top Suppliers by Amount Owed (Payables)."""
+    payables = report_data.supplier_payables
+    if not payables:
+        sp_kpi = report_data.get_kpi("supplier_payable_by_supplier")
+        if sp_kpi and getattr(sp_kpi, "breakdown", None):
+            payables = list(sp_kpi.breakdown)
+    if not payables:
+        return None
+
+    items = []
+    for sp in payables:
+        s_name = str(sp.get("supplier_name") or sp.get("supplier") or sp.get("supplier_id") or "Supplier")
+        if len(s_name) > 26:
+            s_name = s_name[:23] + "..."
+        amt = float(sp.get("total_payable") or sp.get("payable_amount") or sp.get("amount") or 0.0)
+        due = sp.get("earliest_due_date") or sp.get("due_date")
+        if amt > 0:
+            items.append((s_name, amt, str(due) if due else None))
+
+    if not items:
+        return None
+
+    items.sort(key=lambda x: x[1], reverse=True)
+    top_items = items[:8]
+    top_items.reverse()
+
+    suppliers = [it[0] for it in top_items]
+    amounts = [it[1] for it in top_items]
+
+    fig, ax = plt.subplots(figsize=(6.8, max(2.6, len(suppliers) * 0.38 + 0.8)), dpi=250)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
+
+    bars = ax.barh(suppliers, amounts, color="#0284c7", height=0.55)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(_format_rupee_axis))
+    ax.set_xlabel("Outstanding Balance (PKR)", fontsize=8.2, color="#475569")
+    ax.grid(True, axis="x", linestyle="--", alpha=0.45, color="#e2e8f0")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_title("Supplier Credit & Payables by Distributor", fontsize=10.5, fontweight="bold", color="#0f172a", pad=10)
+
+    for bar, item in zip(bars, top_items):
+        w = bar.get_width()
+        due_lbl = f" (Due {item[2]})" if item[2] else ""
+        ax.text(w * 1.01, bar.get_y() + bar.get_height() / 2, f" {_format_rupee_axis(w)}{due_lbl}", ha="left", va="center", fontsize=7.6, color="#0f172a")
+
+    if amounts:
+        ax.set_xlim(0, max(amounts) * 1.30)
+
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def render_dead_stock_chart(report_data: ReportData, out_path: Path) -> Optional[Path]:
+    """Figure 12: Top Items by Tied-Up Dead Stock Value."""
+    dead_items = report_data.dead_stock_items
+    if not dead_items:
+        ds_kpi = report_data.get_kpi("dead_stock_value")
+        if ds_kpi and getattr(ds_kpi, "breakdown", None):
+            dead_items = list(ds_kpi.breakdown)
+    if not dead_items:
+        return None
+
+    items = []
+    for ds in dead_items:
+        p_name = str(ds.get("product_name") or ds.get("name") or ds.get("product_id") or "Product")
+        if len(p_name) > 26:
+            p_name = p_name[:23] + "..."
+        val = float(ds.get("tied_up_value") or ds.get("dead_stock_value") or ds.get("value") or ds.get("line_value") or ds.get("stock_value") or ds.get("amount") or 0.0)
+        if val > 0:
+            items.append((p_name, val))
+
+    if not items:
+        return None
+
+    items.sort(key=lambda x: x[1], reverse=True)
+    top_items = items[:8]
+    top_items.reverse()
+
+    products = [it[0] for it in top_items]
+    values = [it[1] for it in top_items]
+
+    fig, ax = plt.subplots(figsize=(6.8, max(2.6, len(products) * 0.38 + 0.8)), dpi=250)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
+
+    bars = ax.barh(products, values, color="#e11d48", height=0.55)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(_format_rupee_axis))
+    ax.set_xlabel("Tied-Up Value (PKR)", fontsize=8.2, color="#475569")
+    ax.grid(True, axis="x", linestyle="--", alpha=0.45, color="#e2e8f0")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_title("Dead Stock: Top Dormant Inventory Capital", fontsize=10.5, fontweight="bold", color="#0f172a", pad=10)
+
+    for bar in bars:
+        w = bar.get_width()
+        ax.text(w * 1.01, bar.get_y() + bar.get_height() / 2, f" {_format_rupee_axis(w)}", ha="left", va="center", fontsize=7.6, color="#0f172a")
+
+    if values:
+        ax.set_xlim(0, max(values) * 1.25)
+
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def render_category_margin_chart(report_data: ReportData, out_path: Path) -> Optional[Path]:
+    """Figure 13: Gross Profit Margin by Product Category."""
+    margins = report_data.category_margins
+    if not margins:
+        cm_kpi = report_data.get_kpi("gross_margin_by_category")
+        if cm_kpi and getattr(cm_kpi, "breakdown", None):
+            margins = list(cm_kpi.breakdown)
+    if not margins:
+        return None
+
+    items = []
+    for cm in margins:
+        c_name = str(cm.get("category") or cm.get("name") or "Category")
+        if len(c_name) > 26:
+            c_name = c_name[:23] + "..."
+        m_pct = float(cm.get("margin_pct") or cm.get("gross_margin_pct") or cm.get("margin") or 0.0)
+        items.append((c_name, m_pct))
+
+    if not items:
+        return None
+
+    items.sort(key=lambda x: x[1], reverse=True)
+    top_items = items[:8]
+    top_items.reverse()
+
+    categories = [it[0] for it in top_items]
+    pcts = [it[1] for it in top_items]
+
+    fig, ax = plt.subplots(figsize=(6.8, max(2.6, len(categories) * 0.38 + 0.8)), dpi=250)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
+
+    bars = ax.barh(categories, pcts, color="#059669", height=0.55)
+    ax.set_xlabel("Gross Margin (%)", fontsize=8.2, color="#475569")
+    ax.grid(True, axis="x", linestyle="--", alpha=0.45, color="#e2e8f0")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_title("Gross Margin by Category", fontsize=10.5, fontweight="bold", color="#0f172a", pad=10)
+
+    for bar in bars:
+        w = bar.get_width()
+        ax.text(w + 0.8, bar.get_y() + bar.get_height() / 2, f" {w:.1f}%", ha="left", va="center", fontsize=7.6, color="#0f172a")
+
+    if pcts:
+        ax.set_xlim(0, max(max(pcts) * 1.25, 20.0))
+
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass
     out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=250, bbox_inches="tight")
     plt.close(fig)
@@ -555,5 +729,20 @@ def render_charts(report_data: ReportData, output_dir: Optional[Path] = None) ->
     if render_expiry_chart(report_data, p10):
         charts["expiry"] = p10
         charts["expiry_risk"] = p10
+
+    # 11. Supplier Payables
+    p11 = base_dir / "supplier_payables.png"
+    if render_supplier_payables_chart(report_data, p11):
+        charts["supplier_payables"] = p11
+
+    # 12. Dead Stock
+    p12 = base_dir / "dead_stock.png"
+    if render_dead_stock_chart(report_data, p12):
+        charts["dead_stock"] = p12
+
+    # 13. Category Margin
+    p13 = base_dir / "category_margin.png"
+    if render_category_margin_chart(report_data, p13):
+        charts["category_margin"] = p13
 
     return charts

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Bot, Download, Plus, History, ArrowDown } from 'lucide-react';
 import { MessageBubble } from '../components/chat/MessageBubble';
 import { TypingIndicator } from '../components/chat/TypingIndicator';
@@ -18,8 +19,128 @@ interface Message {
     timestamp?: string;
 }
 
+function findMatchingFileIds(
+    files: ScopeFile[],
+    target: {
+        fileId?: string;
+        filePath?: string;
+        fileName?: string;
+        tableName?: string;
+        groupName?: string;
+        dbName?: string;
+    }
+): string[] {
+    if (!files || files.length === 0) return [];
+
+    // 1. Direct fileId match
+    if (target.fileId) {
+        const found = files.find(f => f.file_id === target.fileId);
+        if (found) return [found.file_id];
+    }
+
+    // 2. Entire Database group match
+    if (target.dbName) {
+        const normDb = target.dbName.trim().toLowerCase();
+        const dbMatches = files.filter(f =>
+            (f.group_name && f.group_name.trim().toLowerCase() === normDb) ||
+            (f.file_path && (
+                f.file_path.toLowerCase().includes(`db://${normDb}`) ||
+                f.file_path.toLowerCase().includes(`sql://${normDb}`)
+            ))
+        );
+        if (dbMatches.length > 0) {
+            return dbMatches.map(f => f.file_id);
+        }
+    }
+
+    // 3. Database table match (groupName + tableName)
+    if (target.groupName && target.tableName) {
+        const normGrp = target.groupName.trim().toLowerCase();
+        const normTbl = target.tableName.trim().toLowerCase();
+        const tableMatch = files.find(f =>
+            f.group_name && f.group_name.trim().toLowerCase() === normGrp &&
+            (
+                (f.table_name && f.table_name.trim().toLowerCase() === normTbl) ||
+                f.filename.trim().toLowerCase() === normTbl
+            )
+        );
+        if (tableMatch) return [tableMatch.file_id];
+    }
+
+    // 4. File Path match
+    if (target.filePath) {
+        const rawFp = target.filePath.trim();
+        // Check if db://
+        if (rawFp.startsWith('db://')) {
+            const dbName = rawFp.replace('db://', '').trim().toLowerCase();
+            const dbMatches = files.filter(f => f.group_name && f.group_name.trim().toLowerCase() === dbName);
+            if (dbMatches.length > 0) return dbMatches.map(f => f.file_id);
+        }
+
+        // Check if sql://
+        if (rawFp.startsWith('sql://')) {
+            const pathParts = rawFp.replace('sql://', '').split('/');
+            const dbPart = pathParts[0]?.toLowerCase();
+            const tblPart = pathParts[1]?.toLowerCase();
+            const sqlMatch = files.find(f => {
+                if (f.file_path && f.file_path.toLowerCase() === rawFp.toLowerCase()) return true;
+                if (dbPart && tblPart) {
+                    return f.group_name?.toLowerCase() === dbPart &&
+                        (f.table_name?.toLowerCase() === tblPart || f.filename.toLowerCase() === tblPart);
+                }
+                return false;
+            });
+            if (sqlMatch) return [sqlMatch.file_id];
+        }
+
+        // Normal file path matching (normalized slashes, case-insensitive)
+        const normTarget = rawFp.replace(/\\/g, '/').toLowerCase();
+        const baseTarget = normTarget.split('/').pop() || '';
+
+        const pathMatch = files.find(f => {
+            if (!f.file_path) return false;
+            const normFp = f.file_path.replace(/\\/g, '/').toLowerCase();
+            return normFp === normTarget || (baseTarget && normFp.endsWith('/' + baseTarget));
+        });
+        if (pathMatch) return [pathMatch.file_id];
+
+        // Also check by filename matching baseTarget
+        if (baseTarget) {
+            const nameFromPathMatch = files.find(f => f.filename.toLowerCase() === baseTarget);
+            if (nameFromPathMatch) return [nameFromPathMatch.file_id];
+        }
+    }
+
+    // 5. File name match
+    if (target.fileName) {
+        const normName = target.fileName.trim().toLowerCase();
+        const nameMatch = files.find(f =>
+            f.filename.trim().toLowerCase() === normName ||
+            (f.table_name && f.table_name.trim().toLowerCase() === normName)
+        );
+        if (nameMatch) return [nameMatch.file_id];
+    }
+
+    // 6. Table name only match
+    if (target.tableName) {
+        const normTbl = target.tableName.trim().toLowerCase();
+        const tblMatch = files.find(f =>
+            (f.table_name && f.table_name.trim().toLowerCase() === normTbl) ||
+            f.filename.trim().toLowerCase() === normTbl
+        );
+        if (tblMatch) return [tblMatch.file_id];
+    }
+
+    return [];
+}
+
 export default function Chatbot() {
-    const { user, activeDomainMeta } = useUser();
+    const { user, activeDomainMeta, setDomain } = useUser();
+    const location = useLocation();
+    const [searchParams] = useSearchParams();
+    const lastAppliedNavKey = useRef<string | null>(null);
+    const composerInputRef = useRef<HTMLInputElement>(null);
+
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -60,13 +181,17 @@ export default function Chatbot() {
                     chunk_count: f.chunk_count,
                     source_type: f.source_type,
                     group_name: f.group_name,
-                    table_name: f.table_name
+                    table_name: f.table_name,
+                    file_path: f.file_path,
+                    domain: f.domain
                 }));
                 setAvailableFiles(files);
+                return files;
             }
         } catch (e) {
             console.error('Could not load sources for chat scoping', e);
         }
+        return [];
     };
 
     const fetchModels = async () => {
@@ -135,14 +260,73 @@ export default function Chatbot() {
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} RAG Chatbot — LLM-KONNECT`;
-        scrollToBottom();
-        fetchSources();
         fetchModels();
-    }, [messages, isLoading, activeDomainMeta.name, user.domain]);
+    }, [activeDomainMeta.name]);
+
+    useEffect(() => {
+        fetchSources();
+    }, [user.domain]);
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages, isLoading]);
 
     useEffect(() => {
         fetchSessions();
     }, [user.domain]);
+
+    // Handle navigation from "Chat" or "Start Chatting" button
+    useEffect(() => {
+        const state = (location.state as any) || {};
+        const urlFileId = searchParams.get('fileId') || searchParams.get('file_id');
+        const urlFilePath = searchParams.get('filePath') || searchParams.get('file_path');
+        const urlFileName = searchParams.get('fileName') || searchParams.get('file_name');
+        const urlDb = searchParams.get('db') || searchParams.get('database');
+        const urlTable = searchParams.get('table') || searchParams.get('table_name');
+        const urlDomain = searchParams.get('domain');
+
+        const navTarget = {
+            fileId: state.fileId || urlFileId,
+            filePath: state.filePath || urlFilePath,
+            fileName: state.fileName || urlFileName,
+            tableName: state.tableName || urlTable,
+            groupName: state.groupName,
+            dbName: state.dbName || urlDb,
+            domain: state.domain || urlDomain
+        };
+
+        const hasTarget = Boolean(
+            navTarget.fileId || navTarget.filePath || navTarget.fileName || 
+            navTarget.tableName || navTarget.dbName
+        );
+
+        if (!hasTarget) return;
+
+        // If domain differs, switch domain so sources can be fetched for that domain
+        if (navTarget.domain && navTarget.domain !== user.domain) {
+            setDomain(navTarget.domain as any);
+        }
+
+        // Only apply if this navigation key hasn't been applied yet
+        if (lastAppliedNavKey.current === location.key) return;
+
+        if (availableFiles.length > 0) {
+            const matched = findMatchingFileIds(availableFiles, navTarget);
+            if (matched.length > 0) {
+                setSelectedFileIds(matched);
+                lastAppliedNavKey.current = location.key;
+                // Start a fresh session for this scoped chat
+                const newId = `sess-${Math.random().toString(36).substring(2, 10)}`;
+                setSessionId(newId);
+                setMessages([]);
+                setInput('');
+                // Focus composer input directly
+                setTimeout(() => {
+                    composerInputRef.current?.focus();
+                }, 100);
+            }
+        }
+    }, [location.key, location.state, searchParams, availableFiles, user.domain, setDomain]);
 
     const handleNewChat = () => {
         const newId = `sess-${Math.random().toString(36).substring(2, 10)}`;
@@ -150,7 +334,9 @@ export default function Chatbot() {
         setMessages([]);
         setInput('');
         setSelectedFileIds([]);
+        lastAppliedNavKey.current = location.key;
         scrollToTop();
+        composerInputRef.current?.focus();
     };
 
     const handleResumeSession = async (resumeId: string) => {
@@ -476,6 +662,7 @@ export default function Chatbot() {
                     availableFiles={availableFiles}
                     selectedFileIds={selectedFileIds}
                     onSelectFiles={setSelectedFileIds}
+                    inputRef={composerInputRef}
                 />
             </div>
 
