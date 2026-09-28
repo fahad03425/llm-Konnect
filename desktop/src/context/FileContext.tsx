@@ -187,7 +187,7 @@ export function FileProvider({ children }: { children: ReactNode }) {
         setFileName('');
         setFilePath('');
         setSourceType(targetType || 'file');
-        setAutoProceed(false);
+        // Keep autoProceed preference intact across file selection/resets
         setSheetName(null);
         setSheets([]);
         setMapping({});

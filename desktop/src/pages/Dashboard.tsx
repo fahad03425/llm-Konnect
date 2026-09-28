@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
     Database, Activity, Minus, ShoppingBag, Briefcase, ArrowRight, Calendar,
-    RefreshCw
+    RefreshCw, ChevronDown, Check, FileSpreadsheet, Table2
 } from 'lucide-react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -143,14 +143,30 @@ export default function Dashboard() {
 
 
     const [errorKpis, setErrorKpis] = useState<string | null>(null);
-    const [dbDatasets, setDbDatasets] = useState<Array<{ name: string; path: string }>>([]);
-    const [fileDatasets, setFileDatasets] = useState<Array<{ name: string; path: string }>>([]);
+    const [dbDatasets, setDbDatasets] = useState<Array<{ name: string; path: string; kind: 'whole_db' | 'table'; dbName?: string }>>([]);
+    const [fileDatasets, setFileDatasets] = useState<Array<{ name: string; path: string; kind: 'file' }>>([]);
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement>(null);
 
     const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hasRetriedRef = useRef(false);
 
     useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsDropdownOpen(false);
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        document.addEventListener('keydown', handleKeyDown);
         return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleKeyDown);
             if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         };
     }, []);
@@ -168,13 +184,17 @@ export default function Dashboard() {
                 // Extract unique database group names for whole-database selection
                 const uniqueDbNames = Array.from(new Set(rawDbFiles.map((f: any) => f.group_name || f.database_name).filter(Boolean))) as string[];
                 const wholeDbEntries = uniqueDbNames.map((dbName: string) => ({
-                    name: `⭐ ${dbName} (Whole Database)`,
-                    path: `db://${dbName}`
+                    name: `${dbName} (Whole Database)`,
+                    path: `db://${dbName}`,
+                    kind: 'whole_db' as const,
+                    dbName
                 }));
 
                 const tableEntries = rawDbFiles.map((f: any) => ({
-                    name: `  ↳ ${f.filename || f.table_name}`,
-                    path: f.file_path
+                    name: f.filename || f.table_name,
+                    path: f.file_path,
+                    kind: 'table' as const,
+                    dbName: f.group_name || f.database_name || ''
                 }));
 
                 const dbList = [...wholeDbEntries, ...tableEntries];
@@ -183,7 +203,8 @@ export default function Dashboard() {
                     .filter((f: any) => f.source_type !== 'database' && f.file_path && !f.file_path.startsWith('sql://') && f.file_size_bytes > 0)
                     .map((f: any) => ({
                         name: f.filename,
-                        path: f.file_path
+                        path: f.file_path,
+                        kind: 'file' as const
                     }));
 
                 setDbDatasets(dbList);
@@ -191,10 +212,28 @@ export default function Dashboard() {
 
                 const allList = [...dbList, ...fileList];
 
-                // Auto-select first valid sales/data file if none active
-                if ((!activePath || activePath.trim() === '') && allList.length > 0) {
+                // Check if user has explicitly chosen a dataset during their session
+                let manualChoice: string | null = null;
+                try {
+                    manualChoice = sessionStorage.getItem('llm_konnect_user_manual_dataset_choice');
+                } catch {}
+
+                const isManualValid = Boolean(manualChoice && allList.some((d: any) => d.path === manualChoice));
+
+                if (isManualValid && manualChoice) {
+                    if (activePath !== manualChoice) {
+                        setActivePath(manualChoice);
+                    }
+                } else if (wholeDbEntries.length > 0) {
+                    // Default to complete database if one is ingested
+                    const isAlreadyWholeDb = wholeDbEntries.some((w: any) => w.path === activePath);
+                    if (!isAlreadyWholeDb) {
+                        setActivePath(wholeDbEntries[0].path);
+                    }
+                } else if ((!activePath || !allList.some((d: any) => d.path === activePath)) && allList.length > 0) {
+                    // Fallback to sales-related file or first available
                     const preferred = allList.find((d: any) => d.name.toLowerCase().includes('sales')) || allList[0];
-                    if (preferred) {
+                    if (preferred && activePath !== preferred.path) {
                         setActivePath(preferred.path);
                     }
                 }
@@ -447,99 +486,134 @@ export default function Dashboard() {
                     )}
                 </div>
 
-                {isUnavailable ? (
+                {isUnavailable && (
                     <div className="kpi-unavailable-text" style={{ fontSize: '0.76rem', color: '#94a3b8' }}>
                         {sourceObj?.reason ? 'Cost column not in table' : 'Data not connected'}
-                    </div>
-                ) : (
-                    <div className="kpi-footer">
-                        {trendRange === 'all'
-                            ? 'All-time · Computed by code'
-                            : `${trendRange === '7d' ? 'Last 7 Days' : trendRange === '28d' ? 'Last 28 Days' : 'Last 6 Months'} · Computed by code`}
                     </div>
                 )}
             </div>
         );
     };
 
-    // Calculate today's date properly
-    const todayStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const allDatasets = [...dbDatasets, ...fileDatasets];
+    const activeItem = allDatasets.find((d) => d.path === activePath);
+    const activeDisplayLabel = activeItem
+        ? activeItem.name
+        : (activePath ? activePath.split('/').pop()?.replace(/^sql:\/\//, '') : 'Select Dataset');
 
     return (
         <div className="dashboard-container">
             {/* Header */}
             <div className="dashboard-header">
                 <div className="dashboard-title">
-                    <h1>{activeDomainMeta.name} Overview</h1>
-                    <p>{user.organization ? `${user.organization} · ` : ''}Executive Analytics Dashboard</p>
+                    <h1>Executive Overview</h1>
+                    <p>{user.organization ? `${user.organization} · ` : ''}Real-time business performance analytics</p>
                 </div>
                 <div className="dashboard-meta" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                     {(dbDatasets.length > 0 || fileDatasets.length > 0) && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(30, 41, 59, 0.7)', border: '1px solid #334155', borderRadius: '8px', padding: '0.35rem 0.65rem' }}>
-                            <Database size={15} style={{ color: '#10b981', flexShrink: 0 }} />
-                            <select
-                                value={activePath || ''}
-                                onChange={(e) => setActivePath(e.target.value)}
-                                style={{
-                                    background: 'transparent',
-                                    color: '#f8fafc',
-                                    border: 'none',
-                                    fontSize: '0.82rem',
-                                    fontWeight: 600,
-                                    outline: 'none',
-                                    cursor: 'pointer',
-                                    maxWidth: '280px'
-                                }}
+                        <div className="google-dataset-select-wrap" ref={dropdownRef}>
+                            <button
+                                type="button"
+                                className={`google-dataset-trigger ${isDropdownOpen ? 'open' : ''}`}
+                                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                                aria-haspopup="listbox"
+                                aria-expanded={isDropdownOpen}
                             >
-                                {dbDatasets.length > 0 && (
-                                    <optgroup label="Connected Databases (SQL)" style={{ background: '#0f172a', color: '#10b981', fontWeight: 700 }}>
-                                        {dbDatasets.map((ds) => (
-                                            <option key={ds.path} value={ds.path} style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 400 }}>
-                                                {ds.name}
-                                            </option>
-                                        ))}
-                                    </optgroup>
+                                {activeItem?.kind === 'file' ? (
+                                    <FileSpreadsheet size={15} className="google-dataset-icon" />
+                                ) : activeItem?.kind === 'table' ? (
+                                    <Table2 size={15} className="google-dataset-icon" />
+                                ) : (
+                                    <Database size={15} className="google-dataset-icon" />
                                 )}
-                                {fileDatasets.length > 0 && (
-                                    <optgroup label="Uploaded Files & Spreadsheets" style={{ background: '#0f172a', color: '#38bdf8', fontWeight: 700 }}>
-                                        {fileDatasets.map((ds) => (
-                                            <option key={ds.path} value={ds.path} style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 400 }}>
-                                                {ds.name}
-                                            </option>
-                                        ))}
-                                    </optgroup>
-                                )}
-                            </select>
+                                <span className="google-dataset-label">{activeDisplayLabel}</span>
+                                <ChevronDown size={14} className={`google-dataset-chevron ${isDropdownOpen ? 'rotated' : ''}`} />
+                            </button>
+
+                            {isDropdownOpen && (
+                                <div className="google-dataset-menu" role="listbox">
+                                    {dbDatasets.length > 0 && (
+                                        <>
+                                            <div className="google-dataset-section-header">
+                                                <Database size={12} />
+                                                <span>Connected Databases (SQL)</span>
+                                            </div>
+                                            {dbDatasets.map((ds) => {
+                                                const isSelected = activePath === ds.path;
+                                                const isTable = ds.kind === 'table';
+                                                return (
+                                                    <button
+                                                        key={ds.path}
+                                                        type="button"
+                                                        role="option"
+                                                        aria-selected={isSelected}
+                                                        className={`google-dataset-item ${isTable ? 'is-table' : ''} ${isSelected ? 'active' : ''}`}
+                                                        onClick={() => {
+                                                            try {
+                                                                sessionStorage.setItem('llm_konnect_user_manual_dataset_choice', ds.path);
+                                                            } catch {}
+                                                            setActivePath(ds.path);
+                                                            setIsDropdownOpen(false);
+                                                        }}
+                                                    >
+                                                        {isTable ? (
+                                                            <Table2 size={13} style={{ opacity: 0.65, flexShrink: 0 }} />
+                                                        ) : (
+                                                            <Database size={14} style={{ color: 'var(--brand-green)', flexShrink: 0 }} />
+                                                        )}
+                                                        <span className="google-dataset-item-text">{ds.name}</span>
+                                                        {isSelected && <Check size={14} className="google-dataset-item-check" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </>
+                                    )}
+
+                                    {fileDatasets.length > 0 && (
+                                        <>
+                                            <div className="google-dataset-section-header">
+                                                <FileSpreadsheet size={12} />
+                                                <span>Uploaded Files & Spreadsheets</span>
+                                            </div>
+                                            {fileDatasets.map((ds) => {
+                                                const isSelected = activePath === ds.path;
+                                                return (
+                                                    <button
+                                                        key={ds.path}
+                                                        type="button"
+                                                        role="option"
+                                                        aria-selected={isSelected}
+                                                        className={`google-dataset-item ${isSelected ? 'active' : ''}`}
+                                                        onClick={() => {
+                                                            try {
+                                                                sessionStorage.setItem('llm_konnect_user_manual_dataset_choice', ds.path);
+                                                            } catch {}
+                                                            setActivePath(ds.path);
+                                                            setIsDropdownOpen(false);
+                                                        }}
+                                                    >
+                                                        <FileSpreadsheet size={14} style={{ opacity: 0.75, flexShrink: 0 }} />
+                                                        <span className="google-dataset-item-text">{ds.name}</span>
+                                                        {isSelected && <Check size={14} className="google-dataset-item-check" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     )}
                     <button
                         type="button"
+                        className="google-refresh-btn"
                         onClick={handleManualRefresh}
                         disabled={isRefreshing || loadingKpis}
                         title="Refresh metrics manually"
-                        style={{
-                            background: 'rgba(30, 41, 59, 0.7)',
-                            border: '1px solid #334155',
-                            borderRadius: '8px',
-                            padding: '0.4rem 0.75rem',
-                            color: isRefreshing ? '#10b981' : '#94a3b8',
-                            cursor: (isRefreshing || loadingKpis) ? 'not-allowed' : 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.4rem',
-                            fontSize: '0.8rem',
-                            fontWeight: 600,
-                            transition: 'all 0.2s ease'
-                        }}
                     >
                         <RefreshCw size={13} className={isRefreshing ? 'spin-icon' : ''} />
                         <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
                     </button>
-                    <div className="status-badge">
-                        <div className="status-dot"></div>
-                        Ollama Engine: RUNNING
-                    </div>
-                    <div className="date-display">{todayStr}</div>
                 </div>
             </div>
 
@@ -596,11 +670,8 @@ export default function Dashboard() {
             {/* Period Selection & Summary Bar for Calculated Metrics */}
             <div className="kpi-filter-bar">
                 <div className="kpi-filter-label">
-                    <Calendar size={15} style={{ color: '#10b981' }} />
-                    <span>Metrics Timeframe:</span>
-                    <span className="active-period-tag">
-                        {trendRange === '7d' ? 'Last 7 Days' : trendRange === '28d' ? 'Last 28 Days' : trendRange === '6m' ? 'Last 6 Months' : 'All Time'}
-                    </span>
+                    <Calendar size={14} style={{ color: 'var(--brand-green)' }} />
+                    <span>Timeframe</span>
                 </div>
                 <div className="range-preset-group">
                     <button

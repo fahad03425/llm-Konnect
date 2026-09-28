@@ -586,18 +586,15 @@ export default function Chatbot() {
                 <div className="chat-header">
                     <div className="chat-header-title">
                         <h2>RAG Chatbot</h2>
-                        <span className="monospaced model-chip" style={{ background: 'rgba(16, 185, 129, 0.12)', color: 'var(--accent-teal)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-                            {activeDomainMeta.icon} {activeDomainMeta.name}
-                        </span>
                         <select 
                             className="model-select-dropdown"
                             value={activeModel}
                             onChange={handleModelChange}
-                            title="Switch local AI model for speed or depth"
+                            title="Switch local AI model"
                         >
                             {models.map(m => (
                                 <option key={m} value={m}>
-                                    {m.includes('gemma3') ? `⚡ ${m} (Ultra Fast 1B)` : m.includes('qwen2.5') ? `🎯 ${m} (Fast & Accurate 3B)` : m.includes('qwen3') ? `🧠 ${m} (Reasoning 4B)` : `🤖 ${m}`}
+                                    {m.includes('qwen2.5') ? `${m} (Fast & Accurate 3B)` : m.includes('qwen3') ? `${m} (Reasoning 4B)` : m.includes('gemma3') ? `${m} (Ultra Fast 1B)` : m.includes('llama3.2:1b') ? `${m} (Fast 1B)` : m.includes('llama3.2:3b') ? `${m} (Balanced 3B)` : m}
                                 </option>
                             ))}
                         </select>
@@ -608,10 +605,10 @@ export default function Chatbot() {
                             onClick={handleNewChat}
                             title="Start a fresh conversation"
                         >
-                            <Plus size={15} /> New Chat
+                            <Plus size={14} /> New Chat
                         </button>
                         <button 
-                            className="action-btn"
+                            className="action-btn" 
                             onClick={scrollToHistory}
                             title="Scroll down to view past conversations"
                         >
@@ -634,11 +631,8 @@ export default function Chatbot() {
                             <div className="empty-state-icon">
                                 <Bot size={24} />
                             </div>
-                            <h3>Welcome to {activeDomainMeta.name} Intelligence</h3>
-                            <p style={{ color: '#6B7280', fontSize: '0.875rem', margin: '-0.5rem 0 0.5rem', fontStyle: 'italic' }}>
-                                Powered by local AI · All {activeDomainMeta.name} data stays private on your machine
-                            </p>
-                            <p>Ask a question about your {activeDomainMeta.name} datasets to get deterministic answers.</p>
+                            <h3>Query your knowledge base</h3>
+                            <p>Ask questions across your connected datasets and documents with local AI.</p>
                             <SuggestionChips
                                 chips={activeDomainMeta.suggestedQueries}
                                 onSelect={handleSuggestionClick}

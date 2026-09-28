@@ -271,9 +271,6 @@ class SyncWorker:
             mapping = map_headers(list(df.columns), domain_pack)
             canonical_df = apply_mapping(df, mapping, domain=domain, keep_extras=True)
 
-            self._kb.delete_source(file_id)
-            self._kb.delete_source(table_path)
-
             source_meta = {
                 "source_file": table_path,
                 "filename": f"{database_name} — {table_name}",
@@ -284,9 +281,11 @@ class SyncWorker:
                 "source_type": "database"
             }
 
-            summary = self._kb.add_dataframe(
-                canonical_df,
+            pk_cols = connector.get_table_primary_key(table_name)
+            rec_res = self._kb.reconcile_database_table(
+                canonical_df=canonical_df,
                 source_meta=source_meta,
+                pk_cols=pk_cols,
                 domain=domain,
                 strategy=strategy,
                 file_id=file_id
@@ -294,7 +293,7 @@ class SyncWorker:
 
             file_registry.register_or_update(
                 file_path=table_path,
-                chunk_count=summary.total_chunks,
+                chunk_count=rec_res["chunks"],
                 domain=domain,
                 strategy=strategy,
                 file_id=file_id,
@@ -311,7 +310,7 @@ class SyncWorker:
             except Exception:
                 pass
 
-            return summary.total_chunks
+            return rec_res["chunks"]
         except Exception as e:
             print(f"[KBSyncWorker] Error syncing table {database_name}.{table_name}: {e}")
             return 0

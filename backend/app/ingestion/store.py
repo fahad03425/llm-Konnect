@@ -11,6 +11,7 @@ import os
 import time
 import hashlib
 import threading
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 import pandas as pd
 import torch
@@ -416,6 +417,240 @@ class KnowledgeBase:
             time_taken_sec=time.time() - start_time,
             file_id=file_id
         )
+
+    def reconcile_database_table(
+        self,
+        canonical_df: pd.DataFrame,
+        source_meta: dict,
+        pk_cols: Optional[List[str]] = None,
+        domain: Optional[str] = None,
+        strategy: str = "row",
+        file_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
+    ) -> Dict[str, Any]:
+        """
+        Differential reconciliation sync for database tables:
+        - Detects primary keys or deterministic row identity.
+        - Deletes rows in Chroma that were removed from the database.
+        - Only embeds and upserts brand new or modified rows.
+        - Skips unchanged tables/rows without re-embedding.
+        """
+        start_time = time.time()
+        effective_domain = domain or get_default_domain()
+        pack = get_domain_pack(effective_domain)
+        collection = self._get_chroma()
+
+        table_name = str(source_meta.get("table_name", "unknown"))
+        database_name = str(source_meta.get("database_name", "unknown"))
+        table_path = source_meta.get("source_file", f"sql://{database_name}/{table_name}")
+        norm_db = database_name.strip().lower()
+        norm_table = table_name.strip().lower()
+        effective_file_id = file_id or f"db_{norm_db}_{norm_table}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
+
+        if canonical_df.empty:
+            existing = collection.get(where={"file_id": effective_file_id}, include=["metadatas"])
+            prior_count = len(existing["ids"]) if existing and existing.get("ids") else 0
+            if prior_count > 0:
+                self.delete_source(effective_file_id)
+                self.delete_source(table_path)
+            return {
+                "table_name": table_name,
+                "database_name": database_name,
+                "status": "empty",
+                "total_db_rows": 0,
+                "new_rows": 0,
+                "updated_rows": 0,
+                "deleted_rows": prior_count,
+                "chunks": 0,
+                "message": f"Table '{table_name}' is empty. {prior_count} previously ingested chunks removed."
+            }
+
+        # Query existing chunks in Chroma for this table
+        existing = collection.get(where={"file_id": effective_file_id}, include=["metadatas"])
+        existing_ids = set(existing["ids"]) if existing and existing.get("ids") else set()
+        existing_metas = {cid: meta for cid, meta in zip(existing["ids"], existing["metadatas"])} if existing and existing.get("ids") else {}
+
+        # If existing chunks were ingested under older non-deterministic scheme (missing 'row_id' or 'content_hash'), purge once to upgrade
+        if existing_metas:
+            sample_m = next(iter(existing_metas.values()))
+            if "content_hash" not in sample_m or "row_id" not in sample_m:
+                try:
+                    collection.delete(where={"file_id": effective_file_id})
+                except Exception:
+                    pass
+                existing_ids.clear()
+                existing_metas.clear()
+
+        def _resolve_row_id(row: dict, row_idx: int) -> str:
+            # 1. Search for explicit PK cols (checking raw name, _extra.name, and case-insensitively)
+            if pk_cols:
+                vals = []
+                for c in pk_cols:
+                    val = row.get(c)
+                    if val is None:
+                        val = row.get(f"_extra.{c}")
+                    if val is None:
+                        c_clean = c.strip().lower()
+                        for k, v in row.items():
+                            k_clean = k.replace("_extra.", "").strip().lower()
+                            if k_clean == c_clean:
+                                val = v
+                                break
+                    if val is not None and str(val).strip() != "" and str(val).lower() not in ("none", "nan"):
+                        vals.append(str(val).strip())
+                if vals and len(vals) == len(pk_cols):
+                    return "_".join(vals)
+
+            # 2. Check candidate ID columns (detail/line items first, then entities, then headers)
+            lower_map = {str(k).replace("_extra.", "").strip().lower(): k for k in row.keys()}
+            for cand in [
+                "saledetailid", "sale_detail_id", "purchasedetailid", "purchase_detail_id",
+                "detail_id", "detailid", "line_id", "lineid", "item_id", "itemid",
+                "configid", "config_id", "batchid", "batch_id", "batch_no", "batchno",
+                "code", "product_id", "productid", "customer_id", "customerid",
+                "doctor_id", "doctorid", "supplier_id", "supplierid",
+                "transaction_number", "transactionnumber", "id",
+                "billno", "bill_no", "bill_id", "invoiceno", "invoice_no", "invoice_id",
+                "order_id", "orderno"
+            ]:
+                if cand in lower_map:
+                    val = str(row.get(lower_map[cand], "")).strip()
+                    if val and val.lower() not in ("none", "nan"):
+                        return val
+
+            # 3. Fallback: MD5 hash of canonical row content
+            filtered_items = sorted((str(k), str(v)) for k, v in row.items() if k not in ("source_connector", "source_row"))
+            return hashlib.md5(repr(filtered_items).encode("utf-8")).hexdigest()[:16]
+
+        records = canonical_df.to_dict(orient="records")
+        current_chunk_ids: List[str] = []
+        current_content_hashes: List[str] = []
+        current_texts: List[str] = []
+        current_metas: List[dict] = []
+        current_ids_set = set()
+
+        for i, row in enumerate(records):
+            row_id = _resolve_row_id(row, i)
+            base_chunk_id = hashlib.md5(f"sql://{norm_db}/{norm_table}_{str(row_id)}".encode("utf-8")).hexdigest()
+            chunk_id = base_chunk_id
+            if chunk_id in current_ids_set:
+                dup_count = 1
+                while f"{base_chunk_id}_{dup_count}" in current_ids_set:
+                    dup_count += 1
+                chunk_id = f"{base_chunk_id}_{dup_count}"
+            row_text = pack.row_to_text(row)
+            content_hash = hashlib.md5(row_text.encode("utf-8")).hexdigest()
+
+            meta = {
+                "source_file": table_path,
+                "filename": f"{database_name} — {table_name}",
+                "file_id": effective_file_id,
+                "source_connector": source_meta.get("source_connector", "sql_database"),
+                "database_name": database_name,
+                "table_name": table_name,
+                "group_name": database_name,
+                "source_type": "database",
+                "domain": effective_domain,
+                "row_id": str(row_id),
+                "content_hash": content_hash,
+                "source_row": i + 1,
+                "ingested_at": source_meta.get("ingested_at", datetime.now().isoformat())
+            }
+
+            for f in pack.filter_metadata_fields:
+                if f in row and row[f] is not None and str(row[f]).strip() != "":
+                    meta[f] = row[f]
+
+            sanitized_meta = self._sanitize_metadata(meta)
+
+            current_chunk_ids.append(chunk_id)
+            current_content_hashes.append(content_hash)
+            current_texts.append(self.passage_prefix + row_text)
+            current_metas.append(sanitized_meta)
+            current_ids_set.add(chunk_id)
+
+        # 1. Detect Deleted Rows (present in Chroma, but absent from Database)
+        deleted_ids = [cid for cid in existing_ids if cid not in current_ids_set]
+        if deleted_ids:
+            for b_start in range(0, len(deleted_ids), 500):
+                collection.delete(ids=deleted_ids[b_start:b_start + 500])
+
+        # 2. Detect New or Updated Rows
+        to_upsert_indices: List[int] = []
+        new_count = 0
+        updated_count = 0
+
+        for idx, (cid, chash) in enumerate(zip(current_chunk_ids, current_content_hashes)):
+            if cid not in existing_ids:
+                to_upsert_indices.append(idx)
+                new_count += 1
+            else:
+                old_m = existing_metas.get(cid, {})
+                if old_m.get("content_hash") != chash:
+                    to_upsert_indices.append(idx)
+                    updated_count += 1
+
+        # 3. Only Embed and Upsert New or Updated Rows
+        if to_upsert_indices:
+            embedder = self._get_embedder(progress_callback)
+            upsert_texts = [current_texts[idx] for idx in to_upsert_indices]
+            upsert_ids = [current_chunk_ids[idx] for idx in to_upsert_indices]
+            upsert_metas = [current_metas[idx] for idx in to_upsert_indices]
+
+            batch_size = 64
+            for b_start in range(0, len(upsert_ids), batch_size):
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Ingestion cancelled by user")
+                b_end = min(b_start + batch_size, len(upsert_ids))
+                b_texts = upsert_texts[b_start:b_end]
+                b_ids = upsert_ids[b_start:b_end]
+                b_metas = upsert_metas[b_start:b_end]
+
+                embeddings = embedder.encode(
+                    b_texts,
+                    batch_size=len(b_texts),
+                    show_progress_bar=False,
+                    normalize_embeddings=True
+                ).tolist()
+
+                docs_to_store = [encrypt_string(t) for t in b_texts] if getattr(settings, "encryption_enabled", True) else b_texts
+                collection.upsert(
+                    ids=b_ids,
+                    embeddings=embeddings,
+                    documents=docs_to_store,
+                    metadatas=b_metas
+                )
+
+        active_chunks = len(current_chunk_ids)
+        total_records = len(records)
+
+        if not to_upsert_indices and not deleted_ids:
+            status = "unchanged"
+            message = f"Table '{table_name}' is already up-to-date ({total_records} rows verified, 0 changes)."
+        else:
+            status = "synced"
+            parts = []
+            if new_count:
+                parts.append(f"{new_count} new rows ingested")
+            if updated_count:
+                parts.append(f"{updated_count} updated rows re-indexed")
+            if deleted_ids:
+                parts.append(f"{len(deleted_ids)} deleted rows purged")
+            message = f"Table '{table_name}' synced: " + ", ".join(parts) + f" (total: {active_chunks} active chunks)."
+
+        return {
+            "table_name": table_name,
+            "database_name": database_name,
+            "status": status,
+            "total_db_rows": total_records,
+            "new_rows": new_count,
+            "updated_rows": updated_count,
+            "deleted_rows": len(deleted_ids),
+            "chunks": active_chunks,
+            "message": message,
+            "time_taken_sec": round(time.time() - start_time, 2)
+        }
         
     def add_text_documents(self, docs: List[str], source_meta: dict, domain: Optional[str] = None, file_id: Optional[str] = None) -> IngestSummary:
         domain = domain or get_default_domain()

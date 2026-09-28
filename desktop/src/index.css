@@ -1,14 +1,158 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Roboto:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
+
+/* ============================================================
+   GOOGLE MATERIAL DESIGN 3 DESIGN SYSTEM - DESKTOP APP
+   ============================================================ */
 
 :root {
-  --primary-bg: #F8F9FA;
-  --sidebar-bg: #111827; /* dark charcoal */
-  --accent-teal: #0D7377;
-  --text-primary: #1A1A1A;
-  --text-inverse: #FFFFFF;
-  --text-inverse-muted: #9CA3AF;
-  --border-color: #E5E7EB;
-  --sidebar-hover: #1F2937;
+  /* Google Emerald & Monochrome Core Palette */
+  --brand-green: #059669;
+  --brand-green-hover: #047857;
+  --brand-green-container: #ecfdf5;
+  --brand-green-container-hover: #d1fae5;
+  --brand-green-text: #065f46;
+  --brand-green-border: #a7f3d0;
+  --brand-green-subtle: #f0fdf4;
+
+  /* Accent Compatibility Mapping (Unified Emerald) */
+  --google-blue: #059669;
+  --google-blue-hover: #047857;
+  --google-blue-container: #ecfdf5;
+  --google-blue-container-hover: #d1fae5;
+  --google-blue-text: #065f46;
+
+  --google-green: #059669;
+  --google-green-container: #ecfdf5;
+  --google-green-text: #065f46;
+
+  --google-red: #dc2626;
+  --google-red-container: #fef2f2;
+  --google-red-text: #991b1b;
+
+  --google-amber: #d97706;
+  --google-amber-container: #fffbeb;
+  --google-amber-text: #92400e;
+
+  /* Surfaces & Containers (Clean Crisp Canvas) */
+  --primary-bg: #f8fafc;
+  --surface-bg: #ffffff;
+  --surface-container-low: #f8fafc;
+  --surface-container: #f1f5f9;
+  --surface-container-high: #e2e8f0;
+  --surface-container-highest: #cbd5e1;
+
+  /* Text & Neutral Tokens */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+  --text-inverse: #ffffff;
+  --text-inverse-muted: #cbd5e1;
+
+  /* Outlines & Borders */
+  --border-color: #e2e8f0;
+  --border-subtle: #f1f5f9;
+  --outline-variant: #cbd5e1;
+  --hover-bg: #f1f5f9;
+
+  /* Sidebar Tokens */
+  --sidebar-bg: #ffffff;
+  --sidebar-border: #e2e8f0;
+  --sidebar-hover: #f1f5f9;
+  --sidebar-active-bg: #ecfdf5;
+  --sidebar-active-text: #065f46;
+  --sidebar-text: #475569;
+
+  /* Accent compatibility fallback */
+  --accent-teal: var(--brand-green);
+
+  /* Elevations */
+  --elevation-0: none;
+  --elevation-1: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
+  --elevation-2: 0 4px 6px -1px rgba(15, 23, 42, 0.07), 0 2px 4px -2px rgba(15, 23, 42, 0.05);
+  --elevation-3: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
+  --elevation-4: 0 20px 25px -5px rgba(15, 23, 42, 0.1), 0 8px 10px -6px rgba(15, 23, 42, 0.05);
+}
+
+/* ============================================================
+   GOOGLE MATERIAL DESIGN 3 - ELEVATED DARK THEME
+   Deep Obsidian / Charcoal Surfaces + Mint Emerald Accent
+   ============================================================ */
+[data-theme="dark"] {
+  /* Premium Emerald / Mint Accent Palette */
+  --brand-green: #10b981;
+  --brand-green-hover: #059669;
+  --brand-green-container: rgba(16, 185, 129, 0.12);
+  --brand-green-container-hover: rgba(16, 185, 129, 0.2);
+  --brand-green-text: #34d399;
+  --brand-green-border: rgba(16, 185, 129, 0.28);
+  --brand-green-subtle: rgba(16, 185, 129, 0.06);
+
+  /* Unified Accent Compatibility */
+  --google-blue: #10b981;
+  --google-blue-hover: #34d399;
+  --google-blue-container: rgba(16, 185, 129, 0.14);
+  --google-blue-container-hover: rgba(16, 185, 129, 0.22);
+  --google-blue-text: #6ee7b7;
+
+  --google-green: #10b981;
+  --google-green-container: rgba(16, 185, 129, 0.14);
+  --google-green-text: #6ee7b7;
+
+  --google-red: #f87171;
+  --google-red-container: rgba(239, 68, 68, 0.15);
+  --google-red-text: #fca5a5;
+
+  --google-amber: #fbbf24;
+  --google-amber-container: rgba(245, 158, 11, 0.15);
+  --google-amber-text: #fde68a;
+
+  /* Surfaces & Containers (Deep Obsidian Charcoal & Slate) */
+  --primary-bg: #0d0f12;
+  --surface-bg: #15181e;
+  --surface-container-low: #111317;
+  --surface-container: #1b1f26;
+  --surface-container-high: #242932;
+  --surface-container-highest: #2e3440;
+
+  /* Text & Neutral Tokens */
+  --text-primary: #ffffff;
+  --text-secondary: #9ca3af;
+  --text-tertiary: #6b7280;
+  --text-inverse: #0d0f12;
+  --text-inverse-muted: #374151;
+
+  /* Outlines & Borders */
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --outline-variant: rgba(255, 255, 255, 0.12);
+  --hover-bg: rgba(255, 255, 255, 0.05);
+
+  /* Sidebar Tokens */
+  --sidebar-bg: #121419;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+  --sidebar-hover: rgba(255, 255, 255, 0.04);
+  --sidebar-active-bg: rgba(16, 185, 129, 0.12);
+  --sidebar-active-text: #34d399;
+  --sidebar-text: #9ca3af;
+
+  /* Elevations */
+  --elevation-0: none;
+  --elevation-1: 0 1px 3px 0 rgba(0, 0, 0, 0.5), 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --elevation-2: 0 4px 12px 0 rgba(0, 0, 0, 0.45);
+  --elevation-3: 0 8px 24px 0 rgba(0, 0, 0, 0.5);
+  --elevation-4: 0 16px 36px 0 rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background-color: #2e3440;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background-color: #3b4252;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background-color: #5e6260;
 }
 
 * {
@@ -17,17 +161,42 @@
   padding: 0;
 }
 
-body, html, #root {
+body,
+html,
+#root {
   height: 100%;
   width: 100%;
-  font-family: 'Inter', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background-color: var(--primary-bg);
   color: var(--text-primary);
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .monospaced {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Roboto Mono', 'JetBrains Mono', monospace;
+}
+
+/* Custom Google Chrome Style Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #dadce0;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #bdc1c6;
 }
 
 /* Layout */
@@ -35,51 +204,94 @@ body, html, #root {
   display: flex;
   height: 100vh;
   width: 100vw;
+  background-color: var(--primary-bg);
 }
 
-/* Sidebar */
+/* Sidebar - Google Material 3 Navigation Drawer */
 .sidebar {
-  width: 260px;
+  width: 256px;
   background-color: var(--sidebar-bg);
-  color: var(--text-inverse);
+  border-right: 1px solid var(--sidebar-border);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
-  padding: 1.5rem 1rem;
+  padding: 1.25rem 0.85rem;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .brand {
-  margin-bottom: 2rem;
-  padding: 0 0.5rem;
+  margin-bottom: 1.5rem;
+  padding: 0 0.75rem;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.brand-logo-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--brand-green-container);
+  border: 1px solid var(--brand-green-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-green-text);
+  flex-shrink: 0;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
 }
 
 .brand-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  color: white;
-  margin-bottom: 0.25rem;
+  font-size: 1.12rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  font-family: 'Plus Jakarta Sans', 'Google Sans', sans-serif;
 }
 
 .status-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent-teal);
-  background: rgba(13, 115, 119, 0.15);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  gap: 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--brand-green-text);
+  background: var(--brand-green-container);
+  border: 1px solid var(--brand-green-border);
+  padding: 0.22rem 0.65rem;
+  border-radius: 16px;
 }
 
 .status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background-color: var(--accent-teal);
-  box-shadow: 0 0 4px var(--accent-teal);
+  background-color: var(--brand-green);
+  box-shadow: 0 0 0 2px var(--brand-green-border);
+  animation: pulseDot 2s infinite;
+}
+
+@keyframes pulseDot {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
 }
 
 .nav-menu {
@@ -89,55 +301,77 @@ body, html, #root {
   gap: 0.25rem;
 }
 
+/* Material 3 Stadium / Pill Navigation Item */
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  color: var(--text-inverse-muted);
+  gap: 0.85rem;
+  padding: 0.65rem 1rem;
+  height: 42px;
+  color: var(--sidebar-text);
   text-decoration: none;
-  font-size: 0.875rem;
+  font-size: 0.88rem;
   font-weight: 500;
-  border-radius: 8px;
-  transition: all 0.2s;
+  border-radius: 24px;
+  transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
 }
 
 .nav-item:hover {
   background-color: var(--sidebar-hover);
-  color: white;
+  color: var(--text-primary);
 }
 
 .nav-item.active {
-  background-color: var(--accent-teal);
-  color: white;
+  background-color: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text);
+  font-weight: 600;
+  border-color: var(--brand-green-border);
+}
+
+.nav-item.active svg {
+  color: var(--brand-green-text);
 }
 
 .sidebar-bottom {
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.35rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border-color);
 }
 
+/* Google M3 Filled Pill Button */
 .btn-lock {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  background-color: var(--accent-teal);
-  color: white;
-  border: none;
-  padding: 0.75rem;
-  border-radius: 8px;
-  font-size: 0.875rem;
+  background-color: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  color: var(--text-primary);
+  padding: 0.65rem 1rem;
+  border-radius: 20px;
+  font-size: 0.86rem;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
   width: 100%;
+  margin-top: 0.35rem;
 }
 
 .btn-lock:hover {
-  opacity: 0.9;
+  background-color: var(--brand-green-container);
+  border-color: var(--brand-green-border);
+  color: var(--brand-green-text);
+}
+
+.btn-lock:active {
+  transform: scale(0.98);
 }
 
 /* Main Content Area */
@@ -145,128 +379,211 @@ body, html, #root {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 0; /* allows truncation */
+  min-width: 0;
+  background-color: var(--primary-bg);
 }
 
-/* Topbar */
+/* Topbar - Google Clean App Bar */
 .topbar {
   height: 64px;
-  background-color: white;
+  background-color: var(--surface-bg);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 2rem;
+  padding: 0 1.75rem;
   flex-shrink: 0;
+  gap: 1.5rem;
+  z-index: 10;
 }
 
 .topbar-left {
   display: flex;
   align-items: center;
+  gap: 1rem;
+  flex-shrink: 0;
 }
 
 .page-title {
-  font-size: 1.125rem;
+  font-size: 1.25rem;
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.015em;
+  font-family: 'Plus Jakarta Sans', 'Google Sans', sans-serif;
+}
+
+/* Google M3 Domain Assist Chip */
+.domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  padding: 0.32rem 0.85rem;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.domain-chip:hover {
+  background: var(--surface-container-high);
+  border-color: var(--brand-green-border);
+}
+
+.domain-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--brand-green);
+  box-shadow: 0 0 0 2px var(--brand-green-border);
+  flex-shrink: 0;
+}
+
+/* Google Topbar Center / Search Box */
+.topbar-center {
+  flex: 1;
+  max-width: 580px;
+  margin: 0 auto;
+}
+
+.search-box {
+  position: relative;
+  width: 100%;
+}
+
+.search-icon {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  width: 1.1rem;
+  height: 1.1rem;
+  pointer-events: none;
+}
+
+/* Iconic Google Search Pill */
+.search-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 1rem 0 2.75rem;
+  background-color: var(--surface-container);
+  border: 1px solid transparent;
+  border-radius: 28px;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  font-family: inherit;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.search-input:hover {
+  background-color: var(--surface-container-high);
+}
+
+.search-input:focus {
+  background-color: var(--surface-bg);
+  border-color: transparent;
+  box-shadow: 0 1px 3px 1px rgba(60, 64, 67, 0.15), 0 1px 2px 0 rgba(60, 64, 67, 0.3);
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
-}
-
-.search-box {
-  position: relative;
-}
-
-.search-icon {
-  position: absolute;
-  left: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #9CA3AF;
-  width: 1rem;
-  height: 1rem;
-}
-
-.search-input {
-  padding: 0.5rem 1rem 0.5rem 2.25rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  font-size: 0.875rem;
-  outline: none;
-  width: 240px;
-  transition: border-color 0.2s;
-}
-
-.search-input:focus {
-  border-color: var(--accent-teal);
+  gap: 0.85rem;
+  flex-shrink: 0;
 }
 
 .topbar-icons {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  color: #6B7280;
+  gap: 0.35rem;
+  color: var(--text-secondary);
 }
 
+/* Google Circular Icon Button */
 .icon-btn {
-  background: none;
+  background: transparent;
   border: none;
   cursor: pointer;
-  color: inherit;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .icon-btn:hover {
+  background-color: var(--surface-container);
   color: var(--text-primary);
 }
 
+/* Google Account Profile Chip */
 .user-profile {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding-left: 1.5rem;
-  border-left: 1px solid var(--border-color);
+  gap: 0.65rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.85rem;
+  border-radius: 24px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  user-select: none;
+}
+
+.user-profile:hover {
+  background-color: var(--surface-container);
 }
 
 .user-label {
-  font-weight: 600;
-  font-size: 0.875rem;
-  letter-spacing: 0.05em;
+  font-weight: 500;
+  font-size: 0.88rem;
   color: var(--text-primary);
+  font-family: inherit;
 }
 
 .user-avatar {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  background-color: var(--accent-teal);
-  color: white;
+  background-color: var(--brand-green-container);
+  border: 1.5px solid var(--brand-green-border);
+  color: var(--brand-green-text);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.75rem;
+  font-size: 0.82rem;
   font-weight: 700;
+  box-shadow: 0 0 0 2px var(--surface-bg), 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
 /* Page Content */
 .page-content {
   flex: 1;
-  padding: 2rem;
+  padding: 1.75rem 2rem;
   overflow-y: auto;
+  overflow-x: hidden;
+  background-color: var(--primary-bg);
 }
 
+/* Google M3 Card Helper */
 .placeholder-card {
-  background: white;
-  border-radius: 12px;
+  background: var(--surface-bg);
+  border-radius: 16px;
+  border: 1px solid var(--border-color);
   padding: 3rem;
   text-align: center;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  box-shadow: var(--elevation-1);
   max-width: 600px;
   margin: 0 auto;
 }
@@ -275,8 +592,28 @@ body, html, #root {
   font-size: 1.5rem;
   margin-bottom: 0.5rem;
   color: var(--text-primary);
+  font-weight: 600;
 }
 
 .placeholder-card p {
-  color: #6B7280;
+  color: var(--text-secondary);
+}
+
+/* Global Skeleton Loader */
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+.skeleton {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(to right, #f1f5f9 4%, #e2e8f0 25%, #f1f5f9 36%);
+  background-size: 1000px 100%;
+  border: 1px solid var(--border-color);
+}
+
+[data-theme="dark"] .skeleton {
+  background: linear-gradient(to right, #15181e 4%, #252b36 25%, #15181e 36%);
+  background-size: 1000px 100%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }

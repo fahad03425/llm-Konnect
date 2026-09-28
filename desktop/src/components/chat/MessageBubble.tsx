@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Bot, AlertCircle, FileText, ChevronDown } from 'lucide-react';
+import { Bot, AlertCircle, FileText, ChevronDown } from 'lucide-react';
 
 interface Message {
     id: string;
@@ -73,9 +73,11 @@ export const MessageBubble: React.FC<{ msg: Message; isLatest: boolean }> = ({ m
     return (
         <div className={`message-wrapper ${msg.role} ${isLatest ? 'latest' : ''}`}>
             <div className="message-content">
-                <div className={`avatar ${msg.role === 'user' ? 'user' : msg.role === 'error' ? 'error' : 'bot'}`}>
-                    {msg.role === 'user' ? <User size={16} /> : msg.role === 'error' ? <AlertCircle size={16} /> : <Bot size={16} />}
-                </div>
+                {msg.role !== 'user' && (
+                    <div className={`avatar ${msg.role === 'error' ? 'error' : 'bot'}`}>
+                        {msg.role === 'error' ? <AlertCircle size={16} /> : <Bot size={16} />}
+                    </div>
+                )}
                 <div>
                     <div className="bubble">
                         {msg.role === 'user' ? msg.content : formatMessageText(msg.content)}

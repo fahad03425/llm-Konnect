@@ -16,7 +16,7 @@ export const DOMAIN_METAS: Record<DomainType, DomainMeta> = {
     pharmacy: {
         id: 'pharmacy',
         name: 'Pharmacy & Health',
-        icon: '💊',
+        icon: '',
         description: 'Medicine stocks, batches, expiries, suppliers & prescriptions.',
         color: '#10b981',
         exampleFiles: ['test_pharmacy_small.csv', 'inventory_batches.xlsx'],
@@ -29,9 +29,9 @@ export const DOMAIN_METAS: Record<DomainType, DomainMeta> = {
     ecommerce: {
         id: 'ecommerce',
         name: 'E-Commerce & Retail',
-        icon: '🛒',
+        icon: '',
         description: 'Orders, product SKUs, customers, fulfillment & discounts.',
-        color: '#06b6d4',
+        color: '#10b981',
         exampleFiles: ['orders_2024.csv', 'products_catalog.xlsx'],
         suggestedQueries: [
             'What is our top selling product category by revenue?',
@@ -42,9 +42,9 @@ export const DOMAIN_METAS: Record<DomainType, DomainMeta> = {
     finance: {
         id: 'finance',
         name: 'Business Finance',
-        icon: '💼',
+        icon: '',
         description: 'P&L ledgers, accounts, bank statements, vendors & invoices.',
-        color: '#8b5cf6',
+        color: '#10b981',
         exampleFiles: ['pl_ledger_q1.csv', 'vendor_invoices.xlsx'],
         suggestedQueries: [
             'What is our net profit margin for the current period?',
@@ -55,9 +55,9 @@ export const DOMAIN_METAS: Record<DomainType, DomainMeta> = {
     home_finance: {
         id: 'home_finance',
         name: 'Home & Personal Finance',
-        icon: '🏠',
+        icon: '',
         description: 'Personal budgets, income, expenses, savings & bills.',
-        color: '#f59e0b',
+        color: '#10b981',
         exampleFiles: ['personal_budget.csv', 'monthly_expenses.xlsx'],
         suggestedQueries: [
             'How much did we spend on utilities and groceries this month?',
@@ -76,6 +76,8 @@ export interface UserProfile {
     isSetupComplete: boolean;
 }
 
+export type ThemeMode = 'light' | 'dark';
+
 interface UserContextType {
     user: UserProfile;
     setDomain: (domain: DomainType) => void;
@@ -86,9 +88,13 @@ interface UserContextType {
     openSettings: () => void;
     closeSettings: () => void;
     activeDomainMeta: DomainMeta;
+    theme: ThemeMode;
+    toggleTheme: () => void;
+    setTheme: (theme: ThemeMode) => void;
 }
 
 const STORAGE_KEY = 'llm_konnect_user_profile';
+const THEME_STORAGE_KEY = 'llm_konnect_theme';
 
 const DEFAULT_PROFILE: UserProfile = {
     accountName: '',
@@ -115,7 +121,27 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         return DEFAULT_PROFILE;
     });
 
+    const [theme, setThemeState] = useState<ThemeMode>(() => {
+        try {
+            const saved = localStorage.getItem(THEME_STORAGE_KEY);
+            if (saved === 'dark' || saved === 'light') return saved;
+            if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                return 'dark';
+            }
+        } catch {}
+        return 'light';
+    });
+
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    useEffect(() => {
+        try {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem(THEME_STORAGE_KEY, theme);
+        } catch (e) {
+            console.error('Error persisting theme', e);
+        }
+    }, [theme]);
 
     useEffect(() => {
         try {
@@ -124,6 +150,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             console.error('Error persisting user profile', e);
         }
     }, [user]);
+
+    const toggleTheme = () => {
+        setThemeState(prev => (prev === 'dark' ? 'light' : 'dark'));
+    };
+
+    const setTheme = (newTheme: ThemeMode) => {
+        setThemeState(newTheme);
+    };
 
     const setDomain = (domain: DomainType) => {
         setUser(prev => ({ ...prev, domain }));
@@ -161,7 +195,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
                 isSettingsOpen,
                 openSettings: () => setIsSettingsOpen(true),
                 closeSettings: () => setIsSettingsOpen(false),
-                activeDomainMeta
+                activeDomainMeta,
+                theme,
+                toggleTheme,
+                setTheme
             }}
         >
             {children}

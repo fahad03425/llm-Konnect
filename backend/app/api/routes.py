@@ -61,9 +61,9 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         file_registry.set_file_status(
             file_path=normalized_path,
-            status="processing",
-            progress=20.0,
-            step_text="Step 1: Uploaded (Ready for Preview)"
+            status="pending",
+            progress=0.0,
+            step_text="Uploaded (Pending Ingestion)"
         )
     except Exception:
         pass
@@ -122,9 +122,9 @@ def preview_source(req: PreviewRequest):
         try:
             file_registry.set_file_status(
                 file_path=req.file_path,
-                status="processing",
+                status="pending",
                 progress=35.0,
-                step_text="Step 2: Preview & Schema Analysis"
+                step_text="Preview & Schema Analysis"
             )
         except Exception:
             pass
@@ -185,9 +185,9 @@ def confirm_mapping(req: MappingConfirmRequest):
         try:
             file_registry.set_file_status(
                 file_path=req.file_path,
-                status="processing",
+                status="pending",
                 progress=55.0,
-                step_text="Step 3: Headers Mapped"
+                step_text="Headers Mapped"
             )
         except Exception:
             pass
@@ -241,9 +241,9 @@ def normalize_source(req: NormalizeRequest):
         try:
             file_registry.set_file_status(
                 file_path=req.file_path,
-                status="processing",
+                status="pending",
                 progress=70.0,
-                step_text="Step 4: Normalizing & Cleaning Data"
+                step_text="Data Normalized"
             )
         except Exception:
             pass
@@ -300,9 +300,9 @@ def validate_source(req: ValidateRequest):
             try:
                 file_registry.set_file_status(
                     file_path=req.file_path,
-                    status="processing",
+                    status="pending",
                     progress=85.0,
-                    step_text="Step 5: Validating Data Quality"
+                    step_text="Validating Data Quality"
                 )
             except Exception:
                 pass
@@ -501,10 +501,46 @@ def list_watcher_files(req: WatcherConfigRequest):
         from app.connectors.watcher import DirectoryWatcherConnector
         watcher = DirectoryWatcherConnector(watch_dir=req.watch_dir, file_pattern=req.file_pattern)
         pending = watcher.list_pending_files()
+        detected_sql = watcher.detect_sql_database()
         return {
             "watch_dir": req.watch_dir,
-            "pending_files": [f.replace("\\", "/") for f in pending]
+            "pending_files": [f.replace("\\", "/") for f in pending],
+            "detected_sql_db": detected_sql
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/sql/local-instances")
+def detect_local_sql_instances():
+    """Auto-detect running local MS SQL Server instances and databases."""
+    try:
+        from app.connectors.sql import get_best_odbc_driver, get_local_mssql_instances
+        import pyodbc
+        driver = get_best_odbc_driver()
+        candidates = get_local_mssql_instances()
+        detected = []
+        seen = set()
+        for inst in candidates:
+            try:
+                conn_str = f"DRIVER={{{driver}}};SERVER={inst};Trusted_Connection=yes;TrustServerCertificate=yes;Encrypt=optional;"
+                conn = pyodbc.connect(conn_str, timeout=1)
+                cur = conn.cursor()
+                cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE'")
+                dbs = [r[0] for r in cur.fetchall()]
+                conn.close()
+                for db in dbs:
+                    key = (inst.lower(), db.lower())
+                    if key not in seen:
+                        seen.add(key)
+                        detected.append({
+                            "database_name": db,
+                            "server": inst,
+                            "driver": driver,
+                            "connection_string": f"{inst}/{db}"
+                        })
+            except Exception:
+                continue
+        return {"instances": detected}
+    except Exception as e:
+        return {"instances": [], "error": str(e)}
 

@@ -71,11 +71,11 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
 
     return (
         <div className="kb-manager-card" style={{
-            background: 'white',
-            border: '1px solid var(--border-color, #E5E7EB)',
-            borderRadius: '12px',
+            background: 'var(--surface-bg)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
             padding: '1.25rem 1.5rem',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+            boxShadow: 'var(--elevation-1)',
             marginTop: '1.5rem'
         }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
@@ -84,13 +84,13 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
                         width: '10px',
                         height: '10px',
                         borderRadius: '50%',
-                        background: hasData ? '#10B981' : '#9CA3AF'
+                        background: hasData ? 'var(--brand-green)' : 'var(--text-tertiary)'
                     }} />
                     <div>
-                        <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary, #111827)' }}>
+                        <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                             Ingested Knowledge Base Sources
                         </h4>
-                        <span style={{ fontSize: '0.8rem', color: '#6B7280' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                             {totalChunks === null ? 'Checking...' : `${totalChunks.toLocaleString()} embedded chunks · ${collectionName || 'llm_konnect_kb'}`}
                         </span>
                     </div>
@@ -115,9 +115,9 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.5rem',
-                    background: actionMsg.type === 'success' ? '#ECFDF5' : '#FEF2F2',
-                    color: actionMsg.type === 'success' ? '#065F46' : '#991B1B',
-                    border: `1px solid ${actionMsg.type === 'success' ? '#A7F3D0' : '#FECACA'}`
+                    background: actionMsg.type === 'success' ? 'var(--brand-green-container)' : 'rgba(239, 68, 68, 0.12)',
+                    color: actionMsg.type === 'success' ? 'var(--brand-green-text)' : '#f87171',
+                    border: `1px solid ${actionMsg.type === 'success' ? 'var(--brand-green-border)' : 'rgba(239, 68, 68, 0.3)'}`
                 }}>
                     {actionMsg.type === 'success' ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
                     {actionMsg.text}
@@ -128,53 +128,54 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
                 <div style={{
                     padding: '1.5rem',
                     textAlign: 'center',
-                    background: '#F9FAFB',
-                    borderRadius: '8px',
-                    border: '1px dashed #E5E7EB',
-                    color: '#6B7280',
+                    background: 'var(--surface-container)',
+                    borderRadius: '12px',
+                    border: '1px dashed var(--border-color)',
+                    color: 'var(--text-secondary)',
                     fontSize: '0.875rem'
                 }}>
                     <Database size={24} style={{ margin: '0 auto 0.5rem', opacity: 0.5 }} />
                     <p style={{ margin: 0 }}>No files currently embedded in the Knowledge Base.</p>
-                    <span style={{ fontSize: '0.78rem', color: '#9CA3AF' }}>Complete the wizard steps above to connect and ingest your dataset.</span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Complete the wizard steps above to connect and ingest your dataset.</span>
                 </div>
             ) : (
                 <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                         <thead>
-                            <tr style={{ borderBottom: '1px solid #E5E7EB', color: '#6B7280', textAlign: 'left' }}>
-                                <th style={{ padding: '0.5rem 0.75rem', fontWeight: 600 }}>File Name</th>
-                                <th style={{ padding: '0.5rem 0.75rem', fontWeight: 600 }}>Domain</th>
-                                <th style={{ padding: '0.5rem 0.75rem', fontWeight: 600 }}>Chunks</th>
-                                <th style={{ padding: '0.5rem 0.75rem', fontWeight: 600 }}>Ingested At</th>
-                                <th style={{ padding: '0.5rem 0.75rem', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                            <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                                <th style={{ padding: '0.6rem 0.75rem', fontWeight: 600 }}>File Name</th>
+                                <th style={{ padding: '0.6rem 0.75rem', fontWeight: 600 }}>Domain</th>
+                                <th style={{ padding: '0.6rem 0.75rem', fontWeight: 600 }}>Chunks</th>
+                                <th style={{ padding: '0.6rem 0.75rem', fontWeight: 600 }}>Ingested At</th>
+                                <th style={{ padding: '0.6rem 0.75rem', fontWeight: 600, textAlign: 'right' }}>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {files.map(file => (
-                                <tr key={file.file_id} style={{ borderBottom: '1px solid #F3F4F6' }}>
-                                    <td style={{ padding: '0.65rem 0.75rem', fontWeight: 500, color: '#111827' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                            <FileText size={14} color="#4F46E5" />
+                                <tr key={file.file_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                                    <td style={{ padding: '0.65rem 0.75rem', fontWeight: 500, color: 'var(--text-primary)' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                            <FileText size={14} style={{ color: 'var(--brand-green)' }} />
                                             <span>{file.filename}</span>
                                         </div>
                                     </td>
                                     <td style={{ padding: '0.65rem 0.75rem' }}>
                                         <span style={{
-                                            padding: '0.15rem 0.5rem',
+                                            padding: '0.15rem 0.55rem',
                                             borderRadius: '999px',
                                             fontSize: '0.72rem',
                                             fontWeight: 600,
-                                            background: 'rgba(16, 185, 129, 0.1)',
-                                            color: '#059669'
+                                            background: 'var(--brand-green-container)',
+                                            color: 'var(--brand-green-text)',
+                                            border: '1px solid var(--brand-green-border)'
                                         }}>
                                             {file.domain.toUpperCase()}
                                         </span>
                                     </td>
-                                    <td style={{ padding: '0.65rem 0.75rem', color: '#374151', fontFamily: 'monospace' }}>
+                                    <td style={{ padding: '0.65rem 0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
                                         {file.chunk_count.toLocaleString()}
                                     </td>
-                                    <td style={{ padding: '0.65rem 0.75rem', color: '#6B7280', fontSize: '0.78rem' }}>
+                                    <td style={{ padding: '0.65rem 0.75rem', color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>
                                         {new Date(file.ingested_at).toLocaleDateString()} {new Date(file.ingested_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </td>
                                     <td style={{ padding: '0.65rem 0.75rem', textAlign: 'right' }}>
@@ -182,9 +183,9 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
                                             onClick={() => handleUningest(file)}
                                             style={{
                                                 background: 'transparent',
-                                                border: '1px solid #FCA5A5',
+                                                border: '1px solid rgba(239, 68, 68, 0.4)',
                                                 borderRadius: '6px',
-                                                color: '#DC2626',
+                                                color: '#ef4444',
                                                 padding: '0.25rem 0.6rem',
                                                 fontSize: '0.75rem',
                                                 cursor: 'pointer',
@@ -194,7 +195,7 @@ export const KBStatus = ({ totalChunks: initialChunks, collectionName, onRefresh
                                                 transition: 'all 0.15s'
                                             }}
                                             title="Un-ingest and remove chunks from local index"
-                                            onMouseOver={e => e.currentTarget.style.background = '#FEE2E2'}
+                                            onMouseOver={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'}
                                             onMouseOut={e => e.currentTarget.style.background = 'transparent'}
                                         >
                                             <Trash2 size={12} /> Un-ingest

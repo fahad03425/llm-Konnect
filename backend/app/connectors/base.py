@@ -51,6 +51,9 @@ def detect_connector(path: str) -> Connector:
     elif ext in ('.sqlite', '.db', '.sqlite3'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="sqlite")
+    elif ext == '.mdf':
+        from app.connectors.sql import SQLConnector
+        return SQLConnector(path, db_type="mssql")
     elif ext in ('.mdb', '.accdb'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="access")

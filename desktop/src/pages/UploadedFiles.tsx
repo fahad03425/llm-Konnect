@@ -494,10 +494,10 @@ const UploadedFiles: React.FC = () => {
 
                 {/* Size */}
                 <td>
-                    <span style={{ fontWeight: 500, color: '#475569' }}>{file.file_size_formatted}</span>
+                    <span className="file-size-label">{file.file_size_formatted}</span>
                 </td>
 
-                {/* Status in KB */}
+                {/* Status */}
                 <td>
                     {isProcessing ? (
                         <div className="table-progress-cell">
@@ -536,11 +536,10 @@ const UploadedFiles: React.FC = () => {
                         </span>
                     ) : file.is_duplicate_of ? (
                         <span
-                            className="status-pill"
-                            style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a' }}
+                            className="status-pill duplicate"
                             title={`Duplicate content identical to ${file.is_duplicate_of}`}
                         >
-                            ⚠️ Duplicate of {file.is_duplicate_of}
+                            Duplicate
                         </span>
                     ) : (
                         <span className="status-pill not-ingested">
@@ -550,15 +549,15 @@ const UploadedFiles: React.FC = () => {
                 </td>
 
                 {/* Domain / Strategy */}
-                <td>
-                    <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 500 }}>
+                <td className="col-strategy">
+                    <span className="file-strategy-label">
                         {file.domain ? `${file.domain.toUpperCase()} / ${file.strategy || 'row'}` : '—'}
                     </span>
                 </td>
 
                 {/* Date */}
-                <td>
-                    <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                <td className="col-date">
+                    <span className="file-date-label">
                         {file.modified_at ? new Date(file.modified_at).toLocaleDateString() : '—'}
                     </span>
                 </td>
@@ -570,7 +569,7 @@ const UploadedFiles: React.FC = () => {
                             <div className="processing-actions-cell">
                                 <button
                                     className="btn-file-action"
-                                    style={{ background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', cursor: 'wait' }}
+                                    style={{ background: 'var(--brand-green-container)', color: 'var(--brand-green-text)', border: '1px solid var(--brand-green-border)', cursor: 'wait' }}
                                     disabled
                                 >
                                     <RefreshCw size={12} className="spin" /> {pct}%
@@ -601,7 +600,7 @@ const UploadedFiles: React.FC = () => {
                                 style={file.is_duplicate_of ? { opacity: 0.5, cursor: 'not-allowed', background: '#94a3b8' } : {}}
                                 title={file.is_duplicate_of ? `Cannot ingest: identical content to ${file.is_duplicate_of} is already ingested.` : "Embed and add to Knowledge Base"}
                             >
-                                <Sparkles size={14} />
+                                <Sparkles size={13} />
                                 Ingest
                             </button>
                         ) : (
@@ -611,7 +610,7 @@ const UploadedFiles: React.FC = () => {
                                     onClick={() => handleChatWithFile(file)}
                                     title="Chat specifically with this file / table"
                                 >
-                                    <MessageSquare size={14} />
+                                    <MessageSquare size={13} />
                                     Chat
                                 </button>
                                 <button
@@ -639,7 +638,7 @@ const UploadedFiles: React.FC = () => {
                             disabled={isProcessing}
                             title="Permanently delete from disk & KB"
                         >
-                            <Trash2 size={16} />
+                            <Trash2 size={14} />
                         </button>
                     </div>
                 </td>
@@ -653,11 +652,11 @@ const UploadedFiles: React.FC = () => {
             <div className="files-header-banner">
                 <div>
                     <h2 className="files-header-title">
-                        <Files size={28} color="#0d7377" />
-                        Uploaded Files & Knowledge Base
+                        <Files size={24} />
+                        Uploaded Files &amp; Datasets
                     </h2>
                     <p className="files-header-subtitle">
-                        Manage dataset files, track real-time vectorization progress into Chroma DB, and control your offline RAG knowledge base.
+                        Manage connected data sources, tables, and your local knowledge base.
                     </p>
                 </div>
             </div>
@@ -793,27 +792,27 @@ const UploadedFiles: React.FC = () => {
             {/* Quick Metrics Bar */}
             <div className="files-stats-grid">
                 <div className="files-stat-card">
-                    <div className="stat-icon-wrapper" style={{ background: '#eff6ff', color: '#2563eb' }}>
+                    <div className="stat-icon-wrapper" style={{ background: 'var(--google-blue-container)', color: 'var(--google-blue)' }}>
                         <HardDrive size={22} />
                     </div>
                     <div className="stat-info">
                         <div className="stat-value">{filesData.total_files}</div>
-                        <div className="stat-label">Total Files &amp; Tables</div>
+                        <div className="stat-label">Total Sources</div>
                     </div>
                 </div>
 
                 <div className="files-stat-card">
-                    <div className="stat-icon-wrapper" style={{ background: '#ecfdf5', color: '#059669' }}>
+                    <div className="stat-icon-wrapper" style={{ background: 'var(--google-green-container)', color: 'var(--google-green)' }}>
                         <CheckCircle2 size={22} />
                     </div>
                     <div className="stat-info">
                         <div className="stat-value">{filesData.total_ingested_files}</div>
-                        <div className="stat-label">Ingested in KB</div>
+                        <div className="stat-label">Indexed in KB</div>
                     </div>
                 </div>
 
                 <div className="files-stat-card">
-                    <div className="stat-icon-wrapper" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
+                    <div className="stat-icon-wrapper" style={{ background: 'var(--google-purple-container)', color: 'var(--google-purple)' }}>
                         <Layers size={22} />
                     </div>
                     <div className="stat-info">
@@ -823,7 +822,7 @@ const UploadedFiles: React.FC = () => {
                 </div>
 
                 <div className="files-stat-card">
-                    <div className="stat-icon-wrapper" style={{ background: '#fffbeb', color: '#d97706' }}>
+                    <div className="stat-icon-wrapper" style={{ background: 'var(--google-amber-container)', color: 'var(--google-amber)' }}>
                         <Database size={22} />
                     </div>
                     <div className="stat-info">
@@ -853,7 +852,7 @@ const UploadedFiles: React.FC = () => {
                     onChange={(e) => handleFileUpload(e.target.files)}
                 />
                 <div className="upload-icon-circle">
-                    <UploadCloud size={26} />
+                    <UploadCloud size={24} />
                 </div>
                 <div>
                     <div className="upload-dropzone-title">Click to upload or drag and drop files here</div>
@@ -875,21 +874,23 @@ const UploadedFiles: React.FC = () => {
                         className={`filter-tab-btn ${activeTab === 'ingested' ? 'active' : ''}`}
                         onClick={() => setActiveTab('ingested')}
                     >
-                        <span>🟢 Ingested</span>
+                        <span className="tab-dot ingested" />
+                        <span>Ingested</span>
                         <span className="tab-badge">{filesData.total_ingested_files}</span>
                     </button>
                     <button
                         className={`filter-tab-btn ${activeTab === 'not_ingested' ? 'active' : ''}`}
                         onClick={() => setActiveTab('not_ingested')}
                     >
-                        <span>⚪ Not Ingested</span>
+                        <span className="tab-dot" />
+                        <span>Not Ingested</span>
                         <span className="tab-badge">{filesData.total_files - filesData.total_ingested_files}</span>
                     </button>
                 </div>
 
                 <div className="files-search-actions">
                     <div className="files-search-input-wrapper">
-                        <Search size={16} color="#94a3b8" />
+                        <Search size={15} color="var(--text-tertiary)" />
                         <input
                             type="text"
                             placeholder="Filter by name, database or path..."
@@ -899,11 +900,11 @@ const UploadedFiles: React.FC = () => {
                         />
                     </div>
                     <button
-                        className="btn-file-action map"
+                        className="btn-toolbar-refresh"
                         onClick={() => fetchFiles(false)}
                         title="Refresh file status from disk"
                     >
-                        <RefreshCw size={14} className={loading ? 'spin' : ''} />
+                        <RefreshCw size={13} className={loading ? 'spin' : ''} />
                         Refresh
                     </button>
                 </div>
@@ -912,13 +913,11 @@ const UploadedFiles: React.FC = () => {
             {/* ── SECTION 1: CONNECTED DATABASES (GROUPED) ── */}
             {Object.keys(dbGroups).length > 0 && (
                 <div className="db-groups-section">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, color: '#1e293b', fontSize: '1.05rem', marginTop: '0.5rem' }}>
-                        <Database size={19} color="#0d7377" /> Connected POS &amp; SQL Databases
+                    <div className="db-section-heading">
+                        <Database size={18} /> Connected POS &amp; SQL Databases
                     </div>
                     {Object.entries(dbGroups).map(([dbName, tables]) => {
                         const totalChunks = tables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
-                        const allIngested = tables.every(t => t.is_ingested);
-                        const hasProcessing = tables.some(t => t.status === 'processing' || t.is_processing);
 
                         return (
                             <div key={dbName} className="db-group-card">
@@ -928,18 +927,14 @@ const UploadedFiles: React.FC = () => {
                                             <Database size={20} />
                                         </div>
                                         <div>
-                                            <div className="db-group-name">🗄️ Database: {dbName}</div>
+                                            <div className="db-group-name">{dbName}</div>
                                             <div className="db-group-meta">
                                                 <span>{tables.length} {tables.length === 1 ? 'Table' : 'Tables'}</span>
                                                 <span>•</span>
-                                                <span>{totalChunks.toLocaleString()} Chunks in KB</span>
+                                                <span>{totalChunks.toLocaleString()} chunks</span>
                                                 <span>•</span>
-                                                <span className={`db-badge-pill ${allIngested ? 'ingested' : ''}`}>
-                                                    {allIngested ? '🟢 All Tables Ingested' : hasProcessing ? '⏳ Ingesting Tables...' : '⚪ Ready'}
-                                                </span>
-                                                <span>•</span>
-                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '0.15rem 0.55rem', borderRadius: '12px', fontSize: '0.73rem', fontWeight: 600 }}>
-                                                    <span className="pulse-dot" style={{ width: '6px', height: '6px' }} /> Auto-Sync Active (15s)
+                                                <span className="db-autosync-pill">
+                                                    <span className="pulse-dot" style={{ width: '5px', height: '5px' }} /> Auto-Sync Active
                                                 </span>
                                             </div>
                                         </div>
@@ -947,38 +942,29 @@ const UploadedFiles: React.FC = () => {
                                     <div className="db-group-actions">
                                         <button
                                             type="button"
-                                            className="btn-file-action ingest"
+                                            className="btn-db-sync"
                                             onClick={() => handleSyncDatabase(dbName)}
                                             disabled={syncingDb === dbName}
-                                            style={{
-                                                background: 'rgba(13, 115, 119, 0.1)',
-                                                color: '#0d7377',
-                                                border: '1px solid rgba(13, 115, 119, 0.3)',
-                                                fontWeight: 600,
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: '0.35rem'
-                                            }}
                                             title={`Pull latest changes from SQL Server for ${dbName}`}
                                         >
                                             <RefreshCw size={13} className={syncingDb === dbName ? 'spin' : ''} />
-                                            {syncingDb === dbName ? 'Syncing...' : 'Sync Changes'}
+                                            {syncingDb === dbName ? 'Syncing...' : 'Sync'}
                                         </button>
                                         <button
                                             type="button"
-                                            className="btn-file-action chat"
+                                            className="btn-db-chat"
                                             onClick={() => handleChatWithDatabase(dbName)}
                                             title={`Chat with all data in ${dbName}`}
                                         >
-                                            <MessageSquare size={14} /> Chat with Database
+                                            <MessageSquare size={13} /> Chat
                                         </button>
                                         <button
                                             type="button"
-                                            className="btn-file-action delete"
+                                            className="btn-db-delete"
                                             onClick={() => setDeleteModalDatabase(dbName)}
                                             title={`Delete entire database ${dbName}`}
                                         >
-                                            <Trash2 size={15} /> Delete Database
+                                            <Trash2 size={13} /> Delete
                                         </button>
                                     </div>
                                 </div>
@@ -986,12 +972,12 @@ const UploadedFiles: React.FC = () => {
                                     <table className="files-table">
                                         <thead>
                                             <tr>
-                                                <th style={{ width: '28%' }}>Table Name</th>
-                                                <th style={{ width: '10%' }}>Records / Size</th>
-                                                <th style={{ width: '30%' }}>Status in Knowledge Base</th>
-                                                <th style={{ width: '14%' }}>Domain / Strategy</th>
-                                                <th style={{ width: '10%' }}>Ingested Date</th>
-                                                <th style={{ width: '8%', textAlign: 'right' }}>Actions</th>
+                                                <th className="th-name">Source / Table</th>
+                                                <th className="th-size">Size</th>
+                                                <th className="th-status">Status</th>
+                                                <th className="th-strategy col-strategy">Strategy</th>
+                                                <th className="th-date col-date">Date</th>
+                                                <th className="th-actions">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -1008,20 +994,20 @@ const UploadedFiles: React.FC = () => {
             {/* ── SECTION 2: STANDALONE FILES & DATASETS ── */}
             <div>
                 {Object.keys(dbGroups).length > 0 && standaloneFiles.length > 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, color: '#1e293b', fontSize: '1.05rem', margin: '1rem 0 0.75rem' }}>
-                        <Files size={18} color="#0d7377" /> Standalone Files &amp; Documents
+                    <div className="db-section-heading" style={{ margin: '1rem 0 0.75rem' }}>
+                        <Files size={18} /> Standalone Files &amp; Documents
                     </div>
                 )}
                 <div className="files-table-wrapper">
                     <table className="files-table">
                         <thead>
                             <tr>
-                                <th style={{ width: '28%' }}>File Name</th>
-                                <th style={{ width: '10%' }}>Size</th>
-                                <th style={{ width: '30%' }}>Status in Knowledge Base</th>
-                                <th style={{ width: '14%' }}>Domain / Strategy</th>
-                                <th style={{ width: '10%' }}>Modified Date</th>
-                                <th style={{ width: '8%', textAlign: 'right' }}>Actions</th>
+                                <th className="th-name">File Name</th>
+                                <th className="th-size">Size</th>
+                                <th className="th-status">Status</th>
+                                <th className="th-strategy col-strategy">Strategy</th>
+                                <th className="th-date col-date">Modified</th>
+                                <th className="th-actions">Actions</th>
                             </tr>
                         </thead>
                         <tbody>

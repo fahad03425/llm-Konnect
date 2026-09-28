@@ -81,7 +81,7 @@ const WEEKLY_SECTIONS = [
 ];
 
 export default function WeeklyReport() {
-    const { user, activeDomainMeta } = useUser();
+    const { user } = useUser();
     const { activePath } = useFilePath();
 
     // Configuration Form State
@@ -205,46 +205,37 @@ export default function WeeklyReport() {
             {/* 1. Header */}
             <div className="re-header">
                 <div className="re-header-main">
-                    <div className="re-icon-badge" style={{ background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.15) 0%, rgba(2, 132, 199, 0.05) 100%)', borderColor: 'rgba(2, 132, 199, 0.25)', color: '#0284c7' }}>
-                        <CalendarDays size={28} />
+                    <div className="re-icon-badge">
+                        <CalendarDays size={24} />
                     </div>
                     <div>
                         <div className="re-title-row">
-                            <h1 className="re-title">Weekly Pharmacy Executive Report</h1>
-                            <span className="re-badge-live" style={{ background: '#e0f2fe', color: '#0369a1', borderColor: '#bae6fd' }}>
-                                <ShieldCheck size={13} /> 7-Day Performance Audit
-                            </span>
-                            <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                                {activeDomainMeta.icon} {activeDomainMeta.name}
+                            <h1 className="re-title">Weekly Executive Report</h1>
+                            <span className="re-badge-live">
+                                <ShieldCheck size={12} /> 7-Day Audit
                             </span>
                         </div>
                         <p className="re-subtitle">
-                            Automated 7-day operational intelligence: cash/card mix, expiry risk, supplier debt, dead stock capital, margins, reorder alerts, and inventory shrinkage.
+                            Automated operational intelligence across settlements, margins, expiry risks, and inventory.
                         </p>
                     </div>
                 </div>
             </div>
 
-            {/* 2. Section Capabilities Overview Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                {WEEKLY_SECTIONS.map((sec) => {
-                    const IconComp = sec.icon;
-                    return (
-                        <div key={sec.id} style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', padding: '0.65rem 0.85rem', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px' }}>
-                            <div style={{ width: 30, height: 30, borderRadius: '6px', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0284c7', flexShrink: 0 }}>
-                                <IconComp size={16} />
+            {/* 2. Key Audit Pillars (Google Pill Ribbon) */}
+            <div className="weekly-pillars-bar">
+                <span className="weekly-pillars-label">Coverage:</span>
+                <div className="weekly-pillars-list">
+                    {WEEKLY_SECTIONS.map((sec) => {
+                        const IconComp = sec.icon;
+                        return (
+                            <div key={sec.id} className="weekly-pillar-chip" title={sec.desc}>
+                                <IconComp size={13} className="pillar-chip-icon" />
+                                <span>{sec.label.replace(/^\d+\.\s*/, '')}</span>
                             </div>
-                            <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                    {sec.label}
-                                </div>
-                                <div style={{ fontSize: '0.72rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                    {sec.desc}
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })}
+                        );
+                    })}
+                </div>
             </div>
 
             {/* 3. Main Grid */}
@@ -253,12 +244,12 @@ export default function WeeklyReport() {
                 <div className="re-card" style={{ height: 'fit-content' }}>
                     <div className="re-card-header">
                         <span className="re-card-title">
-                            <Layers size={18} color="#0284c7" /> Weekly Report Parameters
+                            <Layers size={17} className="re-card-title-icon" /> Report Parameters
                         </span>
                     </div>
 
                     {error && (
-                        <div style={{ padding: '0.75rem', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', color: '#b91c1c', fontSize: '0.84rem', marginBottom: '1.2rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <div className="re-error-box">
                             <AlertCircle size={16} style={{ flexShrink: 0 }} />
                             <span>{error}</span>
                         </div>
@@ -266,12 +257,12 @@ export default function WeeklyReport() {
 
                     <div className="re-form-group">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-                            <label className="re-label" style={{ margin: 0 }}>Pharmacy POS / Ledger Source</label>
+                            <label className="re-label" style={{ margin: 0 }}>POS / Ledger Source</label>
                             <button
                                 type="button"
                                 onClick={fetchAvailableFiles}
                                 title="Refresh files"
-                                style={{ background: 'none', border: 'none', color: '#0284c7', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem', fontWeight: 600 }}
+                                className="re-refresh-btn"
                             >
                                 <RefreshCw size={12} /> Refresh
                             </button>
@@ -291,14 +282,14 @@ export default function WeeklyReport() {
                                 ))}
                             </select>
                         ) : (
-                            <div style={{ padding: '0.75rem', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '0.82rem', color: '#64748b' }}>
+                            <div className="re-loading-sources">
                                 Loading data sources...
                             </div>
                         )}
 
-                        <div style={{ marginTop: '0.5rem', padding: '0.45rem 0.75rem', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '6px', fontSize: '0.78rem', color: '#0369a1', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                            <CalendarDays size={14} style={{ flexShrink: 0 }} />
-                            <span>Period: Computes latest 7-day interval vs. previous 7-day baseline automatically.</span>
+                        <div className="re-period-badge">
+                            <CalendarDays size={13} style={{ flexShrink: 0 }} />
+                            <span>Automatic 7-day interval vs. previous 7-day baseline</span>
                         </div>
                     </div>
 
@@ -315,7 +306,7 @@ export default function WeeklyReport() {
                     </div>
 
                     <div className="re-form-group">
-                        <label className="re-label">Formats to Generate</label>
+                        <label className="re-label">Formats</label>
                         <div className="re-checkbox-group">
                             <label className="re-checkbox-label">
                                 <input
@@ -324,7 +315,7 @@ export default function WeeklyReport() {
                                     onChange={(e) => setFormatPdf(e.target.checked)}
                                     disabled={isGenerating}
                                 />
-                                <span>PDF Document (Print Ready)</span>
+                                <span>PDF Document</span>
                             </label>
                             <label className="re-checkbox-label">
                                 <input
@@ -333,7 +324,7 @@ export default function WeeklyReport() {
                                     onChange={(e) => setFormatHtml(e.target.checked)}
                                     disabled={isGenerating}
                                 />
-                                <span>Interactive HTML Document</span>
+                                <span>Interactive HTML</span>
                             </label>
                         </div>
                     </div>
@@ -347,7 +338,7 @@ export default function WeeklyReport() {
                                 onChange={(e) => setAllowRetry(e.target.checked)}
                                 disabled={isGenerating}
                             />
-                            <span>Strict zero-hallucination verification & auto-retry</span>
+                            <span>Strict zero-hallucination verification</span>
                         </label>
                     </div>
 
@@ -355,24 +346,23 @@ export default function WeeklyReport() {
                         className="re-btn-primary"
                         onClick={handleGenerateWeekly}
                         disabled={isGenerating || (!formatPdf && !formatHtml)}
-                        style={{ background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)', boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)' }}
                     >
                         {isGenerating ? (
                             <>
-                                <RefreshCw size={18} className="animate-spin" /> Generating Weekly Report...
+                                <RefreshCw size={16} className="animate-spin" /> Generating Report...
                             </>
                         ) : (
                             <>
-                                <Sparkles size={18} /> Generate Weekly Report
+                                <Sparkles size={16} /> Generate Weekly Report
                             </>
                         )}
                     </button>
 
                     {isGenerating && (
                         <div className="re-loading-box">
-                            <div className="re-spinner" style={{ borderTopColor: '#0284c7' }} />
+                            <div className="re-spinner" />
                             <div className="re-loading-step">{generationStep}</div>
-                            <div className="re-loading-sub">Running offline on local CPU and Ollama LLM</div>
+                            <div className="re-loading-sub">Running offline on local Ollama engine</div>
                         </div>
                     )}
                 </div>
@@ -503,37 +493,30 @@ export default function WeeklyReport() {
                                     )}
 
                                     {previewMode === 'audit' && (
-                                        <div style={{ padding: '1.5rem', overflowY: 'auto', height: '100%' }}>
-                                            <h4 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: '#0f172a' }}>
+                                        <div className="re-audit-container">
+                                            <h4 className="re-audit-heading">
                                                 Ground-Truth Verification Claims Ledger
                                             </h4>
                                             {result.report.verification.claims.length > 0 ? (
-                                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.84rem' }}>
+                                                <table className="re-audit-table">
                                                     <thead>
-                                                        <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0', textAlign: 'left' }}>
-                                                            <th style={{ padding: '0.6rem 0.8rem' }}>Claim Prose</th>
-                                                            <th style={{ padding: '0.6rem 0.8rem' }}>Claim Value</th>
-                                                            <th style={{ padding: '0.6rem 0.8rem' }}>Expected Value</th>
-                                                            <th style={{ padding: '0.6rem 0.8rem' }}>Matched KPI</th>
-                                                            <th style={{ padding: '0.6rem 0.8rem' }}>Status</th>
+                                                        <tr>
+                                                            <th>Claim Prose</th>
+                                                            <th>Claim Value</th>
+                                                            <th>Expected Value</th>
+                                                            <th>Matched KPI</th>
+                                                            <th>Status</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
                                                         {result.report.verification.claims.map((claim, idx) => (
-                                                            <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                                                <td style={{ padding: '0.6rem 0.8rem', fontStyle: 'italic', maxWidth: 260 }}>"{claim.matched_text}"</td>
-                                                                <td style={{ padding: '0.6rem 0.8rem', fontWeight: 600 }}>{claim.extracted_value?.toLocaleString()}</td>
-                                                                <td style={{ padding: '0.6rem 0.8rem', color: '#64748b' }}>{claim.expected_value?.toLocaleString() ?? '—'}</td>
-                                                                <td style={{ padding: '0.6rem 0.8rem', fontFamily: 'monospace', color: '#0284c7' }}>{claim.matched_kpi_key || '—'}</td>
-                                                                <td style={{ padding: '0.6rem 0.8rem' }}>
-                                                                    <span style={{
-                                                                        padding: '0.2rem 0.5rem',
-                                                                        borderRadius: '4px',
-                                                                        fontSize: '0.75rem',
-                                                                        fontWeight: 700,
-                                                                        background: claim.status === 'verified' ? '#f0fdf4' : '#fef2f2',
-                                                                        color: claim.status === 'verified' ? '#16a34a' : '#dc2626'
-                                                                    }}>
+                                                            <tr key={idx}>
+                                                                <td style={{ fontStyle: 'italic', maxWidth: 260 }}>"{claim.matched_text}"</td>
+                                                                <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{claim.extracted_value?.toLocaleString()}</td>
+                                                                <td>{claim.expected_value?.toLocaleString() ?? '—'}</td>
+                                                                <td style={{ fontFamily: 'monospace', color: 'var(--google-blue)' }}>{claim.matched_kpi_key || '—'}</td>
+                                                                <td>
+                                                                    <span className={claim.status === 'verified' ? 're-audit-pill-verified' : 're-audit-pill-mismatch'}>
                                                                         {claim.status.toUpperCase()}
                                                                     </span>
                                                                 </td>
@@ -542,7 +525,7 @@ export default function WeeklyReport() {
                                                     </tbody>
                                                 </table>
                                             ) : (
-                                                <div style={{ color: '#64748b', fontSize: '0.88rem' }}>
+                                                <div style={{ color: 'var(--text-tertiary)', fontSize: '0.88rem' }}>
                                                     All numbers are grounded directly in the deterministic database ledger.
                                                 </div>
                                             )}
@@ -553,12 +536,12 @@ export default function WeeklyReport() {
                         </>
                     ) : (
                         <div className="re-empty-placeholder">
-                            <div className="re-empty-icon" style={{ background: '#f0f9ff', color: '#0284c7' }}>
-                                <CalendarDays size={36} />
+                            <div className="re-empty-icon">
+                                <CalendarDays size={32} />
                             </div>
-                            <h3>Ready to Generate Weekly Executive Report</h3>
+                            <h3>Ready to Generate Weekly Report</h3>
                             <p>
-                                Select your pharmacy sales or inventory ledger on the left, then click <b>Generate Weekly Report</b> to compute week-over-week performance and build the publication PDF.
+                                Select a ledger on the left and click <b>Generate Weekly Report</b> to compute week-over-week performance and build the publication PDF.
                             </p>
                         </div>
                     )}
