@@ -79,24 +79,20 @@ def render_monthly_revenue_chart(report_data: ReportData, out_path: Path) -> Opt
     months_order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
     if has_years:
-        data_2024 = [0.0] * 12
-        data_2025 = [0.0] * 12
-        for pt in trend_data:
-            yr = str(pt.get("year", ""))
-            m_idx = int(pt.get("month_num", 1)) - 1
-            if 0 <= m_idx < 12:
-                val = float(pt.get("revenue", 0.0))
-                if yr == "2024":
-                    data_2024[m_idx] = val
-                elif yr == "2025":
-                    data_2025[m_idx] = val
-
-        if any(v > 0 for v in data_2024):
-            ax.plot(range(12), data_2024, marker="o", markersize=4.2, color="#1e3a5f", linewidth=1.8, label="2024")
-            ax.fill_between(range(12), data_2024, color="#1e3a5f", alpha=0.05)
-        if any(v > 0 for v in data_2025):
-            ax.plot(range(12), data_2025, marker="s", markersize=4.2, color="#d97706", linewidth=1.8, label="2025")
-            ax.fill_between(range(12), data_2025, color="#d97706", alpha=0.05)
+        years = sorted({str(pt.get("year")) for pt in trend_data if pt.get("year") is not None})[-5:]
+        palette = ["#1e3a5f", "#0d7377", "#d97706", "#7c3aed", "#ea580c"]
+        for year_idx, year in enumerate(years):
+            year_rows = [pt for pt in trend_data if str(pt.get("year")) == year]
+            points = sorted(
+                ((int(pt.get("month_num", 1)) - 1, float(pt.get("revenue") or 0.0)) for pt in year_rows),
+                key=lambda item: item[0],
+            )
+            if not points:
+                continue
+            xs, ys = zip(*points)
+            ax.plot(xs, ys, marker="o", markersize=5, color=palette[year_idx % len(palette)], linewidth=2.2, label=year)
+            if len(years) == 1:
+                ax.fill_between(xs, ys, color=palette[year_idx % len(palette)], alpha=0.10)
         ax.set_xticks(range(12))
         ax.set_xticklabels(months_order, fontsize=8.0, color="#334155")
     else:
@@ -112,7 +108,7 @@ def render_monthly_revenue_chart(report_data: ReportData, out_path: Path) -> Opt
     ax.grid(True, linestyle="--", alpha=0.45, color="#e2e8f0")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_title("Monthly Revenue: 2024 vs 2025", fontsize=11.0, fontweight="bold", color="#0f172a", pad=12)
+    ax.set_title("Monthly sales trend", fontsize=13.0, fontweight="bold", color="#0f172a", pad=12)
 
     handles, _ = ax.get_legend_handles_labels()
     if handles:
@@ -154,7 +150,7 @@ def render_branch_performance_chart(report_data: ReportData, out_path: Path) -> 
     ax.grid(True, axis="x", linestyle="--", alpha=0.45, color="#e2e8f0")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_title("Total Revenue by Branch (2024–2025)", fontsize=11.0, fontweight="bold", color="#0f172a", pad=12)
+    ax.set_title("Revenue by branch", fontsize=13.0, fontweight="bold", color="#0f172a", pad=12)
     ax.tick_params(axis="both", labelsize=8.0, colors="#334155")
 
     for bar, val, bill in zip(bars, values, avg_bills):
@@ -317,7 +313,8 @@ def render_hourly_traffic_chart(report_data: ReportData, out_path: Path) -> Opti
     counts = [int(t.get("count", 0)) for t in traffic]
     labels = [f"{h:02d}:00" for h in hours]
 
-    colors = ["#d97706" if 13 <= h <= 17 else "#1e3a5f" for h in hours]
+    peak_idx = max(range(len(counts)), key=counts.__getitem__)
+    colors = ["#d97706" if idx == peak_idx else "#1e3a5f" for idx in range(len(hours))]
 
     fig, ax = plt.subplots(figsize=(7.0, 2.6), dpi=250)
     fig.patch.set_facecolor("#ffffff")
@@ -330,7 +327,7 @@ def render_hourly_traffic_chart(report_data: ReportData, out_path: Path) -> Opti
     ax.grid(True, axis="y", linestyle="--", alpha=0.45, color="#e2e8f0")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_title("Number of Transactions by Hour of Day (1 PM–5 PM peak highlighted)", fontsize=11.0, fontweight="bold", color="#0f172a", pad=12)
+    ax.set_title(f"Transactions by hour (busiest: {hours[peak_idx]:02d}:00)", fontsize=12.5, fontweight="bold", color="#0f172a", pad=12)
 
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -668,7 +665,51 @@ def render_category_margin_chart(report_data: ReportData, out_path: Path) -> Opt
     return out_path
 
 
-def render_charts(report_data: ReportData, output_dir: Optional[Path] = None) -> Dict[str, Path]:
+def render_period_comparison_chart(report_data: ReportData, out_path: Path) -> Optional[Path]:
+    """Compare only measured current/prior period KPIs, with a separate scale per metric."""
+    labels = {
+        "total_revenue": ("Sales revenue", "PKR"),
+        "transaction_count": ("Transactions", "count"),
+        "average_transaction_value": ("Average bill", "PKR"),
+        "gross_profit": ("Gross profit", "PKR"),
+    }
+    available = []
+    for key, (label, unit) in labels.items():
+        row = report_data.period_comparison.get(key, {})
+        if isinstance(row, dict) and row.get("current") is not None and row.get("previous") is not None:
+            available.append((label, unit, float(row["previous"]), float(row["current"])))
+    if not available:
+        return None
+
+    fig, axes = plt.subplots(1, len(available), figsize=(max(5.4, 3.0 * len(available)), 3.0), squeeze=False, dpi=250)
+    fig.patch.set_facecolor("#ffffff")
+    colors = ["#94a3b8", "#0d7377"]
+    for ax, (label, unit, previous, current) in zip(axes[0], available):
+        ax.set_facecolor("#ffffff")
+        bars = ax.bar(["Previous", "Current"], [previous, current], color=colors, width=0.58)
+        ax.set_title(label, fontsize=11, weight="bold", color="#0f172a", pad=10)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.35, color="#cbd5e1")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.tick_params(axis="y", left=False, labelleft=False)
+        ax.tick_params(axis="x", labelsize=9)
+        max_abs = max(abs(previous), abs(current), 1.0)
+        ax.set_ylim(min(0, min(previous, current) * 1.25), max(0, max(previous, current) * 1.3))
+        for bar, value in zip(bars, (previous, current)):
+            text = f"PKR {value:,.0f}" if unit == "PKR" else f"{value:,.0f}"
+            offset = max_abs * 0.04
+            ax.text(bar.get_x() + bar.get_width() / 2, value + (offset if value >= 0 else -offset), text,
+                    ha="center", va="bottom" if value >= 0 else "top", fontsize=8, color="#334155", weight="bold")
+    fig.suptitle("Current period compared with previous period", fontsize=14, weight="bold", color="#0f172a", y=1.03)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def render_charts(report_data: ReportData, output_dir: Optional[Path] = None, progress_callback=None) -> Dict[str, Path]:
     """
     Generate all relevant static chart PNG images for the publication report.
     """
@@ -677,72 +718,30 @@ def render_charts(report_data: ReportData, output_dir: Optional[Path] = None) ->
 
     charts: Dict[str, Path] = {}
 
-    # 1. Monthly Revenue Trend
-    p1 = base_dir / "monthly_trend.png"
-    if render_monthly_revenue_chart(report_data, p1):
-        charts["monthly_trend"] = p1
-        charts["trend"] = p1
-
-    # 2. Branch Performance
-    p2 = base_dir / "branch_performance.png"
-    if render_branch_performance_chart(report_data, p2):
-        charts["branch_performance"] = p2
-
-    # 3. Payment Mix Donut
-    p3 = base_dir / "payment_mix.png"
-    if render_payment_mix_donut(report_data, p3):
-        charts["payment_mix"] = p3
-
-    # 4. Top 12 Products
-    p4 = base_dir / "top_products.png"
-    if render_top_products_chart(report_data, p4):
-        charts["top_products"] = p4
-        charts["breakdown"] = p4
-
-    # 5. Slow Moving Products
-    p5 = base_dir / "slow_products.png"
-    if render_slow_products_chart(report_data, p5):
-        charts["slow_products"] = p5
-
-    # 6. Hourly Customer Traffic
-    p6 = base_dir / "hourly_traffic.png"
-    if render_hourly_traffic_chart(report_data, p6):
-        charts["hourly_traffic"] = p6
-
-    # 7. Day of Week Traffic
-    p7 = base_dir / "daily_traffic.png"
-    if render_daily_traffic_chart(report_data, p7):
-        charts["daily_traffic"] = p7
-
-    # 8. Cashier Performance
-    p8 = base_dir / "cashier_performance.png"
-    if render_cashier_performance_chart(report_data, p8):
-        charts["cashier_performance"] = p8
-
-    # 9. Top Debtors
-    p9 = base_dir / "top_debtors.png"
-    if render_top_debtors_chart(report_data, p9):
-        charts["top_debtors"] = p9
-
-    # 10. Expiry Risk
-    p10 = base_dir / "expiry_risk.png"
-    if render_expiry_chart(report_data, p10):
-        charts["expiry"] = p10
-        charts["expiry_risk"] = p10
-
-    # 11. Supplier Payables
-    p11 = base_dir / "supplier_payables.png"
-    if render_supplier_payables_chart(report_data, p11):
-        charts["supplier_payables"] = p11
-
-    # 12. Dead Stock
-    p12 = base_dir / "dead_stock.png"
-    if render_dead_stock_chart(report_data, p12):
-        charts["dead_stock"] = p12
-
-    # 13. Category Margin
-    p13 = base_dir / "category_margin.png"
-    if render_category_margin_chart(report_data, p13):
-        charts["category_margin"] = p13
+    chart_tasks = [
+        ("period_comparison", "period_comparison.png", render_period_comparison_chart),
+        ("monthly_trend", "monthly_trend.png", render_monthly_revenue_chart),
+        ("branch_performance", "branch_performance.png", render_branch_performance_chart),
+        ("payment_mix", "payment_mix.png", render_payment_mix_donut),
+        ("top_products", "top_products.png", render_top_products_chart),
+        ("slow_products", "slow_products.png", render_slow_products_chart),
+        ("hourly_traffic", "hourly_traffic.png", render_hourly_traffic_chart),
+        ("daily_traffic", "daily_traffic.png", render_daily_traffic_chart),
+        ("cashier_performance", "cashier_performance.png", render_cashier_performance_chart),
+        ("top_debtors", "top_debtors.png", render_top_debtors_chart),
+        ("expiry", "expiry_risk.png", render_expiry_chart),
+        ("supplier_payables", "supplier_payables.png", render_supplier_payables_chart),
+        ("dead_stock", "dead_stock.png", render_dead_stock_chart),
+        ("category_margin", "category_margin.png", render_category_margin_chart),
+    ]
+    aliases = {"monthly_trend": "trend", "top_products": "breakdown", "expiry": "expiry_risk"}
+    for index, (key, filename, renderer) in enumerate(chart_tasks, start=1):
+        path = base_dir / filename
+        if renderer(report_data, path):
+            charts[key] = path
+            if key in aliases:
+                charts[aliases[key]] = path
+        if progress_callback:
+            progress_callback(index / len(chart_tasks), f"Rendering report charts ({index}/{len(chart_tasks)})")
 
     return charts

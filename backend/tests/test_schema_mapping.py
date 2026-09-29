@@ -57,6 +57,15 @@ class TestSynonymMapping:
         assert s["Exp"] == "expiry_date"
         assert s["Formula"] == "generic_name"
 
+    def test_pharmacy_transaction_status_is_preserved(self, pharm):
+        proposal = suggest_mapping(
+            ["TransactionType", "Status", "Amount"],
+            [{"TransactionType": "Sale", "Status": "Returned", "Amount": 25}],
+            pharm,
+        )
+        mapped = {item.source_column: item.canonical_field for item in proposal.suggestions}
+        assert mapped["Status"] == "status"
+
     def test_trade_price_synonym(self, pharm):
         """Both 'Trade Price' and 'Purchase Price' are synonyms for cost.
         Conflict resolution must leave exactly ONE mapped to cost."""

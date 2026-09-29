@@ -254,6 +254,23 @@ def test_gappy_history_refuses_even_when_long_enough():
     assert "3 of 9" in result.reason
 
 
+def test_incomplete_current_month_is_excluded_from_forecast_history():
+    frame = pd.DataFrame(_month_rows([100, 200, 300, 400, 500, 600]))
+
+    partial = engine.compute(
+        "revenue_forecast", frame, KPIFilters(as_of="2025-06-15")
+    )
+    month_end = engine.compute(
+        "revenue_forecast", frame, KPIFilters(as_of="2025-06-30")
+    )
+
+    assert partial.status == STATUS_OK
+    assert partial.series[-1]["period"] == "2025-05"
+    assert partial.forecast[0]["period"] == "2025-07"
+    assert any("excluded incomplete current month 2025-06" in note for note in partial.provenance.assumptions)
+    assert month_end.series[-1]["period"] == "2025-06"
+
+
 def test_minimums_are_configurable():
     original = settings.forecast_tier1_min_periods
     settings.forecast_tier1_min_periods = 3
@@ -533,7 +550,6 @@ def test_chatbot_forecast_number_comes_from_code_with_uncertainty():
         "app.rag.chat.session_manager"
     ), patch("app.rag.chat.extract_filters", return_value={"as_of": AS_OF}):
         kb.return_value.search.return_value = chunks
-        llm.chat.return_value = "Roughly 10 units, likely between 0 and 22."
 
         from app.rag.chat import RAGChat
 
@@ -546,11 +562,10 @@ def test_chatbot_forecast_number_comes_from_code_with_uncertainty():
     assert entry["value"] == 10.0
     assert entry["is_estimate"] is True
 
-    # The band reached the prompt, and the system prompt demands it be conveyed.
-    messages = llm.chat.call_args.kwargs["messages"]
-    assert "estimate_range" in messages[-1]["content"]
-    assert "FORECAST, not a measured fact" in messages[0]["content"]
-    assert "likely between" in messages[0]["content"]
+    assert "10 units" in response.answer
+    assert "estimated range" in response.answer
+    assert "likely between" not in response.answer
+    llm.chat.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

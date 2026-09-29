@@ -21,11 +21,12 @@ Generates executive publication reports matching the comprehensive pharmacy layo
 from __future__ import annotations
 
 import base64
+from html import escape
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
@@ -92,6 +93,42 @@ def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     return None
 
 
+def _result_value(result: Any) -> Optional[float]:
+    value = getattr(result, "value", None) if result is not None else None
+    if value is None and isinstance(result, dict):
+        value = result.get("value")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_monthly_trend(df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
+    """Compute only the full-source monthly series needed by weekly report charts."""
+    if df is None or df.empty:
+        return []
+    date_col = _find_col(df, ["Bill_Date", "Date", "date", "bill_date"])
+    amount_col = _find_col(df, ["Amount", "Total_Amount", "sales_amount", "amount", "total_amount"])
+    if not date_col or not amount_col:
+        return []
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+    amounts = pd.to_numeric(df[amount_col], errors="coerce")
+    valid = dates.notna() & amounts.notna()
+    if not valid.any():
+        return []
+    trend = pd.DataFrame({"dt": dates[valid], "revenue": amounts[valid]})
+    trend["year"] = trend["dt"].dt.year.astype(str)
+    trend["month_num"] = trend["dt"].dt.month
+    trend["month"] = trend["dt"].dt.strftime("%b")
+    trend["period"] = trend["dt"].dt.strftime("%Y-%m")
+    monthly = trend.groupby(["year", "month_num", "month", "period"], sort=True)["revenue"].sum().reset_index()
+    return [
+        {"year": str(row.year), "month_num": int(row.month_num), "month": str(row.month),
+         "period": str(row.period), "revenue": float(row.revenue)}
+        for row in monthly.itertuples(index=False)
+    ]
+
+
 def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Dataset.xlsx") -> Tuple[ExecutiveMetrics, Dict[str, Any]]:
     """Compute rich multi-dimensional executive aggregations from source DataFrame."""
     em = ExecutiveMetrics(source_filename=filename)
@@ -133,7 +170,7 @@ def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Data
         em.unique_customers = int(df[cust_col].dropna().nunique())
 
     # 4. Products Sold Count
-    prod_col = _find_col(df, ["Product_Name", "product_id", "Product_Code", "product_name"])
+    prod_col = _find_col(df, ["Product_Name", "product_id", "generic_name", "drug_name", "Product_Code", "product_name"])
     if prod_col:
         em.unique_products_count = int(df[prod_col].dropna().nunique())
 
@@ -210,7 +247,7 @@ def _extract_executive_metrics(df: Optional[pd.DataFrame], filename: str = "Data
             pass
 
     # 9. Branch Performance
-    branch_col = _find_col(df, ["Branch_Name", "Pharmacy_Name", "branch", "Branch", "Store_Name", "store", "location", "supplier_id"])
+    branch_col = _find_col(df, ["Branch_Name", "Pharmacy_Name", "branch", "Branch", "branch_id", "store_id", "Store_Name", "store", "location"])
     if branch_col and amt_col:
         b_grp = df.groupby(branch_col).agg(
             revenue=(amt_col, "sum"),
@@ -277,41 +314,102 @@ def gather_report_data(
     anomalies: Optional[List[Dict[str, Any]]] = None,
     kpi_results: Optional[Dict[str, Any]] = None,
     report_type: str = "standard",
+    source_name: Optional[str] = None,
 ) -> ReportData:
     """Gather and assemble ReportData with rich executive dimensions."""
     effective_domain = domain or get_default_domain()
     effective_name = business_name or f"{effective_domain.title()} Business"
     is_weekly_pharmacy = (report_type == "weekly_pharmacy" and str(effective_domain).strip().lower() == "pharmacy")
 
-    # Compute KPI results
+    # Compute all-time results first; weekly sales KPIs are replaced below with an
+    # actual latest-week slice, while stock-on-hand and expiry KPIs remain snapshots.
     if kpi_results is not None:
         computed_kpis = kpi_results
+    elif source_df is not None and is_weekly_pharmacy:
+        # Weekly mode computes its small comparison/snapshot KPI set below.
+        # Running the entire pharmacy KPI registry over a very large workbook
+        # needlessly repeats full-frame scans many times.
+        computed_kpis = {}
     elif source_df is not None:
         computed_kpis = engine.compute_all(source_df, filters, domain=effective_domain)
     else:
         computed_kpis = {}
+    comparison: Dict[str, Any] = {}
+    weekly_metrics_df: Optional[pd.DataFrame] = None
+    weekly_audit_df: Optional[pd.DataFrame] = None
+    weekly_period = None
+    if is_weekly_pharmacy and source_df is not None and not source_df.empty and kpi_results is None:
+        try:
+            from app.analytics.kpi import classify_transactions
+            from app.analytics.models import Period
+
+            transaction_types = classify_transactions(source_df)
+            dates = pd.to_datetime(source_df["date"], errors="coerce") if "date" in source_df.columns else pd.Series(pd.NaT, index=source_df.index)
+            sale_dates = dates[transaction_types.sale & dates.notna()]
+            if not sale_dates.empty:
+                end_date = sale_dates.max().normalize()
+                current_start = end_date - pd.Timedelta(days=6)
+                prior_end = current_start - pd.Timedelta(days=1)
+                prior_start = prior_end - pd.Timedelta(days=6)
+                current_mask = dates.between(current_start, end_date + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))
+                prior_mask = dates.between(prior_start, prior_end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))
+                weekly_metrics_df = source_df.loc[current_mask & transaction_types.sale]
+                weekly_audit_df = source_df.loc[current_mask]
+                current_filters = replace(filters or KPIFilters(), date_from=current_start.strftime("%Y-%m-%d"), date_to=end_date.strftime("%Y-%m-%d"))
+                prior_filters = replace(filters or KPIFilters(), date_from=prior_start.strftime("%Y-%m-%d"), date_to=prior_end.strftime("%Y-%m-%d"))
+                comparison_keys = ("total_revenue", "transaction_count", "gross_profit", "gross_margin_pct", "average_transaction_value")
+                current_kpi_df = source_df.loc[current_mask]
+                prior_kpi_df = source_df.loc[prior_mask]
+                current_kpis = {key: engine.compute(key, current_kpi_df, current_filters, domain=effective_domain) for key in comparison_keys}
+                prior_kpis = {key: engine.compute(key, prior_kpi_df, prior_filters, domain=effective_domain) for key in comparison_keys}
+                snapshot_keys = (
+                    "near_expiry_total", "expired_stock_value", "expiring_value_30d",
+                    "supplier_payable_total",
+                    "supplier_payable_by_supplier", "dead_stock_value", "low_stock_reorder_predictions",
+                    "top_declining_products",
+                )
+                computed_kpis = dict(current_kpis)
+                for key in snapshot_keys:
+                    if engine.has(key, domain=effective_domain):
+                        computed_kpis[key] = engine.compute(key, source_df, filters, domain=effective_domain)
+
+                comparison = {
+                    "current_start": current_start.strftime("%Y-%m-%d"),
+                    "current_end": end_date.strftime("%Y-%m-%d"),
+                    "previous_start": prior_start.strftime("%Y-%m-%d"),
+                    "previous_end": prior_end.strftime("%Y-%m-%d"),
+                }
+                for key in ("total_revenue", "transaction_count", "gross_profit", "gross_margin_pct", "average_transaction_value"):
+                    current_value = _result_value(current_kpis.get(key))
+                    previous_value = _result_value(prior_kpis.get(key))
+                    if current_value is not None or previous_value is not None:
+                        delta_pct = ((current_value - previous_value) / abs(previous_value) * 100.0) if current_value is not None and previous_value not in (None, 0.0) else None
+                        comparison[key] = {"current": current_value, "previous": previous_value, "change_pct": delta_pct}
+                weekly_period = Period(start=current_start.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
+        except Exception:
+            comparison = {}
+            weekly_metrics_df = None
+            weekly_audit_df = None
+    if is_weekly_pharmacy and weekly_period is None and source_df is not None and kpi_results is None:
+        # Fall back to the standard KPI pack if the source has no usable sale dates.
+        computed_kpis = engine.compute_all(source_df, filters, domain=effective_domain)
 
     # Extract rich executive metrics from raw data if available, fallback to canonical
-    df_for_metrics = raw_df if (raw_df is not None and not raw_df.empty) else source_df
+    df_for_metrics = weekly_metrics_df if weekly_metrics_df is not None else (raw_df if (raw_df is not None and not raw_df.empty) else source_df)
     em, dims = _extract_executive_metrics(df_for_metrics)
+    if is_weekly_pharmacy and source_df is not None and not source_df.empty:
+        # Keep transaction-level comparisons scoped to the selected week, while
+        # allowing the trend chart to use the full history available in this file.
+        dims["monthly_trend"] = _extract_monthly_trend(source_df)
+    if source_name:
+        em.source_filename = source_name
     if not em.branches_list and effective_name:
         em.branches_list = [effective_name]
 
     # Period resolution
-    if is_weekly_pharmacy:
-        from app.analytics.models import Period
-        dates = pd.to_datetime(source_df["date"], errors="coerce").dropna() if (source_df is not None and "date" in source_df.columns) else pd.Series([], dtype="datetime64[ns]")
-        if not dates.empty:
-            max_d = dates.max()
-        elif filters and (filters.date_to or filters.as_of):
-            max_d = pd.to_datetime(filters.date_to or filters.as_of)
-        else:
-            max_d = pd.Timestamp.now()
-        min_d = max_d - pd.Timedelta(days=6)
-        prior_end = min_d - pd.Timedelta(days=1)
-        prior_start = prior_end - pd.Timedelta(days=6)
-        period = Period(start=min_d.strftime("%Y-%m-%d"), end=max_d.strftime("%Y-%m-%d"))
-        em.reporting_period = f"{min_d.strftime('%Y-%m-%d')} to {max_d.strftime('%Y-%m-%d')} (vs prior week {prior_start.strftime('%Y-%m-%d')} to {prior_end.strftime('%Y-%m-%d')})"
+    if is_weekly_pharmacy and weekly_period is not None:
+        period = weekly_period
+        em.reporting_period = f"{comparison['current_start']} to {comparison['current_end']} (vs prior week {comparison['previous_start']} to {comparison['previous_end']})"
     else:
         # Extract period from any available KPIResult
         period = None
@@ -326,7 +424,8 @@ def gather_report_data(
         try:
             from app.anomaly.detectors import detect_all_anomalies
             from app.anomaly.explainer import explain_all
-            scan_res = detect_all_anomalies(source_df, domain=effective_domain)
+            anomaly_source = weekly_audit_df if is_weekly_pharmacy and weekly_audit_df is not None else source_df
+            scan_res = detect_all_anomalies(anomaly_source, domain=effective_domain)
             if scan_res.anomalies:
                 explain_all(scan_res.anomalies, max_items=10, use_llm=False)
                 anomalies = [a.to_dict() for a in scan_res.anomalies]
@@ -341,7 +440,7 @@ def gather_report_data(
     category_trend_note = None
 
     if is_weekly_pharmacy:
-        sections = ["executive_summary"]
+        sections = ["executive_summary", "weekly_report"]
     else:
         sections = [
             "revenue_trends", "branch_performance", "payment_mix",
@@ -373,11 +472,11 @@ def gather_report_data(
         ro_res = computed_kpis.get("low_stock_reorder_predictions")
         if ro_res and getattr(ro_res, "breakdown", None):
             for r in ro_res.breakdown:
-                if isinstance(r, dict):
+                if isinstance(r, dict) and r.get("stockout_risk") in {"CRITICAL_STOCKOUT_RISK", "REORDER_RECOMMENDED"}:
                     reorder_alerts.append({
                         "product_id": str(r.get("product_id", "")),
                         "product_name": str(r.get("generic_name") or r.get("product_id", "")),
-                        "days_until_stockout": float(r.get("days_of_supply", 0.0)),
+                        "days_until_stockout": float(r["days_of_supply"]) if r.get("days_of_supply") is not None else None,
                         "current_stock": float(r.get("current_stock", 0.0)),
                         "daily_sales_velocity": float(r.get("daily_sales_velocity", 0.0)),
                         "reorder_qty": float(r.get("recommended_reorder_qty", 0.0)),
@@ -391,11 +490,12 @@ def gather_report_data(
             category_trend_note = f"{cat_name} led product categories with a {margin_val:.1f}% gross margin."
 
         # Add shrinkage anomalies to anomalies if not already present
-        if source_df is not None and not source_df.empty:
+        shrinkage_source = weekly_audit_df if weekly_audit_df is not None else source_df
+        if shrinkage_source is not None and not shrinkage_source.empty:
             try:
                 from app.anomaly.detectors import detect_stock_movement_mismatch
                 from app.anomaly.explainer import generate_template_explanation
-                shrinkage = detect_stock_movement_mismatch(source_df)
+                shrinkage = detect_stock_movement_mismatch(shrinkage_source)
                 if shrinkage:
                     if anomalies is None:
                         anomalies = []
@@ -443,10 +543,23 @@ def gather_report_data(
             if is_non_empty and sec_key not in sections:
                 sections.append(sec_key)
 
+    source_label = source_name or em.source_filename or "POS dataset"
+    if source_label.startswith("db://"):
+        source_label = f"{source_label[5:].strip()} database"
+    elif source_label.startswith("sql://"):
+        source_label = source_label.split("/")[-1].replace("_", " ")
+    else:
+        source_label = Path(source_label).stem.replace("_", " ")
+    em.source_filename = source_label
+    period_label = f"Week ending {comparison['current_end']}" if comparison.get("current_end") else em.reporting_period
+    report_title = f"{effective_name} | {source_label} | {period_label} Performance & Growth Report"
+
     return ReportData(
         kpis=computed_kpis,
         domain=effective_domain,
         business_name=effective_name,
+        report_title=report_title,
+        period_comparison=comparison,
         period=period,
         filters=filters.as_dict() if filters and hasattr(filters, "as_dict") else {},
         anomalies=anomalies,
@@ -498,13 +611,14 @@ _HTML_CSS = """
         background: #ffffff;
         border: 1px solid var(--border);
         border-radius: 12px;
-        padding: 3rem 3.5rem;
-        margin-bottom: 2.5rem;
+        padding: 2rem 2.4rem;
+        margin-bottom: 1.25rem;
         box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05);
     }
     @media print {
         body { background: #fff; padding: 0; }
-        .page { border: none; box-shadow: none; padding: 2rem 0; page-break-after: always; }
+        .page { border: none; box-shadow: none; padding: 1.1rem 0; page-break-after: auto; break-after: auto; }
+        .cover-page { page-break-after: always; break-after: page; }
     }
     
     /* Cover Page */
@@ -525,7 +639,7 @@ _HTML_CSS = """
         margin-top: 1.5rem;
         margin-bottom: 0.25rem;
     }
-    .section-sub { font-size: 0.9rem; color: var(--muted); font-style: italic; margin-bottom: 1.25rem; }
+    .section-sub { font-size: 1rem; color: var(--muted); font-style: italic; margin-bottom: 0.8rem; }
     
     /* 8-Box KPI Stat Grid */
     .kpi-grid {
@@ -541,14 +655,14 @@ _HTML_CSS = """
         padding: 1rem 1.25rem;
     }
     .kpi-val { font-size: 1.45rem; font-weight: 800; color: #0f172a; line-height: 1.2; margin-bottom: 0.2rem; }
-    .kpi-lbl { font-size: 0.8rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
+    .kpi-lbl { font-size: 0.9rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
     
     /* Callout Boxes */
     .callout {
         border-radius: 8px;
         padding: 1rem 1.25rem;
         margin: 1.25rem 0;
-        font-size: 0.9rem;
+        font-size: 1rem;
         line-height: 1.6;
     }
     .callout-gold { background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid var(--gold); color: #854d0e; }
@@ -557,14 +671,14 @@ _HTML_CSS = """
     .callout h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.3rem; }
     
     /* Tables */
-    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.88rem; }
-    th { background: var(--navy); color: #ffffff; font-weight: 700; padding: 0.7rem 0.9rem; text-align: left; }
-    td { padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 1rem; }
+    th { background: var(--navy); color: #ffffff; font-weight: 700; padding: 0.75rem 0.9rem; text-align: left; }
+    td { padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--border); }
     tr:nth-child(even) { background: #fbfcfe; }
     
-    .chart-box { text-align: center; margin: 1.5rem 0; }
+    .chart-box { text-align: center; margin: 0.8rem 0; }
     .chart-img { max-width: 100%; height: auto; border-radius: 6px; }
-    .chart-caption { font-size: 0.82rem; color: var(--muted); font-style: italic; margin-top: 0.4rem; }
+    .chart-caption { font-size: 0.92rem; color: var(--muted); font-style: italic; margin-top: 0.4rem; }
     
     .bullet-list { margin: 1rem 0 1.5rem 1.25rem; }
     .bullet-list li { margin-bottom: 0.55rem; font-size: 0.92rem; color: #334155; line-height: 1.6; }
@@ -591,7 +705,7 @@ def _render_weekly_html_document(
     rev_str = f"PKR {em.total_revenue*1e-6:.2f}M" if em.total_revenue >= 1e6 else f"PKR {em.total_revenue:,.0f}"
     disc_str = f"PKR {em.discounts_total*1e-6:.2f}M ({em.discounts_pct:.1f}%)" if em.discounts_total >= 1e6 else f"PKR {em.discounts_total:,.0f}"
     bal_str = f"PKR {em.outstanding_balance*1e-6:.2f}M" if em.outstanding_balance >= 1e6 else f"PKR {em.outstanding_balance:,.0f}"
-    growth_str = f"{em.yoy_growth_pct:+.2f}%" if em.yoy_growth_pct is not None else "+0.65%"
+    report_title = escape(report_data.report_title or f"{report_data.business_name} Performance & Growth Report")
 
     c_pay = _image_to_base64(charts["payment_mix"]) if "payment_mix" in charts else ""
     c_expiry = _image_to_base64(charts["expiry"]) if "expiry" in charts else (_image_to_base64(charts["expiry_risk"]) if "expiry_risk" in charts else "")
@@ -599,21 +713,89 @@ def _render_weekly_html_document(
     c_dead = _image_to_base64(charts["dead_stock"]) if "dead_stock" in charts else ""
     c_cat_margin = _image_to_base64(charts["category_margin"]) if "category_margin" in charts else ""
     c_trend = _image_to_base64(charts["monthly_trend"]) if "monthly_trend" in charts else (_image_to_base64(charts["trend"]) if "trend" in charts else "")
+    c_compare = _image_to_base64(charts["period_comparison"]) if "period_comparison" in charts else ""
+    c_branch = _image_to_base64(charts["branch_performance"]) if "branch_performance" in charts else ""
+    c_top = _image_to_base64(charts["top_products"]) if "top_products" in charts else ""
+    c_hour = _image_to_base64(charts["hourly_traffic"]) if "hourly_traffic" in charts else ""
+    c_day = _image_to_base64(charts["daily_traffic"]) if "daily_traffic" in charts else ""
 
     warn_banner = ""
     if verification.claims and not verification.all_verified:
-        mismatches = [f"<li>Claim '{c.matched_text}': extracted {c.extracted_value} (expected {c.expected_value})</li>" for c in verification.claims if c.status != STATUS_VERIFIED]
         warn_banner = f"""
         <div class="callout callout-warn banner-warn" style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 1rem; margin: 1rem 0; border-radius: 4px;">
-          <h4 style="color: #991b1b; margin-bottom: 0.25rem;">Verification Warning</h4>
-          <p style="font-size: 0.88rem; color: #7f1d1d;">The following numbers in the AI narrative could not be verified against the deterministic ledger:</p>
-          <ul style="margin: 0.5rem 0 0 1.25rem; font-size: 0.85rem; color: #991b1b;">{''.join(mismatches)}</ul>
+          <h4 style="color: #991b1b; margin-bottom: 0.25rem;">AI narrative withheld</h4>
+          <p style="font-size: 0.88rem; color: #7f1d1d;">The narrative did not pass numeric verification, so it is excluded. The insights below are computed from the selected POS data.</p>
         </div>
         """
 
     sections_html = []
 
+    owner_insights_html = "".join(
+        f'<div class="callout callout-gold"><h4>{escape(item["title"])}</h4><p>{escape(item["finding"])}</p><p><b>Recommended next step:</b> {escape(item["action"])}</p></div>'
+        for item in report_data.get_owner_insights(limit=6)
+    )
+    comparison_labels = {
+        "total_revenue": "Sales revenue", "transaction_count": "Transactions",
+        "gross_profit": "Gross profit", "gross_margin_pct": "Gross margin",
+        "average_transaction_value": "Average bill value",
+    }
+    comparison_rows = []
+    for key, label in comparison_labels.items():
+        metric = report_data.period_comparison.get(key)
+        if not isinstance(metric, dict) or metric.get("current") is None or metric.get("previous") is None:
+            continue
+        unit = "PKR " if key in ("total_revenue", "gross_profit", "average_transaction_value") else ""
+        suffix = "%" if key == "gross_margin_pct" else ""
+        change = metric.get("change_pct")
+        change_str = f"{float(change):+.1f}%" if change is not None else "—"
+        comparison_rows.append(
+            f'<tr><td>{escape(label)}</td><td>{unit}{float(metric["current"]):,.2f}{suffix}</td>'
+            f'<td>{unit}{float(metric["previous"]):,.2f}{suffix}</td><td>{change_str}</td></tr>'
+        )
+    comparison_html = (
+        '<div class="section-title">This week vs previous week</div>'
+        '<table><thead><tr><th>Measure</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>'
+        + "".join(comparison_rows) + "</tbody></table>"
+    ) if comparison_rows else ""
+    if c_compare:
+        comparison_html += f'<div class="chart-box"><img class="chart-img" src="{c_compare}" alt="Current versus previous period comparison" /><div class="chart-caption">Each measure is scaled independently for a fair period-to-period comparison.</div></div>'
+
     # 1. Cash / Card Mix
+    if report_data.branch_performance:
+        branch_rows = "".join(
+            f'<tr><td>{escape(str(row.get("branch", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td>'
+            f'<td>{int(row.get("invoices", 0) or 0):,}</td><td>PKR {float(row.get("avg_bill", 0) or 0):,.0f}</td></tr>'
+            for row in report_data.branch_performance
+        )
+        branch_chart = f'<div class="chart-box"><img class="chart-img" src="{c_branch}" alt="Revenue by branch" /></div>' if c_branch else ""
+        sections_html.append(f'<div class="page"><div class="section-title">Branch performance</div><p>Compare sales and average transaction size across locations in the selected period.</p>{branch_chart}<table><thead><tr><th>Branch</th><th>Sales</th><th>Transactions</th><th>Average bill</th></tr></thead><tbody>{branch_rows}</tbody></table></div>')
+
+    if report_data.top_products:
+        product_rows = "".join(
+            f'<tr><td>{escape(str(row.get("name", "")))}</td><td>PKR {float(row.get("amount", 0) or 0):,.0f}</td></tr>'
+            for row in report_data.top_products[:15]
+        )
+        product_chart = f'<div class="chart-box"><img class="chart-img" src="{c_top}" alt="Top products by sales" /></div>' if c_top else ""
+        sections_html.append(f'<div class="page"><div class="section-title">Products driving sales</div><p>Highest-selling items by recorded revenue for this dataset and period.</p>{product_chart}<table><thead><tr><th>Product</th><th>Sales</th></tr></thead><tbody>{product_rows}</tbody></table></div>')
+
+    if report_data.daily_traffic:
+        rows = "".join(f'<tr><td>{escape(str(row.get("day", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td></tr>' for row in report_data.daily_traffic)
+        day_chart = f'<div class="chart-box"><img class="chart-img" src="{c_day}" alt="Sales by day" /></div>' if c_day else ""
+        sections_html.append(f'<div class="page"><div class="section-title">Sales by day</div><p>Use the observed weekday pattern to plan staffing and replenishment.</p>{day_chart}<table><thead><tr><th>Day</th><th>Sales</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+    if report_data.hourly_traffic:
+        rows = "".join(f'<tr><td>{int(row.get("hour", 0)):02d}:00</td><td>{int(row.get("count", 0)):,}</td></tr>' for row in report_data.hourly_traffic)
+        hour_chart = f'<div class="chart-box"><img class="chart-img" src="{c_hour}" alt="Customer activity by hour" /></div>' if c_hour else ""
+        sections_html.append(f'<div class="page"><div class="section-title">Customer activity by hour</div><p>Observed transaction counts by recorded checkout hour.</p>{hour_chart}<table><thead><tr><th>Hour</th><th>Transactions</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+    if report_data.cashier_performance:
+        rows = "".join(f'<tr><td>{escape(str(row.get("cashier", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td><td>{int(row.get("invoices", 0) or 0):,}</td></tr>' for row in report_data.cashier_performance)
+        sections_html.append(f'<div class="page"><div class="section-title">Cashier activity</div><p>Recorded throughput by cashier; use this alongside shift hours before comparing productivity.</p><table><thead><tr><th>Cashier</th><th>Sales</th><th>Transactions</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+    if report_data.top_debtors:
+        rows = "".join(f'<tr><td>{escape(str(row.get("customer", "")))}</td><td>PKR {float(row.get("balance", 0) or 0):,.0f}</td></tr>' for row in report_data.top_debtors)
+        sections_html.append(f'<div class="page"><div class="section-title">Outstanding customer balances</div><p>Prioritize reconciled balances and follow up according to agreed credit terms.</p><table><thead><tr><th>Customer</th><th>Balance</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
     if "cash_card_mix" in report_data.sections:
         pay_rows = []
         for pm in report_data.payment_mix:
@@ -632,7 +814,7 @@ def _render_weekly_html_document(
           {table_html}
           <div class="callout callout-gold">
             <h4>Liquidity Note</h4>
-            Cash settlement accounts for the core counter velocity. Electronic and card transactions reduce cash handling errors and support reconciled end-of-day register balancing.
+            Reconcile each recorded payment channel to settlement statements and review which channels produce the strongest net contribution after fees.
           </div>
         </div>
         """)
@@ -642,17 +824,17 @@ def _render_weekly_html_document(
         chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_expiry}" alt="Expiry Exposure" /><div class="chart-caption">Stock expiry risk distribution</div></div>' if c_expiry else ""
         near_v = getattr(report_data.get_kpi("near_expiry_total") or report_data.get_kpi("expiring_value_30d"), "value", None)
         exp_v = getattr(report_data.get_kpi("expired_stock_value"), "value", None)
-        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "PKR 0.00"
-        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "PKR 0.00"
+        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "Not available from this source"
+        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "Not available from this source"
         sections_html.append(f"""
         <div class="page">
           <div class="section-title">2. Expiry Loss Exposure</div>
-          <div class="section-sub">Near-expiry risk (&lt;30-90 days) and expired inventory exposure</div>
+          <div class="section-sub">Near-expiry and expired inventory values reported by this source</div>
           {chart_html}
           <div class="callout callout-orange">
             <h4>Expiry Exposure Breakdown</h4>
             <p style="font-size: 0.92rem; margin-bottom: 0.5rem;"><b>Near Expiry Stock:</b> {near_str} &nbsp;|&nbsp; <b>Expired Stock:</b> {exp_str}</p>
-            Initiate immediate returns to distributors or swap out batches nearing expiry to claim manufacturer credit notes before threshold deadlines.
+            Review the exposed batches and prioritize distributor returns or stock transfers where the source data supports them.
           </div>
         </div>
         """)
@@ -731,9 +913,10 @@ def _render_weekly_html_document(
         ra_rows = []
         for ra in report_data.reorder_alerts:
             p_name = str(ra.get("product_name") or ra.get("name") or ra.get("product_id") or "Product")
-            days = float(ra.get("days_until_stockout") or 0.0)
+            days_value = ra.get("days_until_stockout")
+            days = f"{float(days_value):.1f} days" if days_value is not None else "Insufficient sales history"
             rq = float(ra.get("recommended_reorder_qty") or ra.get("reorder_qty") or 0.0)
-            ra_rows.append(f"<tr><td><b>{p_name}</b></td><td>{days:.1f} days</td><td>{rq:,.0f} units</td></tr>")
+            ra_rows.append(f"<tr><td><b>{escape(p_name)}</b></td><td>{days}</td><td>{rq:,.0f} units</td></tr>")
         table_html = f"<table><thead><tr><th>Product Name</th><th>Days of Supply</th><th>Suggested Reorder</th></tr></thead><tbody>{''.join(ra_rows)}</tbody></table>" if ra_rows else ""
         sections_html.append(f"""
         <div class="page">
@@ -742,7 +925,7 @@ def _render_weekly_html_document(
           {table_html}
           <div class="callout callout-gold">
             <h4>Replenishment Urgency</h4>
-            Place purchase orders immediately for products showing less than 3 days of supply remaining to avoid prescription fulfillment walkaways.
+            Confirm on-hand quantities and supplier lead times. Treat rows without dated sales history as stock snapshots, not days-of-supply forecasts.
           </div>
         </div>
         """)
@@ -776,15 +959,15 @@ def _render_weekly_html_document(
 
     # 8. Seasonal Trend
     if "seasonal_trend" in report_data.sections:
-        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_trend}" alt="Revenue Trend" /><div class="chart-caption">Weekly sales movement</div></div>' if c_trend else ""
-        note = report_data.category_trend_note or "Steady baseline demand observed across primary pharmaceutical product lines."
+        chart_html = f'<div class="chart-box"><img class="chart-img" src="{c_trend}" alt="Revenue Trend" /><div class="chart-caption">Revenue across recorded history</div></div>' if c_trend else ""
+        note = report_data.category_trend_note or "Use the observed sales movement above to align purchasing and staffing with demand in this source."
         sections_html.append(f"""
         <div class="page">
-          <div class="section-title">8. Seasonal Patterns &amp; Forward Trend</div>
-          <div class="section-sub">Weekly momentum and forward planning insights</div>
+          <div class="section-title">Sales history &amp; demand trend</div>
+          <div class="section-sub">Recorded monthly sales for purchasing and staffing context</div>
           {chart_html}
           <div class="callout callout-green">
-            <h4>Trend Note</h4>
+            <h4>Planning note</h4>
             <p style="font-size: 0.92rem;">{note}</p>
           </div>
         </div>
@@ -795,18 +978,18 @@ def _render_weekly_html_document(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{report_data.business_name} &mdash; Weekly Performance Report</title>
+    <title>{report_title}</title>
   <style>{_HTML_CSS}</style>
 </head>
 <body>
   <!-- PAGE 1: COVER -->
   <div class="page cover-page">
-    <div class="cover-title">PHARMACY SALES</div>
-    <div class="cover-subtitle">WEEKLY EXECUTIVE REPORT</div>
+    <div class="cover-title">{escape(report_data.business_name)}</div>
+    <div class="cover-subtitle">{report_title}</div>
     <div class="cover-branches">{branches_str}</div>
     <div class="cover-period">Reporting Period: {em.reporting_period}</div>
     <div class="cover-meta">
-      Prepared for: Pharmacy Ownership &amp; Management<br/>
+      Prepared for: {escape(report_data.business_name)}<br/>
       Prepared: {report_data.generated_at.strftime('%B %Y')}<br/>
       <i>Source data: {em.source_filename} ({em.line_items_count:,} line items across {em.total_invoices:,} invoices)</i>
     </div>
@@ -814,21 +997,13 @@ def _render_weekly_html_document(
 
   <!-- PAGE 2: EXECUTIVE SUMMARY & STAT GRID -->
   <div class="page">
-    <div class="section-title">Executive Summary</div>
+    <div class="section-title">Owner insights &amp; actions</div>
     {warn_banner}
-    <p style="margin: 1rem 0; font-size: 0.94rem; line-height: 1.6;">
-      {narrative if narrative else "This weekly pharmacy summary analyzes point-of-sale and inventory movements across your operations."}
-    </p>
+    {comparison_html}
+    {owner_insights_html or '<p>No owner recommendations could be computed from the available source fields. Add dated sales, product costs, stock levels, and branch identifiers to enable richer analysis.</p>'}
 
     <div class="kpi-grid">
-      <div class="kpi-box"><div class="kpi-val">{rev_str}</div><div class="kpi-lbl">Total Revenue [{em.reporting_period}]</div></div>
-      <div class="kpi-box"><div class="kpi-val">{em.total_invoices:,}</div><div class="kpi-lbl">Total Invoices</div></div>
-      <div class="kpi-box"><div class="kpi-val">PKR {em.avg_bill_value:,.0f}</div><div class="kpi-lbl">Average Bill Value</div></div>
-      <div class="kpi-box"><div class="kpi-val">{em.unique_customers:,}</div><div class="kpi-lbl">Unique Customers Served</div></div>
-      <div class="kpi-box"><div class="kpi-val">{em.unique_products_count}</div><div class="kpi-lbl">Products Sold (SKUs)</div></div>
-      <div class="kpi-box"><div class="kpi-val">{growth_str}</div><div class="kpi-lbl">Year-on-Year Growth</div></div>
-      <div class="kpi-box"><div class="kpi-val">{disc_str}</div><div class="kpi-lbl">Discounts Given</div></div>
-      <div class="kpi-box"><div class="kpi-val">{bal_str}</div><div class="kpi-lbl">Outstanding Balance</div></div>
+      {''.join(f'<div class="kpi-box"><div class="kpi-val">{escape(value)}</div><div class="kpi-lbl">{escape(label)}</div></div>' for label, value in report_data.get_display_kpis()) or '<div class="kpi-box"><div class="kpi-lbl">No verified KPI values are available for this source.</div></div>'}
     </div>
   </div>
 
@@ -846,7 +1021,7 @@ def _render_html_document(
     charts: Dict[str, Path],
 ) -> str:
     # If weekly pharmacy sections are present, dispatch to weekly layout
-    is_weekly = bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
+    is_weekly = "weekly_report" in report_data.sections or bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
     if is_weekly:
         return _render_weekly_html_document(report_data, narrative, verification, charts)
 
@@ -1059,13 +1234,15 @@ def build_report(
     verification: VerificationReport,
     formats: Tuple[str, ...] = ("html", "pdf"),
     output_dir: Optional[Path] = None,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Dict[str, Path]:
     reports_path = output_dir or Path(settings.reports_dir)
     reports_path.mkdir(parents=True, exist_ok=True)
 
     timestamp = report_data.generated_at.strftime("%Y%m%d_%H%M%S")
     safe_domain = "".join(c if c.isalnum() or c == "_" else "_" for c in report_data.domain)
-    base_name = f"report_{safe_domain}_{timestamp}"
+    safe_source = "".join(c if c.isalnum() or c in "_-" else "_" for c in report_data.executive_metrics.source_filename)[:48].strip("_")
+    base_name = f"report_{safe_domain}_{safe_source}_{timestamp}" if safe_source else f"report_{safe_domain}_{timestamp}"
 
     out_paths: Dict[str, Path] = {}
 
@@ -1074,11 +1251,15 @@ def build_report(
         html_content = _render_html_document(report_data, narrative, verification, charts)
         html_file.write_text(html_content, encoding="utf-8")
         out_paths["html"] = html_file.resolve()
+        if progress_callback:
+            progress_callback(96, "HTML report written")
 
     if "pdf" in formats:
         pdf_file = reports_path / f"{base_name}.pdf"
         build_pdf_report(report_data, narrative, verification, charts, pdf_file)
         out_paths["pdf"] = pdf_file.resolve()
+        if progress_callback:
+            progress_callback(99, "PDF report written")
 
     return out_paths
 
@@ -1094,12 +1275,16 @@ def generate_report(
     anomalies: Optional[List[Dict[str, Any]]] = None,
     kpi_results: Optional[Dict[str, Any]] = None,
     report_type: str = "standard",
+    source_name: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> ReportResult:
     """Master pipeline producing executive publication-ready reports."""
     warnings: List[str] = []
     regenerated = False
 
     # 1. Gather ReportData
+    if progress_callback:
+        progress_callback(20, "Calculating report metrics and business dimensions")
     report_data = gather_report_data(
         source_df=source_df,
         raw_df=raw_df,
@@ -1109,16 +1294,26 @@ def generate_report(
         anomalies=anomalies,
         kpi_results=kpi_results,
         report_type=report_type,
+        source_name=source_name,
     )
+    if progress_callback:
+        progress_callback(50, "Metrics calculated; preparing charts")
 
     # 2. Render all charts
-    charts = render_charts(report_data)
+    charts = render_charts(
+        report_data,
+        progress_callback=(lambda fraction, stage: progress_callback(50 + int(fraction * 25), stage)) if progress_callback else None,
+    )
 
     # 3. LLM Narrative & Verification
     narrative_text = ""
     vr = VerificationReport()
     try:
-        narrative_text = generate_narrative(report_data, domain=domain, business_name=business_name)
+        if progress_callback:
+            progress_callback(76, "Writing grounded business insights")
+        narrative_text = generate_narrative(report_data, domain=domain, business_name=business_name, report_type=report_type)
+        if progress_callback:
+            progress_callback(84, "Checking every numeric claim against calculated metrics")
         vr = verify(narrative_text, report_data)
 
         if not vr.all_verified and max_regeneration_attempts > 0:
@@ -1135,7 +1330,10 @@ def generate_report(
                 domain=domain,
                 business_name=business_name,
                 correction_feedback=feedback,
+                report_type=report_type,
             )
+            if progress_callback:
+                progress_callback(89, "Rechecking corrected narrative claims")
             vr = verify(narrative_text, report_data)
 
     except Exception as exc:
@@ -1148,7 +1346,8 @@ def generate_report(
 
     verification_passed = vr.all_verified if vr.claims else True
     if vr.claims and not vr.all_verified:
-        warnings.append("UNVERIFIED: AI narrative contains numbers not verified against the ledger.")
+        warnings.append("UNVERIFIED: AI narrative contains numbers not verified against the ledger; narrative withheld.")
+        narrative_text = ""
 
     # 4. Build HTML and PDF
     out_files = build_report(
@@ -1157,6 +1356,7 @@ def generate_report(
         narrative=narrative_text,
         verification=vr,
         formats=formats,
+        progress_callback=progress_callback,
     )
 
     html_path = str(out_files.get("html")) if "html" in out_files else None

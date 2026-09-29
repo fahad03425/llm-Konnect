@@ -317,7 +317,6 @@ class TestEndToEndChatbotQueries:
             for m in records
         ]
         mock_kb_cls.return_value = mock_kb
-        mock_llm.chat.return_value = "The average transaction value in February 2026 was 773.33 PKR."
 
         chat = RAGChat()
         req = ChatRequest(
@@ -331,7 +330,5 @@ class TestEndToEndChatbotQueries:
         assert "average_transaction_value" in resp.computed_values
         assert resp.computed_values["average_transaction_value"]["value"] == 773.33
         
-        # Verify prompt contained computed numbers passed to LLM
-        prompt = mock_llm.chat.call_args.kwargs["messages"][-1]["content"]
-        assert "773.33" in prompt
-        assert "Computed Values from Analytics Engine" in prompt
+        assert "PKR 773.33" in resp.answer
+        mock_llm.chat.assert_not_called()

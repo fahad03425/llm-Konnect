@@ -9,12 +9,15 @@ import {
     Settings,
     Shield,
     Lock,
-    Sparkles
+    Sparkles,
+    RefreshCw
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
+import { useReport } from '../context/ReportContext';
 
 const Sidebar = () => {
     const { openSettings, activeDomainMeta } = useUser();
+    const { weeklyIsGenerating, exportIsGenerating } = useReport();
 
     return (
         <aside className="sidebar">
@@ -50,11 +53,17 @@ const Sidebar = () => {
                 </NavLink>
                 <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <FileOutput size={19} />
-                    <span>Report Export</span>
+                    <span style={{ flex: 1 }}>Report Export</span>
+                    {exportIsGenerating && (
+                        <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--brand-teal)' }} />
+                    )}
                 </NavLink>
                 <NavLink to="/weekly-report" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <CalendarDays size={19} />
-                    <span>Weekly Report</span>
+                    <span style={{ flex: 1 }}>Weekly Report</span>
+                    {weeklyIsGenerating && (
+                        <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--brand-teal)' }} />
+                    )}
                 </NavLink>
             </nav>
 

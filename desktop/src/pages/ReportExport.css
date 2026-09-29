@@ -452,6 +452,39 @@
     margin: 0 auto 0.85rem;
 }
 
+.re-progress-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    max-width: 460px;
+    margin: 0 auto 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.re-progress-heading span:first-child {
+    color: var(--brand-green);
+    font-size: 1.05rem;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+}
+
+.re-progress-track {
+    max-width: 460px;
+    height: 8px;
+    overflow: hidden;
+    margin: 0 auto 1rem;
+    border-radius: 999px;
+    background: var(--surface-container-high);
+}
+
+.re-progress-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--brand-green);
+    transition: width 300ms ease;
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
@@ -750,6 +783,13 @@
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+    display: flex;
+    flex-direction: column;
+}
+
+[data-theme="dark"] .re-doc-viewer-card {
+    background: #15181e;
+    border-color: rgba(255, 255, 255, 0.08);
 }
 
 .re-doc-toolbar {
@@ -761,6 +801,11 @@
     border-bottom: 1px solid var(--border-color);
     flex-wrap: wrap;
     gap: 0.75rem;
+}
+
+[data-theme="dark"] .re-doc-toolbar {
+    background: #1a1e24;
+    border-color: rgba(255, 255, 255, 0.08);
 }
 
 .re-doc-tabs {
@@ -797,18 +842,25 @@
     gap: 0.6rem;
 }
 
-.re-iframe-wrapper {
+.re-iframe-wrapper,
+.re-doc-frame-wrapper {
     width: 100%;
-    height: 820px;
-    background: #525659;
+    height: 850px;
+    min-height: 750px;
+    background: #1e293b;
     position: relative;
+    display: flex;
+    flex-direction: column;
 }
 
 .re-doc-iframe {
     width: 100%;
     height: 100%;
+    min-height: 750px;
     border: none;
     background: #ffffff;
+    flex: 1;
+    display: block;
 }
 
 /* Past Reports History */
@@ -910,4 +962,3 @@
     color: #ef4444;
     border: 1px solid rgba(239, 68, 68, 0.25);
 }
-

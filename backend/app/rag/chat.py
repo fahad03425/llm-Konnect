@@ -2,6 +2,7 @@
 
 import time
 import json
+from datetime import date
 from typing import Generator, List, Dict, Any, Optional, Tuple
 
 from app.core.config import settings
@@ -18,11 +19,90 @@ class RAGChat:
         self.analytics_router = AnalyticsRouter()
         
     def _normalize_question(self, question: str) -> str:
-        """Trim whitespace, quotes, and normalize digits (e.g., Urdu to ASCII)."""
+        """Normalize small input variations before routing a question."""
+        import re
+
         q = question.strip().strip('"\'“”‘’')
         # Basic digit normalization (Urdu/Indic to ASCII)
         translation_table = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
-        return q.translate(translation_table)
+        q = q.translate(translation_table)
+        # In this common wording, "may sales in the last N days" is a typo for
+        # "my sales"; treating it as the month May creates a false date filter.
+        q = re.sub(
+            r"\bmay(?=\s+sales?\s+(?:in|during|for)\s+(?:the\s+)?(?:last|past|previous)\s+\d{1,3}\s+days?\b)",
+            "my",
+            q,
+            flags=re.IGNORECASE,
+        )
+        q = re.sub(r"\byestarday\b", "yesterday", q, flags=re.IGNORECASE)
+        # This common typo otherwise sends forecast requests to vector retrieval,
+        # which cannot compute a future value from source records.
+        return re.sub(
+            r"\bforcast(s|ed|ing)?\b",
+            lambda match: "forecast" + (match.group(1) or ""),
+            q,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _resolve_relative_date_filter(filters: Dict[str, Any], records):
+        """Resolve recent windows and reject date requests outside data coverage."""
+        resolved = dict(filters)
+        days = resolved.pop("relative_days", None)
+        has_explicit_window = bool(resolved.get("date_from") or resolved.get("date_to"))
+        if not days and not has_explicit_window:
+            return resolved
+
+        import pandas as pd
+
+        if hasattr(records, "columns"):
+            date_values = records["date"] if "date" in records.columns else None
+        elif records:
+            frame = pd.DataFrame(records)
+            date_values = frame["date"] if "date" in frame.columns else None
+        else:
+            date_values = None
+        if date_values is None:
+            resolved["_date_filter_error"] = (
+                "The selected data has no usable transaction dates, so I can't "
+                "calculate the requested date period."
+            )
+            return resolved
+
+        dates = pd.to_datetime(date_values, errors="coerce").dropna()
+        if dates.empty:
+            resolved["_date_filter_error"] = (
+                "The selected data has no usable transaction dates, so I can't "
+                "calculate the requested date period."
+            )
+            return resolved
+
+        first_available = dates.min().normalize()
+        last_available = dates.max().normalize()
+        if days:
+            end = last_available
+            start = end - pd.Timedelta(days=int(days) - 1)
+            resolved["date_from"] = start.strftime("%Y-%m-%d")
+            resolved["date_to"] = end.strftime("%Y-%m-%d")
+        else:
+            start = pd.to_datetime(resolved.get("date_from") or resolved.get("date_to"), errors="coerce")
+            end = pd.to_datetime(resolved.get("date_to") or resolved.get("date_from"), errors="coerce")
+            if pd.isna(start) or pd.isna(end):
+                return resolved
+            start, end = start.normalize(), end.normalize()
+
+        if start < first_available or end > last_available:
+            first_text = first_available.strftime("%Y-%m-%d")
+            last_text = last_available.strftime("%Y-%m-%d")
+            requested_text = (
+                start.strftime("%Y-%m-%d") if start == end
+                else f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
+            )
+            resolved["_date_filter_error"] = (
+                f"The requested period ({requested_text}) is outside the selected data's "
+                f"date coverage ({first_text} to {last_text}); I can't calculate sales for it."
+            )
+        return resolved
 
     def _clean_roman_urdu_vocabulary(self, text: str) -> str:
         """Replaces common Roman Hindi word leakages with natural Roman Urdu equivalents."""
@@ -379,6 +459,37 @@ class RAGChat:
             ))
         return sources
 
+    def _analytics_citations(self, records, source_rows, domain: str, limit: int = 20):
+        """Build citations from rows that actually contributed to an analytic result."""
+        if records is None or not source_rows:
+            return []
+        if hasattr(records, "empty") and records.empty:
+            return []
+        if not hasattr(records, "iterrows") and not records:
+            return []
+        used = set(source_rows)
+        try:
+            from app.schema.domain import get_domain_pack
+            pack = get_domain_pack(domain)
+        except Exception:
+            pack = None
+
+        chunks = []
+        rows = (row.to_dict() for _, row in records.iterrows()) if hasattr(records, "iterrows") else iter(records)
+        for row in rows:
+            row_number = row.get("source_row")
+            if row_number not in used:
+                continue
+            chunks.append(RetrievedChunk(
+                text=pack.row_to_text(row) if pack else str(row),
+                metadata=row,
+                score=1.0,
+                source_row=row_number,
+            ))
+            if len(chunks) >= limit:
+                break
+        return chunks
+
 
     def _format_computed_values_context(self, computed_values: dict) -> str:
         lines = ["Calculated Metric:"]
@@ -436,12 +547,142 @@ class RAGChat:
                 lines.append(f"- {name}: UNAVAILABLE (Reason: {reason})")
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_analytics_number(value, unit: str) -> str:
+        if value is None:
+            return "unavailable"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if unit.casefold() in {"pkr", "rs", "usd", "eur", "gbp"}:
+            return f"{unit.upper()} {number:,.2f}"
+        if unit.casefold() == "percent":
+            return f"{number:.2f}%"
+        if unit.casefold() in {"count", "items", "rows", "products", "product"}:
+            return f"{number:,.0f}"
+        if unit.casefold() == "units":
+            return f"{number:,.0f} units"
+        return f"{number:,.2f} {unit}".strip()
+
+    @staticmethod
+    def _date_window_text(filters: Optional[Dict[str, Any]]) -> str:
+        if not filters or not filters.get("date_from") or not filters.get("date_to"):
+            return ""
+        try:
+            from datetime import datetime
+            start_date = datetime.strptime(filters["date_from"], "%Y-%m-%d")
+            end_date = datetime.strptime(filters["date_to"], "%Y-%m-%d")
+            start = f"{start_date:%b} {start_date.day}, {start_date.year}"
+            end = f"{end_date:%b} {end_date.day}, {end_date.year}"
+        except (TypeError, ValueError):
+            start, end = filters["date_from"], filters["date_to"]
+        return f"\n\nDate range used: {start} to {end}."
+
+    def _format_analytics_answer(
+        self, question: str, computed_values: Optional[dict], lang: str,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Render deterministic KPI results without asking a small LLM to restate numbers."""
+        if not computed_values:
+            if lang == "roman_urdu":
+                return "Is sawal ke liye muntakhib data se hisaab nahi ho saka."
+            if lang == "urdu_script":
+                return "منتخب ڈیٹا سے اس سوال کا حساب نہیں ہو سکا۔"
+            return "I couldn't calculate this from the selected data." + self._date_window_text(filters)
+
+        q = question.casefold()
+        available = {
+            key: item for key, item in computed_values.items()
+            if item.get("status") == "ok" and item.get("value") is not None
+        }
+        forecasts = {key: item for key, item in available.items() if item.get("is_estimate")}
+        if forecasts:
+            asks_revenue = any(word in q for word in ("revenue", "amount", "value", "pkr", "rupee", "rs "))
+            asks_units = any(word in q for word in ("unit", "quantity", "how many"))
+            if asks_revenue and not asks_units:
+                forecasts = {k: v for k, v in forecasts.items() if "revenue" in k}
+            elif asks_units and not asks_revenue:
+                forecasts = {k: v for k, v in forecasts.items() if "demand" in k or "units" in k}
+
+            parts = []
+            seen_forecasts = set()
+            periods = []
+            for key, item in forecasts.items():
+                points = item.get("forecast") or []
+                point = points[0] if points else {}
+                value = point.get("value", item.get("value"))
+                lower, upper = point.get("lower"), point.get("upper")
+                period = point.get("period")
+                signature = (period, value, lower, upper, item.get("unit"))
+                if signature in seen_forecasts:
+                    continue
+                seen_forecasts.add(signature)
+                unit = "units" if "demand" in key or "units" in key else item.get("unit", "")
+                if period and period not in periods:
+                    periods.append(period)
+                label = "Estimated units" if unit == "units" else "Estimated revenue"
+                detail = f"- {label}: {self._format_analytics_number(value, unit)}"
+                if lower is not None and upper is not None:
+                    detail += (
+                        f"\n  Likely range: {self._format_analytics_number(lower, unit)}"
+                        f" to {self._format_analytics_number(upper, unit)}"
+                    )
+                parts.append(detail)
+            if parts:
+                if lang == "roman_urdu":
+                    heading = "Agley mahine ki sales ka andaza"
+                    caveat = "Yeh tareekhi data par mabni andaza hai; asal natayij mukhtalif ho sakte hain."
+                elif lang == "urdu_script":
+                    heading = "اگلے ماہ کی فروخت کا تخمینہ"
+                    caveat = "یہ گزشتہ ڈیٹا پر مبنی تخمینہ ہے؛ اصل نتائج مختلف ہو سکتے ہیں۔"
+                else:
+                    heading = "Next-month sales forecast"
+                    caveat = "Estimate based on historical data; actual results may vary."
+                if periods:
+                    period = periods[0]
+                    try:
+                        from datetime import datetime
+                        period = datetime.strptime(period, "%Y-%m").strftime("%B %Y")
+                    except (TypeError, ValueError):
+                        pass
+                    heading += f" — {period}"
+                return f"**{heading}**\n\n" + "\n".join(parts) + f"\n\n{caveat}"
+
+        parts = []
+        for key, item in available.items():
+            label = item.get("name", key)
+            parts.append(f"{label}: {self._format_analytics_number(item['value'], item.get('unit', ''))}")
+            breakdown = item.get("breakdown") or []
+            if breakdown:
+                rows = []
+                for row in breakdown[:5]:
+                    label_key = next((k for k in ("product_id", "product", "medicine_name", "supplier_id", "category", "payment_method") if row.get(k)), None)
+                    value_key = next((k for k in ("revenue", "amount", "quantity", "units", "profit", "count", "value") if row.get(k) is not None), None)
+                    if label_key and value_key:
+                        rows.append(f"{row[label_key]} ({self._format_analytics_number(row[value_key], item.get('unit', ''))})")
+                if rows:
+                    parts.append(f"Top results: {', '.join(rows)}")
+
+        if not parts:
+            unavailable = [item.get("reason") for item in computed_values.values() if item.get("reason")]
+            reason = unavailable[0] if unavailable else "no usable metric was returned"
+            prefix = "Hisaab dastiyab nahi: " if lang == "roman_urdu" else ("حساب دستیاب نہیں: " if lang == "urdu_script" else "The requested metric is unavailable: ")
+            return prefix + reason + self._date_window_text(filters)
+        if lang == "roman_urdu":
+            heading = "Natayij"
+        elif lang == "urdu_script":
+            heading = "نتائج"
+        else:
+            heading = "Analytics results"
+        return f"**{heading}**\n\n" + "\n".join(f"- {part}" for part in parts) + self._date_window_text(filters)
+
     def _get_records_for_analytics(
         self, request: ChatRequest, filters: Dict[str, Any]
-    ) -> Tuple[List[dict], List[RetrievedChunk]]:
+    ) -> Tuple[Any, List[RetrievedChunk]]:
         """
-        Retrieves full dataset records from cached canonical DataFrames for deterministic
-        whole-dataset analytics, plus a small top_k sample of chunks for citation sources.
+        Retrieve the canonical DataFrame directly; converting 22k+ rows to dicts
+        and reconstructing a DataFrame was redundant and slowed every analytics turn.
         """
         from unittest.mock import Mock
         if isinstance(getattr(self.kb, "search", None), Mock):
@@ -460,7 +701,6 @@ class RAGChat:
         import os
         import pandas as pd
         from app.ingestion.registry import file_registry
-        from app.schema.domain import get_domain_pack
 
         target_files = []
         if request.file_ids:
@@ -509,26 +749,7 @@ class RAGChat:
                 combined_df = _build_canonical_database(combined_df)
             except Exception:
                 pass
-            records = combined_df.to_dict(orient="records")
-            
-            # Fast in-memory citation chunks from top matching records
-            sample_rows = combined_df.head(5).to_dict(orient="records")
-            pack = None
-            try:
-                pack = get_domain_pack(request.domain)
-            except Exception:
-                pass
-
-            citation_chunks = [
-                RetrievedChunk(
-                    text=pack.row_to_text(r) if pack else str(r),
-                    metadata=r,
-                    score=1.0,
-                    source_row=r.get("source_row")
-                )
-                for r in sample_rows
-            ]
-            return records, citation_chunks
+            return combined_df, []
 
         # Fallback: if not explicitly scoped or running in mocked test environment, search KB
         citation_chunks = self.kb.search(
@@ -582,6 +803,11 @@ class RAGChat:
         last_route = last_turn.get("route") if last_turn else None
         route = classify_route(question, last_route=last_route)
         filters = extract_filters(question, request.domain)
+        if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
+            token in question.casefold()
+            for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
+        ):
+            filters["as_of"] = date.today().isoformat()
         
         computed_values = None
         sources = []
@@ -593,20 +819,23 @@ class RAGChat:
             
         elif route == RouteType.ANALYTICS:
             records, citation_chunks = self._get_records_for_analytics(request, filters)
-            
-            # Compute deterministically via the Module 6.6 KPI engine.
-            computed_values, source_rows = self.analytics_router.compute(
-                question, filters, records, request.domain
-            )
-            if computed_values:
-                context_text = self._format_computed_values_context(computed_values)
-                if citation_chunks:
-                    matched = [c for c in citation_chunks if c.source_row in source_rows] if source_rows else []
-                    sources = self._format_sources(matched if matched else citation_chunks[:5])
-                else:
-                    sources = []
+            filters = self._resolve_relative_date_filter(filters, records)
+            relative_error = filters.pop("_date_filter_error", None)
+            if relative_error:
+                computed_values, source_rows = {
+                    "total_revenue": {
+                        "name": "Sales", "value": None, "unit": "PKR",
+                        "status": "unavailable", "reason": relative_error,
+                    }
+                }, []
             else:
-                context_text = "No records found to compute the answer."
+                # Compute deterministically via the Module 6.6 KPI engine.
+                computed_values, source_rows = self.analytics_router.compute(
+                    question, filters, records, request.domain
+                )
+            if computed_values:
+                matched = self._analytics_citations(records, source_rows, request.domain)
+                sources = self._format_sources(matched)
                  
         elif route == RouteType.RAG:
             # Dynamic retrieval depth: widen when date or category filters are active
@@ -633,7 +862,21 @@ class RAGChat:
                  
             sources = self._format_sources(chunks) if chunks else []
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
-            
+
+        if route == RouteType.ANALYTICS:
+            answer = self._format_analytics_answer(question, computed_values, lang, filters)
+            timing = round(time.time() - start_time, 2)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(
+                request.session_id, "assistant", answer, domain=request.domain,
+                route=route, sources=[s.dict() if hasattr(s, "dict") else s for s in sources] if sources else None,
+                timing=timing,
+            )
+            return ChatResponse(
+                answer=answer, route=route, sources=sources,
+                computed_values=computed_values, session_id=request.session_id, timing=timing,
+            )
+
         # Build prompt messages
         system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
         history = session_manager.get_history(request.session_id)
@@ -736,6 +979,11 @@ class RAGChat:
         last_route = last_turn.get("route") if last_turn else None
         route = classify_route(question, last_route=last_route)
         filters = extract_filters(question, request.domain)
+        if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
+            token in question.casefold()
+            for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
+        ):
+            filters["as_of"] = date.today().isoformat()
         
         computed_values = None
         sources = []
@@ -745,18 +993,22 @@ class RAGChat:
             pass
         elif route == RouteType.ANALYTICS:
             records, citation_chunks = self._get_records_for_analytics(request, filters)
-            computed_values, source_rows = self.analytics_router.compute(
-                question, filters, records, request.domain
-            )
-            if computed_values:
-                context_text = self._format_computed_values_context(computed_values)
-                if citation_chunks:
-                    matched = [c for c in citation_chunks if c.source_row in source_rows] if source_rows else []
-                    sources = self._format_sources(matched if matched else citation_chunks[:5])
-                else:
-                    sources = []
+            filters = self._resolve_relative_date_filter(filters, records)
+            relative_error = filters.pop("_date_filter_error", None)
+            if relative_error:
+                computed_values, source_rows = {
+                    "total_revenue": {
+                        "name": "Sales", "value": None, "unit": "PKR",
+                        "status": "unavailable", "reason": relative_error,
+                    }
+                }, []
             else:
-                context_text = "No records found to compute the answer."
+                computed_values, source_rows = self.analytics_router.compute(
+                    question, filters, records, request.domain
+                )
+            if computed_values:
+                matched = self._analytics_citations(records, source_rows, request.domain)
+                sources = self._format_sources(matched)
                  
         elif route == RouteType.RAG:
             retrieval_k = 25 if filters else settings.retrieval_top_k
@@ -779,7 +1031,24 @@ class RAGChat:
                  
             sources = self._format_sources(chunks) if chunks else []
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
-            
+
+        if route == RouteType.ANALYTICS:
+            answer = self._format_analytics_answer(question, computed_values, lang, filters)
+            timing = round(time.time() - start_time, 2)
+            serializable_sources = [
+                s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in sources
+            ] if sources else []
+            yield json.dumps({
+                "chunk": answer, "route": route,
+                "sources": serializable_sources, "computed_values": computed_values,
+            }) + "\n"
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(
+                request.session_id, "assistant", answer, domain=request.domain,
+                route=route, sources=serializable_sources or None, timing=timing,
+            )
+            return
+
         system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
         history = session_manager.get_history(request.session_id)
         

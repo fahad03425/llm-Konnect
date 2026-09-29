@@ -1,0 +1,127 @@
+/* ==========================================================================
+   Google Premium Custom Window TitleBar
+   Replaces the default harsh OS black bar with sleek elevated Material 3 design
+   ========================================================================== */
+
+.window-titlebar {
+    height: 36px;
+    width: 100%;
+    background-color: var(--surface-bg);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0.5rem 0 0.85rem;
+    flex-shrink: 0;
+    user-select: none;
+    z-index: 9999;
+    position: relative;
+    box-sizing: border-box;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+[data-theme="dark"] .window-titlebar {
+    background-color: #121419;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] .window-titlebar {
+    background-color: #f1f5f9;
+    border-bottom: 1px solid #e2e8f0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+/* Left Titlebar Branding */
+.titlebar-left {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: default;
+    height: 100%;
+}
+
+.titlebar-icon-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    flex-shrink: 0;
+}
+
+.titlebar-ai-icon {
+    display: block;
+}
+
+.titlebar-title {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    font-family: 'Plus Jakarta Sans', 'Google Sans', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.titlebar-brand {
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+}
+
+/* Center Draggable Spacer */
+.titlebar-center {
+    flex: 1;
+    height: 100%;
+    cursor: default;
+}
+
+/* Right Window Controls (Google Material 3) */
+.titlebar-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    height: 100%;
+    margin-left: auto;
+}
+
+.titlebar-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 26px;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    padding: 0;
+    outline: none;
+}
+
+.titlebar-btn:hover {
+    background-color: var(--surface-container-high);
+    color: var(--text-primary);
+}
+
+.titlebar-btn:active {
+    transform: scale(0.94);
+}
+
+/* Close Button Google Red Hover */
+.titlebar-btn.btn-close:hover {
+    background-color: #ef4444;
+    color: #ffffff;
+}
+
+.titlebar-btn.btn-close:active {
+    background-color: #dc2626;
+    color: #ffffff;
+}

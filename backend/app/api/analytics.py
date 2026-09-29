@@ -298,14 +298,22 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _load_canonical(req: KPIRequest):
+def _load_canonical(req: KPIRequest, include_raw: bool = False):
     """Connector -> mapping -> canonical DataFrame with in-memory caching."""
+
+    def _loaded(canonical, mapping, raw=None):
+        if include_raw:
+            # The report generator treats source frames as read-only. Use a
+            # shallow copy to avoid another full-sized allocation for large XLSX files.
+            return canonical.copy(deep=False), mapping, (raw if raw is not None else canonical).copy(deep=False)
+        return canonical.copy(), mapping
+
     # Handle Whole Database Selection (e.g. db://PharmacyPOS)
     if req.file_path.startswith("db://"):
         db_name = req.file_path.replace("db://", "").strip()
         cache_key = f"db:{db_name}:{req.domain}"
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            return _loaded(_df_cache[cache_key]["canonical"], _df_cache[cache_key]["mapping"])
         try:
             import pandas as pd
             kb_inst = KnowledgeBase()
@@ -320,7 +328,7 @@ def _load_canonical(req: KPIRequest):
             canonical = _build_canonical_database(raw_canonical)
             mapping = {col_name: col_name for col_name in canonical.columns}
             _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
-            return canonical.copy(), mapping
+            return _loaded(canonical, mapping)
         except HTTPException:
             raise
         except Exception as e:
@@ -330,7 +338,7 @@ def _load_canonical(req: KPIRequest):
     if req.file_path.startswith("sql://"):
         cache_key = f"{req.file_path}:{req.domain}"
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            return _loaded(_df_cache[cache_key]["canonical"], _df_cache[cache_key]["mapping"])
         try:
             import pandas as pd
             kb_inst = KnowledgeBase()
@@ -346,26 +354,37 @@ def _load_canonical(req: KPIRequest):
             canonical = _build_canonical_database(canonical)
             mapping = {col_name: col_name for col_name in canonical.columns}
             _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
-            return canonical.copy(), mapping
+            return _loaded(canonical, mapping)
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Error loading database records: {e}")
 
-    if not os.path.exists(req.file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    actual_path = req.file_path
+    if not os.path.exists(actual_path):
+        fname = Path(req.file_path).name
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        up_cand = os.path.join(base_dir, "data", "uploads", fname)
+        samp_cand = os.path.join(base_dir, "data", "samples", fname)
+        if os.path.exists(up_cand):
+            actual_path = up_cand
+        elif os.path.exists(samp_cand):
+            actual_path = samp_cand
+        else:
+            raise HTTPException(status_code=404, detail=f"File '{fname}' does not exist on disk.")
 
     try:
-        mtime = os.path.getmtime(req.file_path)
+        mtime = os.path.getmtime(actual_path)
         mapping_str = str(sorted(req.mapping.items())) if req.mapping else "auto"
-        cache_key = f"{req.file_path}:{mtime}:{req.domain}:{req.sheet_name}:{req.table_or_query}:{mapping_str}"
+        cache_key = f"{actual_path}:{mtime}:{req.domain}:{req.sheet_name}:{req.table_or_query}:{mapping_str}"
         
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            cached = _df_cache[cache_key]
+            return _loaded(cached["canonical"], cached["mapping"])
     except Exception:
         cache_key = None
 
-    connector = detect_connector(req.file_path)
+    connector = detect_connector(actual_path)
     kwargs: Dict[str, Any] = {}
     if req.sheet_name:
         kwargs["sheet_name"] = req.sheet_name
@@ -394,7 +413,7 @@ def _load_canonical(req: KPIRequest):
             _df_cache.pop(next(iter(_df_cache)))
         _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
 
-    return canonical.copy(), mapping
+    return _loaded(canonical, mapping, raw)
 
 
 def _filters(req: KPIRequest, canonical: Optional[pd.DataFrame] = None) -> KPIFilters:
@@ -433,14 +452,15 @@ class ExpiryReportRequest(KPIRequest):
     )
 
 
-def _envelope(req: KPIRequest, canonical, mapping: Dict[str, str]) -> Dict[str, Any]:
+def _envelope(req: KPIRequest, canonical, mapping: Dict[str, str], include_validation: Optional[bool] = None) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "file_path": req.file_path,
         "domain": req.domain,
         "mapping_used": mapping,
         "total_rows": int(len(canonical)),
     }
-    if req.include_validation:
+    should_validate = req.include_validation if include_validation is None else include_validation
+    if should_validate:
         body["validation_report"] = validate(canonical, domain=req.domain).to_dict()
     return body
 
@@ -611,6 +631,8 @@ def forecast(req: TrendRequest):
     try:
         canonical, mapping = _load_canonical(req)
         filters = _trend_filters(req)
+        if not filters.as_of:
+            filters = replace(filters, as_of=date.today().isoformat())
 
         if req.product_id:
             key = "product_demand_forecast"

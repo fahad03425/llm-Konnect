@@ -70,20 +70,16 @@ Write the fluent, insight-rich executive performance narrative now, following al
 """
 
 _WEEKLY_PHARMACY_SYSTEM_PROMPT_TEMPLATE = """\
-You are a senior executive pharmaceutical retail analyst and report writer for {business_name}.
+You are a senior pharmacy retail performance analyst writing for {business_name}.
 
-You are writing a concise, 3-4 sentence plain-language executive lead for the weekly pharmacy performance report. \
-This executive lead opens the report presented directly to the pharmacy owner.
+Write a concise owner-facing insight for the selected source dataset. Help the owner decide what to do next to improve sales, margin, cash flow, stock availability, and working capital. Use only the sections and facts present in the supplied ground truth; tailor the priorities to this dataset rather than reciting a standard checklist.
 
 ═══════════════════════════════════════════════
 WEEKLY LEAD WRITING & GROUNDING RULES
 ═══════════════════════════════════════════════
 
-1. WRITE A 3-4 SENTENCE EXECUTIVE LEAD.
-   Write a flowing 3-4 sentence plain-language lead summarizing the week's critical actions.
-   Aim for this shape in natural business prose:
-   "You made PKR {{profit}} this week. PKR {{dead/near-expiry value}} of stock needs attention. {{item}} is about to run out. You owe {{supplier}} PKR {{amount}}, due {{date}}."
-   Do NOT output literal template braces or placeholders — write fluent, professional English prose.
+1. WRITE 2-3 SHORT PARAGRAPHS WITH INSIGHT AND ACTION.
+   Identify the most material supported business result, explain why it matters to the owner, and recommend a practical next step. When the data supports it, connect sales/margin, stock risk, and supplier credit. State when the dataset does not support a conclusion instead of guessing.
 
 2. ABSOLUTE GROUNDING — NARRATE, DO NOT CALCULATE OR INVENT.
    Every single number, currency amount, percentage, and count in your narrative MUST \
@@ -110,7 +106,7 @@ Ground Truth Data (computed deterministically from the POS ledger):
 {ground_truth_summary}
 
 {correction_block}
-Write the concise 3-4 sentence weekly executive lead now, strictly adhering to the grounding and conditional omission rules.
+Write the owner-facing insight now. Prioritize actions by the magnitude and urgency shown in the data, and follow all grounding and conditional omission rules.
 """
 
 _FALLBACK_MESSAGE = (
@@ -149,8 +145,9 @@ def _format_ground_truth_summary(data: Union[Dict[str, Any], Any], domain: str) 
             lines.append(f"• {p.get('name')}: PKR {float(p.get('amount', 0)):,.2f}")
 
     if hasattr(data, "hourly_traffic") and data.hourly_traffic:
+        peak_hour = max(data.hourly_traffic, key=lambda row: int(row.get("count", 0)))
         lines.append("\n[Customer Footfall & Timing]")
-        lines.append("• Peak Footfall Window: 1:00 PM to 5:00 PM (highest daily transaction volume)")
+        lines.append(f"• Busiest observed hour: {int(peak_hour.get('hour', 0)):02d}:00 with {int(peak_hour.get('count', 0))} recorded transactions")
 
     if hasattr(data, "top_debtors") and data.top_debtors:
         lines.append("\n[Top Outstanding Accounts]")
@@ -191,13 +188,14 @@ def _format_weekly_ground_truth_summary(data: Union[Dict[str, Any], Any]) -> str
     lines: List[str] = []
     kpis = getattr(data, "kpis", data if isinstance(data, dict) else {})
 
-    # 1. Weekly Profit & Revenue
-    profit_kpi = kpis.get("net_profit") or kpis.get("gross_profit")
+    # Report gross profit only; purchases may be captured as outflows and must
+    # not be presented as operating expenses/net profit without accounting data.
+    profit_kpi = kpis.get("gross_profit")
     if profit_kpi:
         v = getattr(profit_kpi, "value", None) if not isinstance(profit_kpi, dict) else profit_kpi.get("value")
         if v is not None:
             name = getattr(profit_kpi, "name", "Profit") if not isinstance(profit_kpi, dict) else profit_kpi.get("name", "Profit")
-            lines.append(f"• Weekly {name}: PKR {float(v):,.2f}")
+            lines.append(f"• Current-period {name}: PKR {float(v):,.2f} (before operating overhead)")
 
     rev_kpi = kpis.get("total_revenue")
     if rev_kpi:

@@ -19,7 +19,7 @@ export default function SettingsModal() {
         updateProfile({
             accountName: accountName.trim() || 'Admin User',
             organization: organization.trim() || 'My Workspace',
-            email: email.trim() || 'admin@llm-konnect.local',
+            email: email.trim() || 'admin@konnect.ai',
             domain: activeDomain
         });
         setDomain(activeDomain);
@@ -121,7 +121,7 @@ export default function SettingsModal() {
                                 className="settings-input"
                                 value={email}
                                 onChange={e => setEmail(e.target.value)}
-                                placeholder="e.g. admin@llm-konnect.local"
+                                placeholder="e.g. admin@konnect.ai"
                             />
                         </div>
                     </div>

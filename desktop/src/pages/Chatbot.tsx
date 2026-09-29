@@ -149,8 +149,15 @@ export default function Chatbot() {
     const [sessionId, setSessionId] = useState(() => `sess-${Math.random().toString(36).substring(2, 10)}`);
     const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
     const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-    const [models, setModels] = useState<string[]>(['qwen2.5:3b', 'gemma3:1b', 'llama3.2:1b', 'llama3.2:3b']);
-    const [activeModel, setActiveModel] = useState<string>('qwen2.5:3b');
+    const [models, setModels] = useState<string[]>([
+        'qwen2.5:1.5b',
+        'qwen2.5:0.5b',
+        'qwen2.5:3b',
+        'llama3.2:1b',
+        'llama3.2:3b',
+        'gemma3:1b'
+    ]);
+    const [activeModel, setActiveModel] = useState<string>('qwen2.5:1.5b');
 
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const chatPanelRef = useRef<HTMLDivElement>(null);
@@ -199,9 +206,10 @@ export default function Chatbot() {
             const res = await fetch('/api/chat/models');
             if (res.ok) {
                 const data = await res.json();
-                if (data.models && data.models.length > 0) {
-                    setModels(data.models);
-                }
+                const presets = ['qwen2.5:1.5b', 'qwen2.5:0.5b', 'qwen2.5:3b', 'llama3.2:1b', 'llama3.2:3b', 'gemma3:1b'];
+                const backendModels = data.models || [];
+                const merged = Array.from(new Set([...presets, ...backendModels]));
+                setModels(merged);
                 if (data.active_model) {
                     setActiveModel(data.active_model);
                 }
@@ -592,11 +600,23 @@ export default function Chatbot() {
                             onChange={handleModelChange}
                             title="Switch local AI model"
                         >
-                            {models.map(m => (
-                                <option key={m} value={m}>
-                                    {m.includes('qwen2.5') ? `${m} (Fast & Accurate 3B)` : m.includes('qwen3') ? `${m} (Reasoning 4B)` : m.includes('gemma3') ? `${m} (Ultra Fast 1B)` : m.includes('llama3.2:1b') ? `${m} (Fast 1B)` : m.includes('llama3.2:3b') ? `${m} (Balanced 3B)` : m}
-                                </option>
-                            ))}
+                            {models.map(m => {
+                                let label = m;
+                                if (m.includes('0.5b')) label = `${m} (Ultra Lightweight 0.5B)`;
+                                else if (m.includes('1.5b')) label = `${m} (Fast & Efficient 1.5B)`;
+                                else if (m.includes('qwen2.5') || m.includes('3b')) {
+                                    if (m.includes('llama3.2:3b')) label = `${m} (Balanced 3B)`;
+                                    else label = `${m} (Accurate 3B)`;
+                                }
+                                else if (m.includes('llama3.2:1b')) label = `${m} (Fast 1B)`;
+                                else if (m.includes('gemma3')) label = `${m} (Ultra Fast 1B)`;
+                                else if (m.includes('qwen3')) label = `${m} (Reasoning 4B)`;
+                                return (
+                                    <option key={m} value={m}>
+                                        {label}
+                                    </option>
+                                );
+                            })}
                         </select>
                     </div>
                     <div className="chat-actions">

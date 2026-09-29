@@ -171,7 +171,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         setUser({
             accountName: data.accountName || 'Admin User',
             organization: data.organization || 'My Workspace',
-            email: data.email || 'admin@llm-konnect.local',
+            email: data.email || 'admin@konnect.ai',
             role: 'Administrator',
             domain: data.domain,
             isSetupComplete: true

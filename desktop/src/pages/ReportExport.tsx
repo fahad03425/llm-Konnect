@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
 import { useFilePath } from '../context/FileContext';
+import { useReport } from '../context/ReportContext';
 import './ReportExport.css';
 
 interface FileOption {
@@ -25,44 +26,6 @@ interface FileOption {
     file_size_formatted: string;
     dir_type?: string;
     is_ingested?: boolean;
-}
-
-interface VerifiedClaim {
-    matched_text: string;
-    extracted_value: number;
-    matched_kpi_key: string | null;
-    status: 'verified' | 'mismatch' | 'unmatched';
-    expected_value: number | null;
-    reason: string | null;
-}
-
-interface VerificationReport {
-    all_verified: boolean;
-    verified_count: number;
-    unmatched_count: number;
-    mismatch_count: number;
-    claims: VerifiedClaim[];
-}
-
-interface GeneratedReportPayload {
-    kpi_snapshot: Record<string, any>;
-    narrative: string;
-    verification: VerificationReport;
-    verification_passed: boolean;
-    regenerated: boolean;
-    html_path: string | null;
-    pdf_path: string | null;
-    charts: Record<string, string>;
-    warnings: string[];
-}
-
-interface ReportApiResponse {
-    report: GeneratedReportPayload;
-    download_url_html?: string;
-    download_url_pdf?: string;
-    download_url?: string;
-    domain: string;
-    source: string;
 }
 
 interface ReportHistoryItem {
@@ -87,20 +50,31 @@ const API_BASE = '';
 export default function ReportExport() {
     const { user, activeDomainMeta } = useUser();
     const { activePath } = useFilePath();
+    const {
+        exportIsGenerating: isGenerating,
+        exportGenerationStep: generationStep,
+        exportGenerationProgress: generationProgress,
+        exportError: error,
+        exportResult: result,
+        setExportResult,
+        exportSelectedFile: selectedFile,
+        setExportSelectedFile: setSelectedFile,
+        exportBusinessName: businessName,
+        setExportBusinessName: setBusinessName,
+        exportFormatPdf: formatPdf,
+        setExportFormatPdf: setFormatPdf,
+        exportFormatHtml: formatHtml,
+        setExportFormatHtml: setFormatHtml,
+        exportAllowRetry: allowRetry,
+        setExportAllowRetry: setAllowRetry,
+        exportPreviewMode: previewMode,
+        setExportPreviewMode: setPreviewMode,
+        generateExportReport,
+        clearExportResult
+    } = useReport();
 
     // Configuration Form State
     const [availableFiles, setAvailableFiles] = useState<FileOption[]>([]);
-    const [selectedFile, setSelectedFile] = useState<string>('');
-    const [businessName, setBusinessName] = useState<string>('Al-Shifa Family Pharmacy');
-    const [formatPdf, setFormatPdf] = useState<boolean>(true);
-    const [formatHtml, setFormatHtml] = useState<boolean>(true);
-    const [allowRetry, setAllowRetry] = useState<boolean>(true);
-
-    // Generation State
-    const [isGenerating, setIsGenerating] = useState<boolean>(false);
-    const [generationStep, setGenerationStep] = useState<string>('');
-    const [error, setError] = useState<string | null>(null);
-    const [result, setResult] = useState<ReportApiResponse | null>(null);
     const [copiedNarrative, setCopiedNarrative] = useState<boolean>(false);
 
     // History State
@@ -136,41 +110,6 @@ export default function ReportExport() {
                 }));
 
                 setHistory(historyList);
-
-                // Auto-load latest report if none active
-                setResult(prev => {
-                    if (!prev && historyList.length > 0) {
-                        const top = historyList[0];
-                        setTimeout(() => {
-                            if (top.downloadPdfUrl) setPreviewMode('pdf');
-                            else if (top.downloadHtmlUrl) setPreviewMode('html');
-                        }, 50);
-                        return {
-                            report: {
-                                kpi_snapshot: {},
-                                narrative: '',
-                                verification: {
-                                    all_verified: true,
-                                    verified_count: 5,
-                                    unmatched_count: 0,
-                                    mismatch_count: 0,
-                                    claims: []
-                                },
-                                verification_passed: true,
-                                regenerated: false,
-                                html_path: top.downloadHtmlUrl || null,
-                                pdf_path: top.downloadPdfUrl || null,
-                                charts: {},
-                                warnings: []
-                            },
-                            download_url_html: top.downloadHtmlUrl,
-                            download_url_pdf: top.downloadPdfUrl,
-                            domain: user?.domain || 'pharmacy',
-                            source: 'Pharmacy_Sales_Dataset.xlsx'
-                        };
-                    }
-                    return prev;
-                });
             }
         } catch (e) {
             console.warn('Could not list disk reports:', e);
@@ -213,69 +152,8 @@ export default function ReportExport() {
     };
 
     const handleGenerate = async () => {
-        if (!selectedFile) {
-            setError('Please select a data source to generate a report from.');
-            return;
-        }
-
-        setError(null);
-        setIsGenerating(true);
-        setGenerationStep('1/5 Computing deterministic KPIs & Expiry metrics...');
-
-        const formats: string[] = [];
-        if (formatHtml) formats.push('html');
-        if (formatPdf) formats.push('pdf');
-        if (formats.length === 0) formats.push('pdf');
-
-        try {
-            // Step progression animation for UX
-            const t1 = setTimeout(() => setGenerationStep('2/5 Rendering static analytics charts via Matplotlib...'), 800);
-            const t2 = setTimeout(() => setGenerationStep('3/5 Generating grounded executive narrative with local AI...'), 1800);
-            const t3 = setTimeout(() => setGenerationStep('4/5 Cross-checking numeric claims against deterministic ledger...'), 3200);
-            const t4 = setTimeout(() => setGenerationStep('5/5 Assembling publication-ready HTML and ReportLab PDF...'), 4600);
-
-            const payload = {
-                file_path: selectedFile,
-                domain: user.domain || 'pharmacy',
-                business_name: businessName || 'Business Analytics Report',
-                max_regeneration_attempts: allowRetry ? 1 : 0,
-                formats: formats
-            };
-
-            const response = await fetch(`${API_BASE}/api/report/generate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            clearTimeout(t1);
-            clearTimeout(t2);
-            clearTimeout(t3);
-            clearTimeout(t4);
-
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(errData.detail || `Server error (${response.status})`);
-            }
-
-            const data: ReportApiResponse = await response.json();
-            setResult(data);
-            if (data.download_url_html) {
-                setPreviewMode('html');
-            } else if (data.download_url_pdf) {
-                setPreviewMode('pdf');
-            }
-
-            // Refresh disk reports to include new file
-            await fetchDiskReports();
-
-
-        } catch (err: any) {
-            setError(err.message || 'Failed to generate report. Please ensure backend is running.');
-        } finally {
-            setIsGenerating(false);
-            setGenerationStep('');
-        }
+        await generateExportReport();
+        await fetchDiskReports();
     };
 
     const copyNarrativeToClipboard = () => {
@@ -284,9 +162,6 @@ export default function ReportExport() {
         setCopiedNarrative(true);
         setTimeout(() => setCopiedNarrative(false), 2000);
     };
-
-    // View Mode: 'html' | 'pdf' | 'audit'
-    const [previewMode, setPreviewMode] = useState<'html' | 'pdf' | 'audit'>('pdf');
 
     const handleSelectHistoryItem = (h: ReportHistoryItem) => {
         const htmlUrl = h.downloadHtmlUrl;
@@ -301,7 +176,7 @@ export default function ReportExport() {
             setPreviewMode('audit');
         }
 
-        setResult({
+        setExportResult({
             report: {
                 kpi_snapshot: {},
                 narrative: '',
@@ -347,7 +222,7 @@ export default function ReportExport() {
             } catch (_) {}
         }
         await fetchDiskReports();
-        setResult(null);
+        clearExportResult();
     };
 
     return (
@@ -522,27 +397,44 @@ export default function ReportExport() {
                         </label>
                     </div>
 
-                    <button
-                        className="re-btn-primary"
-                        onClick={handleGenerate}
-                        disabled={isGenerating || (!formatPdf && !formatHtml)}
-                    >
-                        {isGenerating ? (
-                            <>
-                                <RefreshCw size={18} className="animate-spin" /> Generating Report...
-                            </>
-                        ) : (
-                            <>
-                                <Sparkles size={18} /> Generate Verified Report
-                            </>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                            className="re-btn-primary"
+                            style={{ flex: 1 }}
+                            onClick={handleGenerate}
+                            disabled={isGenerating || (!formatPdf && !formatHtml)}
+                        >
+                            {isGenerating ? (
+                                <>
+                                    <RefreshCw size={18} className="animate-spin" /> Generating Report...
+                                </>
+                            ) : (
+                                <>
+                                    <Sparkles size={18} /> {result ? 'Regenerate Verified Report' : 'Generate Verified Report'}
+                                </>
+                            )}
+                        </button>
+                        {result && !isGenerating && (
+                            <button
+                                type="button"
+                                className="re-btn-secondary"
+                                onClick={clearExportResult}
+                                title="Clear active report preview"
+                                style={{ padding: '0.65rem 0.85rem' }}
+                            >
+                                <Trash2 size={16} />
+                            </button>
                         )}
-                    </button>
+                    </div>
 
                     {isGenerating && (
                         <div className="re-loading-box">
-                            <div className="re-spinner" />
+                            <div className="re-progress-heading"><span>{generationProgress}%</span><span>complete</span></div>
+                            <div className="re-progress-track" role="progressbar" aria-label="Report generation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generationProgress}>
+                                <div className="re-progress-fill" style={{ width: `${generationProgress}%` }} />
+                            </div>
                             <div className="re-loading-step">{generationStep}</div>
-                            <div className="re-loading-sub">Running offline on local CPU and Ollama</div>
+                            <div className="re-loading-sub">Progress updates as report stages finish. Large workbook reads or AI responses can take time without changing the percentage.</div>
                         </div>
                     )}
 

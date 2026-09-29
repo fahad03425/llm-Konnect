@@ -10,6 +10,7 @@ import WeeklyReport from './pages/WeeklyReport'
 import UploadedFiles from './pages/UploadedFiles'
 import { FileProvider } from './context/FileContext'
 import { UserProvider } from './context/UserContext'
+import { ReportProvider } from './context/ReportContext'
 import './index.css'
 
 class GlobalErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -44,7 +45,7 @@ class GlobalErrorBoundary extends React.Component<{ children: React.ReactNode },
           }}>
             <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>⚠️</div>
             <h2 style={{ fontSize: '1.4rem', fontWeight: 700, margin: '0 0 0.5rem 0', color: '#F1F5F9' }}>
-              LLM-Konnect Application Notice
+              KonnectAI Application Notice
             </h2>
             <p style={{ color: '#94A3B8', fontSize: '0.9rem', lineHeight: '1.5', margin: '0 0 1.25rem 0' }}>
               The application encountered an unexpected interface error. Your data and knowledge base remain safe.
@@ -112,18 +113,20 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <GlobalErrorBoundary>
       <UserProvider>
         <FileProvider>
-          <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<Shell />}>
-                <Route index element={<Dashboard />} />
-                <Route path="connect" element={<ConnectSource />} />
-                <Route path="files" element={<UploadedFiles />} />
-                <Route path="chat" element={<Chatbot />} />
-                <Route path="reports" element={<ReportExport />} />
-                <Route path="weekly-report" element={<WeeklyReport />} />
-              </Route>
-            </Routes>
-          </BrowserRouter>
+          <ReportProvider>
+            <BrowserRouter>
+              <Routes>
+                <Route path="/" element={<Shell />}>
+                  <Route index element={<Dashboard />} />
+                  <Route path="connect" element={<ConnectSource />} />
+                  <Route path="files" element={<UploadedFiles />} />
+                  <Route path="chat" element={<Chatbot />} />
+                  <Route path="reports" element={<ReportExport />} />
+                  <Route path="weekly-report" element={<WeeklyReport />} />
+                </Route>
+              </Routes>
+            </BrowserRouter>
+          </ReportProvider>
         </FileProvider>
       </UserProvider>
     </GlobalErrorBoundary>

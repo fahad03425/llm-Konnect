@@ -23,12 +23,132 @@ def test_classify_route():
     assert classify_route("did we return anything to Getz") == RouteType.RAG
     assert classify_route("show me invoices from yesterday") == RouteType.RAG
 
+
+@pytest.mark.parametrize("question", [
+    "What's my turnover this month?",
+    "Show me sales by month",
+    "How much did we spend on medicines last week?",
+    "What was our net loss?",
+    "Show profit and loss",
+    "How much inventory did we move yesterday?",
+    "What was cash flow in June?",
+    "What were our takings?",
+    "What were the sales yesterday?",
+    "Give me the monthly revenue trend",
+])
+def test_expanded_analytics_vocabulary(question):
+    assert classify_route(question) == RouteType.ANALYTICS
+
+
+@pytest.mark.parametrize("question", [
+    "Find invoice 43821",
+    "Look up batch B-102",
+    "Show me the sales records for invoice 43821",
+    "What columns are in the selected dataset?",
+    "Search for supplier Acme Pharma",
+    "Pull up product Panadol details",
+    "Which medicines contain amoxicillin?",
+    "Which supplier did we purchase from?",
+    "What products do I sell?",
+    "Fetch transaction row 22",
+    "List all sales records",
+    "Show me invoices from yesterday",
+])
+def test_expanded_rag_lookup_vocabulary(question):
+    assert classify_route(question) == RouteType.RAG
+
+
+@pytest.mark.parametrize("question", [
+    "Howdy",
+    "Are you online?",
+    "How's it going?",
+    "Can you help me?",
+    "What's up?",
+    "Many thanks!",
+    "Good afternoon",
+    "What are your capabilities?",
+    "Who are you?",
+    "Assalam o alaikum",
+])
+def test_expanded_chitchat_vocabulary(question):
+    assert classify_route(question) == RouteType.CHITCHAT
+
+
+def test_analytics_intent_wins_when_greeting_precedes_a_metric_question():
+    assert classify_route("Hi, can you show me total sales by month?") == RouteType.ANALYTICS
+
+
+@pytest.mark.parametrize("question", [
+    "Meri sale kitni hui?",
+    "Kul bikri kitni thi?",
+    "Pichlay mahine kitna munafa hua?",
+    "Kitna kharcha hua?",
+    "Meri aamdani kitni hai?",
+    "Kitne units bikay?",
+    "Kaunsi dawa sab se ziada biki?",
+    "Rozana bikri ka trend kya hai?",
+    "Pichlay 7 din mein meri sale kitni hui?",
+    "Dawai ki sale kal kitni hui?",
+])
+def test_roman_urdu_analytics_vocabulary(question):
+    assert classify_route(question) == RouteType.ANALYTICS
+
+
+@pytest.mark.parametrize("question", [
+    "Kis bill mein Panadol tha?",
+    "Invoice 123 dikhao",
+    "Mujhe Panadol ka bill dikhao",
+    "Kis supplier se khareeda?",
+    "Panadol ki qeemat batao",
+    "Mujhe records dikhayen",
+    "Batch B-12 ki tafseel batao",
+    "Kaunsi dawa thi bill 12?",
+    "Supplier ka naam batao",
+    "Panadol ki maloomat dein",
+])
+def test_roman_urdu_rag_vocabulary(question):
+    assert classify_route(question) == RouteType.RAG
+
+
+@pytest.mark.parametrize("question", [
+    "Kya haal hai?",
+    "Aap kaise hain?",
+    "Assalamualaikum",
+    "Walaikum salam",
+    "Madad kar saktay ho?",
+    "Mein theek hun",
+    "Shukria",
+    "Ap kon hain?",
+    "Tum kaise ho?",
+    "Bohat shukriya",
+])
+def test_roman_urdu_chitchat_vocabulary(question):
+    assert classify_route(question) == RouteType.CHITCHAT
+
+
+def test_roman_urdu_relative_period_and_kal_filters():
+    from datetime import date, timedelta
+
+    assert extract_filters("Pichlay 7 din mein meri sale kitni hui?")["relative_days"] == 7
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    assert extract_filters("Dawai ki sale kal kitni hui?") == {
+        "date_from": yesterday, "date_to": yesterday,
+    }
+
 def test_extract_filters():
     # Simplistic month extraction
     assert extract_filters("sales in january") == {"month": 1}
     assert extract_filters("profit in oct") == {"month": 10}
     assert extract_filters("what happened in may") == {"month": 5}
-    assert extract_filters("sales for yesterday") == {}
+    from datetime import date, timedelta
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    assert extract_filters("sales for yesterday") == {"date_from": yesterday, "date_to": yesterday}
+
+
+def test_sales_in_last_n_days_routes_to_analytics_and_extracts_relative_window():
+    question = "what are my sales in last 10 days"
+    assert classify_route(question) == RouteType.ANALYTICS
+    assert extract_filters(question)["relative_days"] == 10
 
 def test_analytics_seam_is_backed_by_the_kpi_engine():
     """
@@ -64,6 +184,260 @@ def test_analytics_seam_is_backed_by_the_kpi_engine():
 def test_urdu_digit_normalization():
     chat = RAGChat()
     assert chat._normalize_question("batch ۱۲۳۴") == "batch 1234"
+
+
+def test_may_typo_before_sales_is_understood_as_my_for_relative_window():
+    chat = RAGChat()
+    question = chat._normalize_question("what are may sales in last 10 days")
+    assert question == "what are my sales in last 10 days"
+    assert "month" not in extract_filters(question)
+    assert classify_route(question) == RouteType.ANALYTICS
+
+
+def test_relative_window_anchors_to_latest_date_in_selected_dataset():
+    import pandas as pd
+    records = pd.DataFrame({"date": ["2026-09-20", "2026-09-25"]})
+
+    filters = RAGChat._resolve_relative_date_filter({"relative_days": 10}, records)
+
+    assert filters == {"date_from": "2026-09-16", "date_to": "2026-09-25"}
+
+
+def test_yesterday_outside_dataset_coverage_is_reported_instead_of_all_time_totals():
+    import pandas as pd
+    from datetime import date, timedelta
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    records = pd.DataFrame({
+        "date": [today - timedelta(days=10), today - timedelta(days=3)],
+        "txn_type": ["Sale", "Sale"], "amount": [10000000, 12000000],
+        "quantity": [50, 60], "source_row": [2, 3],
+    })
+    filters = RAGChat._resolve_relative_date_filter({
+        "date_from": yesterday.isoformat(), "date_to": yesterday.isoformat(),
+    }, records)
+
+    assert "_date_filter_error" in filters
+    assert "date coverage" in filters["_date_filter_error"]
+
+
+def test_relative_sales_answer_reports_the_exact_dataset_date_window():
+    answer = RAGChat()._format_analytics_answer(
+        "what are my sales in last 10 days",
+        {"total_revenue": {
+            "name": "Total Revenue", "value": 1250, "unit": "PKR", "status": "ok",
+        }},
+        "english",
+        {"date_from": "2026-09-16", "date_to": "2026-09-25"},
+    )
+
+    assert "PKR 1,250.00" in answer
+    assert "Date range used: Sep 16, 2026 to Sep 25, 2026." in answer
+
+
+def test_yesterday_typo_routes_to_date_filtered_units_sold():
+    import pandas as pd
+    from datetime import date, timedelta
+
+    chat = RAGChat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    records = pd.DataFrame([{
+        "date": yesterday, "txn_type": "Sale", "amount": 22183.0,
+        "quantity": 4, "cost": 100.0, "invoice_id": "Y-1", "product_id": "Paracetamol",
+        "source_row": 2,
+    }])
+    question = chat._normalize_question("how much stock I sold yestarday")
+
+    assert question == "how much stock I sold yesterday"
+    assert classify_route(question) == RouteType.ANALYTICS
+    assert extract_filters(question)["date_from"] == yesterday
+    assert extract_filters(question)["date_to"] == yesterday
+    computed, _ = AnalyticsRouter().compute(question, extract_filters(question), records, "pharmacy")
+    assert computed["units_sold"]["value"] == 4
+    assert computed["units_sold"]["unit"] == "units"
+
+
+def test_twenty_analytics_questions_against_a_known_dataset():
+    """Exercise RAGChat routing, date slicing, KPI selection, and response formatting."""
+    import pandas as pd
+    from datetime import date, timedelta
+
+    today = pd.Timestamp.today().normalize()
+    records = []
+    for index, period in enumerate(
+        pd.period_range(end=today.to_period("M") - 1, periods=8, freq="M")
+    ):
+        start = period.start_time.normalize()
+        records.extend([
+            {"date": start + pd.Timedelta(days=4), "txn_type": "Sale", "amount": 1000 + index * 100,
+             "quantity": 10 + index, "cost": 20, "invoice_id": f"S-{index}-1",
+             "product_id": "Paracetamol", "source_row": index * 3 + 2},
+            {"date": start + pd.Timedelta(days=11), "txn_type": "Sale", "amount": 500 + index * 50,
+             "quantity": 5, "cost": 30, "invoice_id": f"S-{index}-2",
+             "product_id": "Vitamin C", "source_row": index * 3 + 3},
+            {"date": start + pd.Timedelta(days=19), "txn_type": "Purchase", "amount": 400,
+             "quantity": 20, "cost": 20, "invoice_id": f"P-{index}",
+             "product_id": "Paracetamol", "supplier_id": "Supplier A", "source_row": index * 3 + 4},
+        ])
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    records.append({
+        "date": yesterday, "txn_type": "Sale", "amount": 77,
+        "quantity": 3, "cost": 10, "invoice_id": "S-YESTERDAY",
+        "product_id": "Paracetamol", "source_row": len(records) + 2,
+    })
+    frame = pd.DataFrame(records)
+    expected_revenue = float(frame.loc[frame.txn_type.eq("Sale"), "amount"].sum())
+    expected_purchase = float(frame.loc[frame.txn_type.eq("Purchase"), "amount"].sum())
+
+    benchmark = [
+        ("What were total sales?", "total_revenue"),
+        ("What was the total sales revenue?", "total_revenue"),
+        ("How much revenue did we earn?", "total_revenue"),
+        ("What was the sales amount?", "total_revenue"),
+        ("How many units were sold?", "units_sold"),
+        ("How much stock I sold yestarday", "units_sold"),
+        ("What quantity was sold?", "units_sold"),
+        ("How many sales transactions?", "transaction_count"),
+        ("What was the transaction count?", "transaction_count"),
+        ("What was the average transaction value?", "average_transaction_value"),
+        ("What were the total purchases?", "total_expenses"),
+        ("How much did we spend on purchases?", "total_expenses"),
+        ("What was net profit?", "net_profit"),
+        ("What was gross profit?", "gross_profit"),
+        ("What was gross margin?", "gross_margin_pct"),
+        ("How much did we refund?", "total_refunds"),
+        ("What was revenue by product?", "revenue_breakdown_by_product"),
+        ("What was revenue by month?", "revenue_by_month"),
+        ("What were my sales in last 10 days?", "total_revenue"),
+        ("What is the sales forecast for next month?", "revenue_forecast"),
+    ]
+
+    chat = RAGChat()
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])), \
+         patch("app.rag.chat.session_manager"), patch("app.rag.chat.llm") as mock_llm:
+        responses = [
+            chat.ask(ChatRequest(question=question, session_id=f"analytics-benchmark-{i}", domain="pharmacy"))
+            for i, (question, _) in enumerate(benchmark)
+        ]
+
+    assert len(benchmark) == 20
+    for response, (question, key) in zip(responses, benchmark):
+        assert response.route == RouteType.ANALYTICS, question
+        assert key in response.computed_values, question
+        assert response.computed_values[key]["status"] == "ok", question
+        assert response.answer.startswith("**"), question
+    assert responses[0].computed_values["total_revenue"]["value"] == expected_revenue
+    assert responses[10].computed_values["total_expenses"]["value"] == expected_purchase
+    assert responses[5].computed_values["units_sold"]["value"] == 3.0
+    assert "Date range used:" in responses[5].answer
+    assert responses[18].computed_values["total_revenue"]["value"] == 77.0
+    assert responses[18].answer.find("Date range used:") >= 0
+    assert "22,183,468.13" not in responses[3].answer
+    mock_llm.chat.assert_not_called()
+
+
+def test_forecast_typo_is_normalized_before_route_selection():
+    chat = RAGChat()
+    question = chat._normalize_question("what is the forcast of my sale next month")
+
+    assert question == "what is the forecast of my sale next month"
+    assert classify_route(question) == RouteType.ANALYTICS
+
+
+def test_analytics_citations_only_include_contributing_rows():
+    chat = RAGChat()
+    records = [
+        {"source_row": 2, "source_file": "sales.xlsx", "product_id": "A"},
+        {"source_row": 8, "source_file": "sales.xlsx", "product_id": "B"},
+    ]
+
+    chunks = chat._analytics_citations(records, [8], "")
+
+    assert [chunk.source_row for chunk in chunks] == [8]
+    assert chat._analytics_citations(records, [], "") == []
+
+
+def test_analytics_forecast_answer_uses_requested_metric_and_exact_band():
+    chat = RAGChat()
+    values = {
+        "revenue_forecast": {
+            "name": "Revenue Forecast", "value": 730297.39, "unit": "PKR",
+            "status": "ok", "is_estimate": True,
+            "forecast": [{"period": "2026-10", "value": 730297.39, "lower": 474975.05, "upper": 985619.73}],
+        },
+        "demand_forecast": {
+            "name": "Demand Forecast (units)", "value": 2634.33, "unit": "count",
+            "status": "ok", "is_estimate": True,
+            "forecast": [{"period": "2026-10", "value": 2634.33, "lower": 2223.39, "upper": 3045.28}],
+        },
+    }
+
+    answer = chat._format_analytics_answer("give me forecast in terms of revenue", values, "english")
+
+    assert "PKR 730,297.39" in answer
+    assert "PKR 474,975.05 to PKR 985,619.73" in answer
+    assert "2,634" not in answer
+    assert "Next-month sales forecast — October 2026" in answer
+    assert "- Estimated revenue:" in answer
+    assert "Method:" not in answer
+
+
+def test_analytics_forecast_answer_is_structured_when_revenue_and_demand_are_requested():
+    chat = RAGChat()
+    values = {
+        "revenue_forecast": {
+            "name": "Revenue Forecast", "value": 708765.58, "unit": "PKR",
+            "status": "ok", "is_estimate": True,
+            "forecast": [{"period": "2026-10", "value": 708765.58, "lower": 527007.61, "upper": 890523.55}],
+        },
+        "demand_forecast": {
+            "name": "Demand Forecast (units)", "value": 2316, "unit": "count",
+            "status": "ok", "is_estimate": True,
+            "forecast": [{"period": "2026-10", "value": 2316, "lower": 2038, "upper": 2595}],
+        },
+    }
+
+    answer = chat._format_analytics_answer("what is the forecast of my sale next month?", values, "english")
+
+    assert "- Estimated revenue: PKR 708,765.58" in answer
+    assert "- Estimated units: 2,316 units" in answer
+    assert "Likely range: PKR 527,007.61 to PKR 890,523.55" in answer
+    assert "Likely range: 2,038 units to 2,595 units" in answer
+
+
+@patch("app.rag.chat.llm")
+@patch("app.rag.chat.session_manager")
+@patch("app.rag.chat.KnowledgeBase")
+def test_analytics_chat_uses_exact_result_without_llm(mock_kb_cls, mock_session, mock_llm):
+    mock_kb = MagicMock()
+    mock_kb.search.return_value = [
+        RetrievedChunk(text="sale row", metadata={"source_row": 2, "amount": 400, "quantity": 2}, score=1.0)
+    ]
+    mock_kb_cls.return_value = mock_kb
+
+    response = RAGChat().ask(ChatRequest(question="total sales", session_id="analytics-fast"))
+
+    assert response.computed_values["total_revenue"]["value"] == 400.0
+    assert "PKR 400.00" in response.answer
+    mock_llm.chat.assert_not_called()
+
+
+@patch("app.rag.chat.llm")
+@patch("app.rag.chat.session_manager")
+@patch("app.rag.chat.KnowledgeBase")
+def test_streaming_analytics_uses_exact_result_without_llm(mock_kb_cls, mock_session, mock_llm):
+    mock_kb = MagicMock()
+    mock_kb.search.return_value = [
+        RetrievedChunk(text="sale row", metadata={"source_row": 2, "amount": 400, "quantity": 2}, score=1.0)
+    ]
+    mock_kb_cls.return_value = mock_kb
+
+    events = list(RAGChat().ask_stream(ChatRequest(question="total sales", session_id="analytics-stream")))
+
+    assert len(events) == 1
+    assert "PKR 400.00" in events[0]
+    mock_llm.chat_stream.assert_not_called()
 
 @patch("app.rag.chat.llm")
 @patch("app.rag.chat.session_manager")

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
     Search,
     Bell,
@@ -12,9 +12,11 @@ import {
     Cpu,
     Database,
     FileCheck2,
-    Sparkles
+    Sparkles,
+    RefreshCw
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
+import { useReport } from '../context/ReportContext';
 import './TopBar.css';
 
 interface NotificationItem {
@@ -47,7 +49,9 @@ const DEFAULT_NOTIFICATIONS: NotificationItem[] = [
 
 const TopBar = () => {
     const location = useLocation();
+    const navigate = useNavigate();
     const { user, activeDomainMeta, openSettings, theme, toggleTheme } = useUser();
+    const { isAnyReportGenerating, activeGeneratingType } = useReport();
 
     // Notification dropdown state
     const [isNotifOpen, setIsNotifOpen] = useState(false);
@@ -140,9 +144,11 @@ const TopBar = () => {
     return (
         <header className="topbar">
             <div className="topbar-left">
-                <h1 className="page-title">{getPageTitle(location.pathname)}</h1>
+                <div className="page-title-group">
+                    <h1 className="page-title">{getPageTitle(location.pathname)}</h1>
+                </div>
 
-                {/* Active Domain Assist Chip */}
+                {/* Active Domain Assist Chip (Google Material 3) */}
                 <button
                     className="domain-chip"
                     onClick={openSettings}
@@ -150,20 +156,36 @@ const TopBar = () => {
                     type="button"
                 >
                     <span className="domain-status-dot" />
-                    <span>{activeDomainMeta.name}</span>
-                    <SlidersHorizontal size={12} style={{ color: 'var(--text-secondary)' }} />
+                    <span className="domain-name">{activeDomainMeta.name}</span>
+                    <SlidersHorizontal size={12} className="domain-chip-icon" />
                 </button>
+
+                {/* Active Background Generation Indicator */}
+                {isAnyReportGenerating && (
+                    <button
+                        className="domain-chip generating-chip"
+                        onClick={() => navigate(activeGeneratingType === 'weekly' ? '/weekly-report' : '/reports')}
+                        title="Report generation is actively running in the background. Click to view progress."
+                        type="button"
+                    >
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Generating {activeGeneratingType === 'weekly' ? 'Weekly Report' : 'Executive Report'}...</span>
+                    </button>
+                )}
             </div>
 
-            {/* Google Centered Search Pill */}
+            {/* Google Centered Search Pill with Shortcut Badge */}
             <div className="topbar-center">
                 <div className="search-box">
                     <Search className="search-icon" />
                     <input
                         type="text"
                         className="search-input"
-                        placeholder="Search files, datasets, or ask AI..."
+                        placeholder="Search knowledge base, files, or ask KonnectAI..."
                     />
+                    <div className="search-kbd-badge">
+                        <kbd>Ctrl</kbd> <kbd>K</kbd>
+                    </div>
                 </div>
             </div>
 

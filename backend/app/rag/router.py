@@ -1,4 +1,5 @@
 import re
+from datetime import date, timedelta
 from typing import Dict, Any, Optional
 from app.core.config import get_default_domain
 from app.schema.domain import get_domain_pack
@@ -58,6 +59,48 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     Default to RAG (record lookup).
     """
     q_lower = question.lower()
+
+    if re.search(
+        r"\b(sales?|revenue|transactions?|sale|bikri)\b.*\b(last|past|previous|pichlay|pichle|guzishta|aakhri)\s+\d{1,3}\s+(days?|din)\b",
+        q_lower,
+    ):
+        return RouteType.ANALYTICS
+
+    # Keep concrete record retrieval separate from questions asking for a KPI.
+    if (
+        re.search(r"\b(batch|batches|invoice|invoices|bill|bills|receipt|receipts)\b\s+#?[a-z0-9_-]*\d+[a-z0-9_-]*", q_lower)
+        or (
+            re.search(r"\b(invoice|invoices|bill|bills|receipt|receipts|batch|batches|record|records|ledger)\b", q_lower)
+            and re.search(r"\b(show|find|fetch|list|lookup|look up|search|retrieve|pull up|details|what happened|which|dikhao|dikhaye|dikhayen|batao|bata dein|talash|dhoondo|dhundo)\b", q_lower)
+            and not re.search(r"\b(total|sum|average|avg|how much|how many|count|profit|margin|forecast|predict)\b", q_lower)
+        )
+    ):
+        return RouteType.RAG
+
+    analytics_language = (
+        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|p&l|"
+        r"revenue|sales?|turnover|takings|earnings|income|purchases?|expenses?|spend|spent|costs?|"
+        r"cash flow|refunds?|returns?|units sold|quantity sold|stock sold|most|highest|lowest|top|"
+        r"kitna|kitni|kitne|kul|bikri|munafa|nafa|faida|nuqsan|kharcha|aamdani|kamai|"
+        r"ziada|zyada|zayada|sab se|sabse|kam stock|dawai ki sale|dawa ki sale)\b"
+    )
+    has_analytics_language = bool(re.search(analytics_language, q_lower))
+
+    data_description_question = (
+        re.search(r"\b(dataset|file|data source|table|tables|columns?|fields?)\b", q_lower)
+        and re.search(r"\b(which|what|list|show|tell|name|available|included)\b", q_lower)
+        and not re.search(r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|profit|margin)\b", q_lower)
+    )
+    if data_description_question:
+        return RouteType.RAG
+
+    entity_lookup = (
+        re.search(r"\b(which|who|what|kis|kaun|kon|kaunsi|konsi|kon si|kiska|kis ka)\b", q_lower)
+        and re.search(r"\b(supplier|vendor|customer|cashier|product|medicine|item|invoice|bill|batch|dawai|dawa|tablet|goli)\b", q_lower)
+        and not re.search(r"\b(total|sum|average|avg|count|most|highest|lowest|top|best|least|margin|profit|revenue|sales amount|kitna|kitni|kitne|ziada|zyada|sab se|sabse)\b", q_lower)
+    )
+    if entity_lookup:
+        return RouteType.RAG
     
     # Chit-chat & assistant capability keywords
     chitchat_patterns = [
@@ -76,10 +119,22 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\b(kya kr skte|kya kar sakte|madad kr skte)\b",
         r"\b(tum kon ho|tm kon ho|aap kon hain|ap kon hain|who made you)\b",
         r"\b(english\s+me\s+(ku|kyu|kyun)|english\s+mein\s+(ku|kyu|kyun)|urdu\s+me\s+bolo|roman\s+urdu)\b",
-        r"\b(why\s+in\s+english|speak\s+urdu|reply\s+in\s+urdu)\b"
+        r"\b(why\s+in\s+english|speak\s+urdu|reply\s+in\s+urdu)\b",
+        r"^(assalamualaikum|assalamu\s+alaikum|asalam\s+o\s+alaikum|wa\s+alaikum\s+(assalam|salam)|walaikum\s+salam|adaab)\b",
+        r"\b(kya\s+ha{1,2}l\s+(hai|hain)|kaise\s+(ho|hain)|kaisay\s+(ho|hain)|theek\s+(ho|hun|hain))\b",
+        r"\b(kya\s+aap\s+madad\s+kar\s+sakte|madad\s+kar\s+saktay\s+ho|madad\s+karogi)\b",
+        r"\b(aap\s+kaun\s+hain|ap\s+kaun\s+hain|tumhara\s+naam\s+kya\s+hai)\b",
+        r"\b(bahut\s+shukriya|bohat\s+shukriya|shukria|meherbani|mehrbani)\b",
+        r"\b(madad\s+kar\s+(saktay|sakte|dain|dein)|meri\s+madad\s+karo)\b",
+        r"\b(theek\s+hun|mein\s+theek\s+hun|main\s+theek\s+hun)\b",
+        r"^(greetings|hiya|howdy|what's up|whats up|good day)\b",
+        r"\b(how is it going|how's it going|nice to meet you|good to see you)\b",
+        r"\b(can you help me|i need help|are you there|are you online)\b",
+        r"\b(thanks a lot|many thanks|much appreciated|cheers)\b",
+        r"\b(what do you do|what are your capabilities|how can you help)\b",
     ]
     for pattern in chitchat_patterns:
-        if re.search(pattern, q_lower):
+        if re.search(pattern, q_lower) and not has_analytics_language:
             return RouteType.CHITCHAT
             
     # Confirmation / verification follow-ups: keep the previous analytics route
@@ -100,7 +155,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
 
     # Explicit listing / lookup / informational patterns (prioritized over incidental keyword matches)
     lookup_patterns = [
-        r"^(list|show|display|find|fetch|which|what|tell)\b",
+        r"^(list|show|display|find|fetch|search|retrieve|lookup|look up|locate|open|get me|pull up|which|what|tell)\b",
         r"\b(what|which|tell)\s+(me\s+)?(the\s+)?(dataset|file|data|source|sources|table|tables|medicine|product|item|name)\b",
         r"\bnames?\b",
         r"\blist all\b",
@@ -108,12 +163,16 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\bdata\s*source\b",
     ]
     numeric_or_inventory_guard = (
-        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|revenue|"
+        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|revenue|sales?|"
+        r"turnover|takings|earnings|income|purchases?|expenses?|spend|spent|costs?|cash flow|p&l|"
+        r"units sold|quantity sold|stock sold|"
         r"expire|expiry|expired|expiring|expire ho|expire hone|expire ho chuk|expire ho gaya|"
         r"velocity|reorder|stockout|supply|days supply|days of supply|"
         r"running below|low stock|dead stock|liquidation|kam stock|"
         r"most|highest|lowest|max|min|top|best|least|qty|quantity|"
-        r"sb se|sab se|sabse|sbse|ziada|zyada|zayada|sale hwi|sale hui|dawai ki sale)\b"
+        r"sb se|sab se|sabse|sbse|ziada|zyada|zayada|sale hwi|sale hui|dawai ki sale|dawa ki sale|"
+        r"kitna|kitni|kitne|kul|bikri|munafa|nafa|faida|nuqsan|kharcha|aamdani|kamai|"
+        r"bechi|biki|bikay|bikain|hwi|hui|hua|huay|huye|tha|thi|the)\b"
     )
     for pattern in lookup_patterns:
         if re.search(pattern, q_lower) and not re.search(numeric_or_inventory_guard, q_lower):
@@ -130,9 +189,17 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\b(buy|bought|purchased?)\s+(the\s+)?(most|highest|least)\b",
         r"\b(sb se|sab se|sabse|sbse)\s+(ziada|zyada|zayada|bara|barri|kam)\b",
         r"\b(ziada|zyada|zayada)\s+sale\b",
+        r"\b(sale|bikri)\s+kitni\s+(hui|hwi|thi|thee)\b",
+        r"\b(sale|bikri|munafa|aamdani|profit|revenue)\b.*\b(pichlay|pichle|guzishta|aakhri)\s+\d+\s+(din|days?)\b",
+        r"\b(pichlay|pichle|guzishta|aakhri)\s+\d+\s+(din|days?)\b.*\b(sale|bikri|munafa|aamdani|profit|revenue)\b",
         r"\bsale\s+(hwi|hui|ha)\b",
         r"\bdawai\s+ki\s+sale\b",
-        r"\bqty\b", r"\bquantity\b",
+        r"\bdawa\s+ki\s+sale\b",
+        r"\b(kul\s+bikri|bikri\s+(kitni|ziada)|munafa|nafa|faida|nuqsan|kharch\w*|aamdani|kamai)\b",
+        r"\bkitni\b", r"\bqty\b", r"\bquantity\b", r"\bturnover\b", r"\btakings\b", r"\bearnings\b", r"\bloss\b",
+        r"\bpurchases?\b", r"\bexpenses?\b", r"\bspend\b", r"\bcosts?\b", r"\bcash flow\b", r"\bp&l\b",
+        r"\bcash position\b", r"\bcash balance\b",
+        r"\b(sales?|income)\b",
         r"\bforecast\b", r"\bpredict\b", r"\btrend\b", r"\bgrowth\b",
         r"\brevenue\b", r"\bbreakdown\b", r"\btotal sales\b", r"\bsales amount\b", r"\bsales total\b",
         r"\brow count\b", r"\bdataset size\b", r"\bnumber of rows\b", r"\bnumber of records\b",
@@ -177,6 +244,33 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
             filters["date_from"] = d1
             filters["date_to"] = d2
             return filters
+
+    # Yesterday is a calendar date filter. A misspelling is corrected in
+    # RAGChat._normalize_question, and also accepted here for direct callers.
+    if re.search(r"\b(yesterday|yestarday)\b", q_lower):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        filters["date_from"] = yesterday
+        filters["date_to"] = yesterday
+        return filters
+    # In Roman Urdu, past-tense sale wording disambiguates "kal" as yesterday.
+    if re.search(r"\bkal\b", q_lower) and re.search(
+        r"\b(sale|sales|bikri|biki|bechi)\b.*\b(hui|hwi|thi|thee|biki|bechi)\b",
+        q_lower,
+    ):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        filters["date_from"] = yesterday
+        filters["date_to"] = yesterday
+        return filters
+
+    # Relative reporting windows are resolved against the newest date in the
+    # selected dataset by RAGChat, so stale datasets don't silently use today's
+    # date as if they contained current records.
+    m_recent_days = re.search(
+        r"\b(?:last|past|previous|pichlay|pichle|guzishta|aakhri)\s+(\d{1,3})\s+(?:days?|din)\b",
+        q_lower,
+    )
+    if m_recent_days:
+        filters["relative_days"] = int(m_recent_days.group(1))
 
     # 2. Single month detection if no range
     for m_name, m_num in MONTHS.items():

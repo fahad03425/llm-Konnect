@@ -17,7 +17,7 @@ class PharmacyDomainPack(DomainPack):
             "schedule_flag", "scheme", "rack_location", "reorder_level", 
             "prescription_ref", "doctor_name", "mobile_number", "bonus_quantity",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
-            "opening_stock_qty", "closing_stock_qty"
+            "opening_stock_qty", "closing_stock_qty", "status"
         ]
 
     @property
@@ -330,6 +330,7 @@ class PharmacyDomainPack(DomainPack):
                 "type", "txn type", "transaction type", "voucher type",
                 "entry type",
             ],
+            "status": ["status", "transaction status", "order status", "sale status"],
         }
 
     def validate_dataframe(self, df: pd.DataFrame) -> List[Problem]:
