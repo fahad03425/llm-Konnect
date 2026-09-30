@@ -86,11 +86,25 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
         ),
         ("low_stock_reorder_predictions", "stockout_risk_count"),
     ),
+    # Product-performance wording should never fall through to a whole-store total.
+    (("sold together", "together sold", "ek sath", "saath saath"),
+     ("quantity_breakdown_by_product",)),
+    (("generic salt", "active ingredient"), ("quantity_breakdown_by_product",)),
+    (("brand-wise", "brand",), ("revenue_breakdown_by_product",)),
+    (("slow-moving", "slow moving", "not sold", "never sold", "bilkul nahi sold", "dead stock"),
+     ("top_declining_products", "quantity_breakdown_by_product")),
+    (("fast-moving", "fast moving", "fast-selling", "best-selling", "top-selling", "most sold"),
+     ("quantity_breakdown_by_product", "revenue_breakdown_by_product")),
+    (("revenue by product", "sales by product", "sales contribution", "contribution products",
+      "which medicine sold", "which medicines sold", "top 10 medicines", "top products"),
+     ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
+    (("quantity by product", "units by product", "quantity sold by", "units sold by", "by quantity"),
+     ("quantity_breakdown_by_product",)),
     # 2. Demand forecasting
     (
         (
             "demand", "how much should i order", "how much to order", "reorder",
-            "kitna mangwana", "kitna order", "kitni dawai", "dawai ki demand",
+            "kitna mangwana", "kitna order", "kitni dawai mangwani", "kitni dawai order", "dawai ki demand",
             "stock kitna chahiye",
         ),
         ("product_demand_forecast", "demand_forecast"),
@@ -980,23 +994,22 @@ def low_stock_reorder_predictions(
     qty_num = pd.to_numeric(df["quantity"], errors="coerce")
     is_sales_table = "invoice_id" in df.columns and df["invoice_id"].notna().any()
 
-    # Determine date span for sales velocity
+    # Calculate velocity from sale rows only; inventory/purchase rows must not
+    # inflate units sold or distort the observation window.
     dates = pd.to_datetime(df["date"], errors="coerce") if "date" in df.columns else pd.Series(pd.NaT, index=df.index)
-    valid_dates = dates.dropna()
+    valid_dates = dates[txn.sale].dropna()
     if not valid_dates.empty and is_sales_table:
         min_date, max_date = valid_dates.min(), valid_dates.max()
         span_days = max(1, (max_date - min_date).days + 1)
         period_str = f"spanning {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} ({span_days} days)"
-    elif is_sales_table:
-        span_days = 30
-        period_str = "assumed standard 30-day period"
     else:
-        span_days = 30
-        period_str = "inventory reference period"
+        span_days = 0
+        period_str = "sales history unavailable"
 
     # Identify distinct products
-    products = sorted(df.loc[cat_mask, "product_id"].dropna().unique())
-    if not products:
+    product_rows = df.loc[cat_mask]
+    product_groups = product_rows.groupby("product_id", sort=False, dropna=True)
+    if product_groups.ngroups == 0:
         prov = build_provenance(df, pd.Series(False, index=df.index), filters, ["product_id", "quantity"], notes)
         return KPIResult(
             key=key, name=name, value=0.0, unit=UNIT_COUNT,
@@ -1015,10 +1028,10 @@ def low_stock_reorder_predictions(
     gen_col = next((c for c in ("generic_name", "generic") if c in df.columns), None)
     cat_col = next((c for c in ("category", "therapeutic_class") if c in df.columns), None)
     reorder_col = next((c for c in ("reorder_level", "min_stock", "reorder") if c in df.columns), None)
+    txn_labels = df["txn_type"].astype(str).str.casefold() if "txn_type" in df.columns else pd.Series("", index=df.index)
+    inventory_mask = txn_labels.str.contains(r"inventory|stock", regex=True, na=False)
 
-    for prod in products:
-        p_mask = (df["product_id"] == prod) & cat_mask
-        p_rows = df[p_mask]
+    for prod, p_rows in product_groups:
 
         generic = str(p_rows[gen_col].dropna().iloc[0]) if gen_col and not p_rows[gen_col].dropna().empty else ""
         category = str(p_rows[cat_col].dropna().iloc[0]) if cat_col and not p_rows[cat_col].dropna().empty else ""
@@ -1032,44 +1045,57 @@ def low_stock_reorder_predictions(
                 reorder_lvl = 0.0
 
         if is_sales_table:
-            # Sales dataset: sum quantity sold for velocity
-            sold_units = float(qty_num[p_mask & txn.sale].sum())
-            daily_velocity = round(sold_units / span_days, 2)
-            
-            # If inventory stock is present as an extra column (or reorder level is set)
+            # Sales velocity is supported only by classified sale rows.
+            product_sale_mask = txn.sale.loc[p_rows.index]
+            sold_units = float(qty_num.loc[p_rows.index[product_sale_mask]].sum())
+            daily_velocity = round(sold_units / span_days, 2) if span_days > 0 else 0.0
+
+            # Current stock comes from a stock snapshot row or an explicit stock field.
+            stock_rows = p_rows[inventory_mask.loc[p_rows.index]]
+            stock_val: Optional[float] = None
+            if not stock_rows.empty:
+                stock_qty = qty_num.loc[stock_rows.index]
+                dated_rows = stock_rows.loc[dates.loc[stock_rows.index].notna()]
+                if not dated_rows.empty:
+                    latest_idx = dates.loc[dated_rows.index].idxmax()
+                    stock_val = float(stock_qty.loc[latest_idx]) if pd.notna(stock_qty.loc[latest_idx]) else None
+                else:
+                    last_qty = stock_qty.dropna()
+                    stock_val = float(last_qty.iloc[-1]) if not last_qty.empty else None
             stock_series = pd.to_numeric(p_rows["stock"], errors="coerce").dropna() if "stock" in p_rows.columns else pd.Series([], dtype="float64")
             closing_series = pd.to_numeric(p_rows["closing_stock"], errors="coerce").dropna() if "closing_stock" in p_rows.columns else pd.Series([], dtype="float64")
-            if not stock_series.empty:
+            if stock_val is None and not stock_series.empty:
                 stock_val = float(stock_series.iloc[0])
-            elif not closing_series.empty:
+            elif stock_val is None and not closing_series.empty:
                 stock_val = float(closing_series.iloc[0])
-            else:
-                # In absence of separate stock column in a pure POS file, compare against reorder_level or velocity
-                stock_val = max(0.0, reorder_lvl)
+            # Without observed stock, a zero-days alert is fabricated; omit this SKU.
+            if stock_val is None:
+                continue
         else:
-            # Inventory dataset: quantity represents current stock on hand
-            stock_val = float(qty_num[p_mask].sum())
-            # For inventory dataset, if reorder_level exists, estimate daily velocity as reorder_level / 14
-            daily_velocity = round(reorder_lvl / 14.0, 2) if reorder_lvl > 0 else 1.0
+            # A stock quantity is not a sales velocity. Keep inventory visible,
+            # but do not claim days of supply without actual dated sales history.
+            product_inventory_mask = inventory_mask.loc[p_rows.index]
+            stock_val = float(qty_num.loc[p_rows.index[product_inventory_mask]].sum()) if product_inventory_mask.any() else float(qty_num.loc[p_rows.index].sum())
+            daily_velocity = 0.0
 
         # Calculate Days of Supply
         if daily_velocity > 0:
             days_of_supply = round(stock_val / daily_velocity, 1)
-        elif stock_val > 0:
-            days_of_supply = 999.0
         else:
-            days_of_supply = 0.0
+            days_of_supply = None
 
         # Assess Risk Level
-        if days_of_supply <= 3.0:
+        if days_of_supply is not None and days_of_supply <= threshold_days:
             risk = "CRITICAL_STOCKOUT_RISK"
             critical_count += 1
-        elif days_of_supply <= 7.0 or (reorder_lvl > 0 and stock_val <= reorder_lvl):
+        elif (days_of_supply is not None and days_of_supply <= 7.0) or (reorder_lvl > 0 and stock_val <= reorder_lvl):
             risk = "REORDER_RECOMMENDED"
-        elif days_of_supply <= 30.0:
+        elif days_of_supply is not None and days_of_supply <= 30.0:
             risk = "HEALTHY"
-        else:
+        elif days_of_supply is not None:
             risk = "OVERSTOCKED"
+        else:
+            risk = "VELOCITY_UNAVAILABLE"
 
         # Calculate Recommended Reorder Quantity
         needed_buffer = daily_velocity * target_buffer_days
@@ -1093,10 +1119,14 @@ def low_stock_reorder_predictions(
         )
 
     # Sort breakdown by days_of_supply ascending (critical first)
-    breakdown_rows.sort(key=lambda r: (r["days_of_supply"], -r["daily_sales_velocity"], r["product_id"]))
+    breakdown_rows.sort(key=lambda r: (
+        r["days_of_supply"] if r["days_of_supply"] is not None else float("inf"),
+        -r["daily_sales_velocity"],
+        r["product_id"],
+    ))
 
     formula = (
-        f"stockout risk analysis across {len(products)} product(s) ({period_str}): "
+        f"stockout risk analysis across {product_groups.ngroups} product(s) ({period_str}): "
         f"days_of_supply = stock / daily_velocity; count of items with supply <= {threshold_days} days"
     )
 
@@ -1562,8 +1592,14 @@ def register(engine, domain: str = "pharmacy") -> None:
     so reloading a domain never raises.
     """
     from app.analytics.engine import KPISpec
+    from app.analytics.domains.pharmacy_purchases import pharmacy_purchase_analysis
 
     specs = [
+        KPISpec(
+            "pharmacy_purchase_analysis", "Pharmacy Purchase Analysis", UNIT_COUNT,
+            "Deterministic counts, grouped summaries, and purchase ledger calculations from pharmacy invoice rows.",
+            pharmacy_purchase_analysis, domain=domain, tags=("purchase", "dataset", "analysis"),
+        ),
         KPISpec(
             "near_expiry_total", "Near-Expiry Stock Value", UNIT_CURRENCY,
             "Value of stock expiring within the widest configured bucket, excluding "

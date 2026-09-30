@@ -355,10 +355,6 @@ def ingest_sql_database(req: IngestDatabaseRequest):
 
                 canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
                 
-                # Delete old chunks for this table if re-ingesting
-                _kb.delete_source(file_id)
-                _kb.delete_source(table_path)
-
                 source_meta = {
                     "source_file": table_path,
                     "filename": f"{database_name} — {table_name}",
@@ -369,18 +365,23 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                     "source_type": "database"
                 }
 
-                summary = _kb.add_dataframe(
-                    canonical_df,
+                # Reconcile database table with Knowledge Base:
+                # - Only embeds brand new or updated rows
+                # - Automatically deletes removed rows from ChromaDB
+                # - Skips unchanged rows and tables without re-embedding
+                pk_cols = connector.get_table_primary_key(table_name)
+                rec_res = _kb.reconcile_database_table(
+                    canonical_df=canonical_df,
                     source_meta=source_meta,
+                    pk_cols=pk_cols,
                     domain=req.domain,
                     strategy=req.strategy,
-                    merge_key=req.merge_key,
                     file_id=file_id
                 )
 
                 file_registry.register_or_update(
                     file_path=table_path,
-                    chunk_count=summary.total_chunks,
+                    chunk_count=rec_res["chunks"],
                     domain=req.domain,
                     strategy=req.strategy,
                     file_id=file_id,
@@ -390,13 +391,17 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                     filename_override=f"{database_name} — {table_name}"
                 )
 
-                total_chunks += summary.total_chunks
-                total_rows += len(df)
+                total_chunks += rec_res["chunks"]
+                total_rows += rec_res["total_db_rows"]
                 table_results.append({
                     "table_name": table_name,
-                    "status": "success",
-                    "rows": len(df),
-                    "chunks": summary.total_chunks
+                    "status": rec_res["status"],
+                    "rows": rec_res["total_db_rows"],
+                    "new_rows": rec_res["new_rows"],
+                    "updated_rows": rec_res["updated_rows"],
+                    "deleted_rows": rec_res["deleted_rows"],
+                    "chunks": rec_res["chunks"],
+                    "message": rec_res["message"]
                 })
             except Exception as table_err:
                 import traceback
@@ -421,14 +426,39 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                     "chunks": 0
                 })
 
-        successful_tables = [t for t in table_results if t["status"] == "success"]
+        successful_tables = [t for t in table_results if t["status"] in ("success", "synced", "unchanged")]
+        synced_tables = [t for t in table_results if t["status"] in ("success", "synced")]
+        unchanged_tables = [t for t in table_results if t["status"] == "unchanged"]
         empty_tables = [t for t in table_results if t["status"] == "empty"]
         error_tables = [t for t in table_results if t["status"] == "error"]
 
+        total_new_rows = sum(t.get("new_rows", 0) for t in table_results)
+        total_deleted_rows = sum(t.get("deleted_rows", 0) for t in table_results)
+        total_updated_rows = sum(t.get("updated_rows", 0) for t in table_results)
+
         if len(successful_tables) > 0:
-            msg = f"Successfully ingested {len(successful_tables)} tables ({total_chunks} chunks, {total_rows} rows) from database '{database_name}'."
+            if len(unchanged_tables) == len(successful_tables) and not total_new_rows and not total_deleted_rows:
+                msg = f"Database '{database_name}' is already up-to-date ({len(unchanged_tables)} tables verified, 0 changes detected)."
+            elif len(successful_tables) == 1:
+                t = successful_tables[0]
+                msg = t.get("message", f"Table '{t['table_name']}' reconciled successfully.")
+            else:
+                change_parts = []
+                if total_new_rows:
+                    change_parts.append(f"{total_new_rows} new rows ingested")
+                if total_updated_rows:
+                    change_parts.append(f"{total_updated_rows} updated rows re-indexed")
+                if total_deleted_rows:
+                    change_parts.append(f"{total_deleted_rows} deleted rows purged")
+                changes_str = f" ({', '.join(change_parts)})" if change_parts else ""
+                unchanged_str = f", {len(unchanged_tables)} tables already up-to-date" if unchanged_tables else ""
+                msg = f"Database '{database_name}' reconciled: {len(synced_tables)} tables updated{changes_str}{unchanged_str}."
+
             if empty_tables:
                 msg += f" ({len(empty_tables)} empty tables skipped)."
+            if error_tables:
+                err_names = ", ".join(t['table_name'] for t in error_tables)
+                msg += f" ({len(error_tables)} tables failed: {err_names})."
             # Automatically save connection for continuous background auto-sync (<2ms DMV check)
             file_registry.save_db_connection(
                 database_name=database_name,
@@ -442,12 +472,13 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                 row_count=total_rows
             )
         elif len(error_tables) > 0:
-            msg = f"0 tables ingested from database '{database_name}'. {len(error_tables)} tables encountered errors."
+            err_names = ", ".join(t['table_name'] for t in error_tables)
+            msg = f"0 tables ingested from database '{database_name}'. {len(error_tables)} tables encountered errors ({err_names})."
         else:
             msg = f"0 tables ingested: all {len(empty_tables)} selected tables in database '{database_name}' contain 0 rows."
 
         return {
-            "success": len(successful_tables) > 0 or len(error_tables) == 0,
+            "success": len(error_tables) == 0 and (len(successful_tables) > 0 or len(empty_tables) > 0),
             "database_name": database_name,
             "db_type": req.db_type,
             "total_tables": len(tables_to_ingest),
@@ -471,6 +502,11 @@ def delete_database_group(database_name: str = Path(..., description="The databa
         for r in records:
             _kb.delete_source(r.file_id)
             _kb.delete_source(r.file_path)
+        try:
+            col = _kb._get_chroma()
+            col.delete(where={"group_name": database_name})
+        except Exception:
+            pass
         
         deleted_count = file_registry.delete_group(database_name)
         file_registry.delete_db_connection(database_name)

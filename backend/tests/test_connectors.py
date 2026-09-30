@@ -215,3 +215,63 @@ def test_detect_connector_tally():
     assert isinstance(detect_connector("tally://localhost:9000"), TallyConnector)
     assert isinstance(detect_connector("http://192.168.1.100:9000"), TallyConnector)
 
+
+
+def test_parse_tally_number_with_commas_and_formats():
+    from app.connectors.tally import _parse_tally_number
+    assert _parse_tally_number("1,234.50") == 1234.50
+    assert _parse_tally_number("50 Box") == 50.0
+    assert _parse_tally_number("-900.00") == -900.00
+    assert _parse_tally_number("12,345,678.90") == 12345678.90
+    assert _parse_tally_number(None) == 0.0
+
+
+def test_source_exists_and_shopify_detection():
+    from app.connectors.base import source_exists, is_network_or_custom_source, detect_connector
+    assert is_network_or_custom_source("http://localhost:9000") is True
+    assert is_network_or_custom_source("tally://localhost:9000") is True
+    assert is_network_or_custom_source("shopify://al-shifa?access_token=shpat_abc") is True
+    assert is_network_or_custom_source("C:/Users/file.csv") is False
+
+    assert source_exists("http://localhost:9000") is True
+    assert source_exists("shopify://my-store?access_token=token") is True
+
+    conn = detect_connector("shopify://my-pharmacy?access_token=shpat_xyz123&api_version=2025-01")
+    assert isinstance(conn, ShopifyConnector)
+    assert conn.shop_name == "my-pharmacy"
+    assert conn.access_token == "shpat_xyz123"
+
+
+def test_tally_and_shopify_api_endpoints():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.config import settings
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {settings.api_token}", "Origin": "http://127.0.0.1:8756"}
+
+    with patch("requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = SAMPLE_TALLY_XML.encode("utf-8")
+        mock_post.return_value = mock_resp
+
+        res = client.post("/api/sources/tally/test", json={"url": "http://localhost:9000", "timeout": 5}, headers=headers)
+        assert res.status_code == 200
+        assert res.json()["status"] == "success"
+        assert res.json()["total_preview_rows"] == 3
+
+    with patch("requests.get") as mock_get:
+        mock_resp2 = MagicMock()
+        mock_resp2.status_code = 200
+        mock_resp2.headers = {}
+        mock_resp2.json.return_value = {
+            "orders": [
+                {"id": 1, "name": "#1001", "created_at": "2026-01-01", "line_items": [{"name": "Panadol", "quantity": 2, "price": "100.0"}]}
+            ]
+        }
+        mock_get.return_value = mock_resp2
+
+        res2 = client.post("/api/sources/shopify/test", json={"shop_name": "test-shop", "access_token": "shpat_test", "resource": "orders"}, headers=headers)
+        assert res2.status_code == 200
+        assert res2.json()["status"] == "success"
+        assert res2.json()["total_preview_rows"] == 1

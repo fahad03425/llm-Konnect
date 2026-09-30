@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useUser, DOMAIN_METAS } from '../../context/UserContext';
 import type { DomainType } from '../../context/UserContext';
-import { X, Check, CheckCircle2, RotateCcw, Sparkles } from 'lucide-react';
+import { X, Check, CheckCircle2, RotateCcw, Sparkles, Sun, Moon } from 'lucide-react';
+import './SettingsModal.css';
 
 export default function SettingsModal() {
-    const { user, setDomain, updateProfile, resetProfile, isSettingsOpen, closeSettings } = useUser();
+    const { user, setDomain, updateProfile, resetProfile, isSettingsOpen, closeSettings, theme, setTheme } = useUser();
 
     const [accountName, setAccountName] = useState(user.accountName);
     const [organization, setOrganization] = useState(user.organization);
@@ -18,7 +19,7 @@ export default function SettingsModal() {
         updateProfile({
             accountName: accountName.trim() || 'Admin User',
             organization: organization.trim() || 'My Workspace',
-            email: email.trim() || 'admin@llm-konnect.local',
+            email: email.trim() || 'admin@konnect.ai',
             domain: activeDomain
         });
         setDomain(activeDomain);
@@ -26,7 +27,7 @@ export default function SettingsModal() {
         setTimeout(() => {
             setSavedMsg(false);
             closeSettings();
-        }, 800);
+        }, 700);
     };
 
     const handleResetOnboarding = () => {
@@ -37,97 +38,116 @@ export default function SettingsModal() {
     };
 
     return (
-        <div className="onboarding-overlay" style={{ animation: 'fadeIn 0.2s ease-out' }}>
-            <div className="onboarding-card" style={{ maxWidth: '680px' }}>
+        <div className="settings-overlay">
+            <div className="settings-card">
                 {/* Header */}
-                <div className="onboarding-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div className="settings-header">
                     <div>
-                        <div className="onboarding-badge">
-                            <Sparkles size={14} /> Workspace Preferences
+                        <div className="settings-badge">
+                            <Sparkles size={13} /> Workspace Preferences
                         </div>
-                        <h2 className="onboarding-title" style={{ fontSize: '1.4rem' }}>Settings & Profile</h2>
-                        <p className="onboarding-subtitle">Manage your account profile and active domain customization.</p>
+                        <h2 className="settings-title">Settings &amp; Profile</h2>
+                        <p className="settings-subtitle">Manage your account profile, theme, and active domain customization.</p>
                     </div>
                     <button
+                        className="settings-close-btn"
                         onClick={closeSettings}
-                        style={{
-                            background: 'rgba(255, 255, 255, 0.08)',
-                            border: 'none',
-                            color: '#9ca3af',
-                            borderRadius: '8px',
-                            padding: '0.4rem',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center'
-                        }}
+                        title="Close Settings"
+                        aria-label="Close"
                     >
-                        <X size={18} />
+                        <X size={17} />
                     </button>
                 </div>
 
                 {/* Body */}
-                <div className="onboarding-body" style={{ gap: '1.5rem', maxHeight: '65vh' }}>
-                    {/* User Profile Form */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#f3f4f6', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '0.4rem' }}>
-                            User Profile Details
+                <div className="settings-body">
+                    {/* Appearance / Theme Selector */}
+                    <div className="settings-section">
+                        <div className="settings-section-header">
+                            <span className="settings-section-title">Appearance &amp; Theme</span>
+                            <span className="settings-section-badge">Google Material Design 3</span>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                            <div className="onboarding-form-group">
-                                <label className="onboarding-label">Account / Admin Name</label>
+                        <div className="settings-theme-grid">
+                            <button
+                                type="button"
+                                onClick={() => setTheme('light')}
+                                className={`settings-theme-btn ${theme === 'light' ? 'active theme-light' : ''}`}
+                            >
+                                <Sun size={17} />
+                                <span>Light Theme</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setTheme('dark')}
+                                className={`settings-theme-btn ${theme === 'dark' ? 'active theme-dark' : ''}`}
+                            >
+                                <Moon size={17} />
+                                <span>Dark Theme</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* User Profile Form */}
+                    <div className="settings-section">
+                        <div className="settings-section-header">
+                            <span className="settings-section-title">User Profile Details</span>
+                        </div>
+                        <div className="settings-form-row">
+                            <div className="settings-form-group">
+                                <label className="settings-label">Account / Admin Name</label>
                                 <input
                                     type="text"
-                                    className="onboarding-input"
+                                    className="settings-input"
                                     value={accountName}
                                     onChange={e => setAccountName(e.target.value)}
+                                    placeholder="e.g. Fahad"
                                 />
                             </div>
-                            <div className="onboarding-form-group">
-                                <label className="onboarding-label">Company / Workspace</label>
+                            <div className="settings-form-group">
+                                <label className="settings-label">Company / Workspace</label>
                                 <input
                                     type="text"
-                                    className="onboarding-input"
+                                    className="settings-input"
                                     value={organization}
                                     onChange={e => setOrganization(e.target.value)}
+                                    placeholder="e.g. My Enterprise"
                                 />
                             </div>
                         </div>
-                        <div className="onboarding-form-group">
-                            <label className="onboarding-label">Email</label>
+                        <div className="settings-form-group">
+                            <label className="settings-label">Email</label>
                             <input
                                 type="email"
-                                className="onboarding-input"
+                                className="settings-input"
                                 value={email}
                                 onChange={e => setEmail(e.target.value)}
+                                placeholder="e.g. admin@konnect.ai"
                             />
                         </div>
                     </div>
 
                     {/* Active Domain Niche Selector */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '0.4rem' }}>
-                            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#f3f4f6' }}>Active Business Domain</span>
-                            <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Changes app interface & schemas</span>
+                    <div className="settings-section">
+                        <div className="settings-section-header">
+                            <span className="settings-section-title">Active Business Domain</span>
+                            <span className="settings-section-badge">Changes app interface &amp; schemas</span>
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem' }}>
+                        <div className="settings-domain-grid">
                             {(Object.keys(DOMAIN_METAS) as DomainType[]).map(key => {
                                 const meta = DOMAIN_METAS[key];
                                 const isSelected = activeDomain === key;
                                 return (
                                     <div
                                         key={key}
-                                        className={`onboarding-niche-card ${isSelected ? 'selected' : ''}`}
+                                        className={`settings-domain-card ${isSelected ? 'selected' : ''}`}
                                         onClick={() => setActiveDomain(key)}
-                                        style={{ padding: '0.9rem' }}
                                     >
-                                        <div className="onboarding-niche-top">
-                                            <span style={{ fontSize: '1.3rem' }}>{meta.icon}</span>
-                                            {isSelected && <CheckCircle2 size={16} color="#10b981" />}
+                                        <div className="settings-domain-top">
+                                            <span className="settings-domain-title">{meta.name}</span>
+                                            {isSelected && <CheckCircle2 size={16} color="var(--brand-green)" />}
                                         </div>
-                                        <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#ffffff' }}>{meta.name}</div>
-                                        <p style={{ fontSize: '0.76rem', color: '#9ca3af', margin: 0, lineHeight: 1.35 }}>{meta.description}</p>
+                                        <p className="settings-domain-desc">{meta.description}</p>
                                     </div>
                                 );
                             })}
@@ -135,27 +155,15 @@ export default function SettingsModal() {
                     </div>
 
                     {/* Danger / Reset Zone */}
-                    <div style={{ paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="settings-reset-row">
                         <div>
-                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#ef4444' }}>Re-run First-Time Setup</div>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Reset your saved preferences and launch onboarding wizard again.</div>
+                            <div className="settings-reset-title">Re-run First-Time Setup</div>
+                            <div className="settings-reset-desc">Reset your saved preferences and launch onboarding wizard again.</div>
                         </div>
                         <button
                             type="button"
                             onClick={handleResetOnboarding}
-                            style={{
-                                background: 'rgba(239, 68, 68, 0.1)',
-                                border: '1px solid rgba(239, 68, 68, 0.3)',
-                                color: '#ef4444',
-                                padding: '0.4rem 0.75rem',
-                                borderRadius: '6px',
-                                fontSize: '0.8rem',
-                                fontWeight: 600,
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '0.3rem'
-                            }}
+                            className="settings-reset-btn"
                         >
                             <RotateCcw size={13} /> Reset Setup
                         </button>
@@ -163,13 +171,13 @@ export default function SettingsModal() {
                 </div>
 
                 {/* Footer */}
-                <div className="onboarding-footer">
-                    <button className="btn-onboarding-back" onClick={closeSettings}>
+                <div className="settings-footer">
+                    <button className="settings-btn-cancel" onClick={closeSettings}>
                         Cancel
                     </button>
-                    <button className="btn-onboarding-next" onClick={handleSave}>
+                    <button className="settings-btn-save" onClick={handleSave}>
                         {savedMsg ? (
-                            <>Saved Successfully <Check size={16} /></>
+                            <>Saved <Check size={16} /></>
                         ) : (
                             <>Save Changes <Check size={16} /></>
                         )}

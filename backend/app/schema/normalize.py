@@ -155,7 +155,19 @@ _MONEY_FIELDS = frozenset({
 # Pharmacy numeric extras — added here to avoid pharmacy vocabulary in core code.
 # When a new domain pack adds numeric fields, extend _DOMAIN_MONEY_FIELDS.
 _DOMAIN_MONEY_FIELDS: Dict[str, frozenset] = {
-    "pharmacy": frozenset({"mrp", "reorder_level"}),
+    "pharmacy": frozenset({
+        "mrp", "reorder_level", "bonus_quantity", "net_payable", "tax_amount",
+        "discount_amount", "tax_pct", "margin_pct", "discount_pct", "total_qty",
+        "total_bonus", "total_items", "total_pack", "line_discount_amount",
+        "line_tax_amount", "invoice_discount", "invoice_tax", "carriage_charges",
+        "other_charges", "invoice_total", "paid_amount", "customer_balance",
+        "previous_balance", "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
+    }),
+    "ecommerce": frozenset({
+        "sale_amount", "gross_amount", "net_amount", "discount_amount",
+        "refund_amount", "shipping_amount", "tax_amount", "cost_per_item",
+        "rating"
+    }),
 }
 
 # Pack size is numeric but sometimes text ("10×10") — treat as text to be safe.
@@ -239,6 +251,28 @@ def normalize(
             df[col] = df[col].apply(_clean_money)
         else:
             df[col] = df[col].apply(_clean_text)
+
+    # Some purchase exports put the settlement mode (Cash/Credit) in a column
+    # called Transaction_Type. Preserve it as payment_method and infer the
+    # transaction direction only when the row also has supplier purchase fields.
+    if domain == "pharmacy" and "txn_type" in df.columns:
+        values = set(df["txn_type"].dropna().astype(str).str.casefold().str.strip())
+        payment_labels = {"cash", "credit", "debit", "card", "online", "bank transfer", "cheque", "check"}
+        if values and values.issubset(payment_labels):
+            if "payment_method" not in df.columns:
+                df["payment_method"] = df["txn_type"]
+            is_purchase_export = (
+                "supplier_id" in df.columns
+                and any(col in df.columns for col in ("net_payable", "cost", "purchase_order_no"))
+            )
+            df["txn_type"] = "Purchase" if is_purchase_export else "Sale"
+
+    # A single-table export often calls its only transaction value "Total
+    # Amount". Keep the explicit invoice_total field, and expose it as amount
+    # only when there is no separate line-level amount to avoid double-counting
+    # invoice totals alongside their detail rows.
+    if domain == "pharmacy" and "amount" not in df.columns and "invoice_total" in df.columns:
+        df["amount"] = df["invoice_total"]
 
     return df
 

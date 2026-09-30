@@ -262,9 +262,26 @@ def list_all_files():
             continue
         norm = file_registry.normalize_path(reg.file_path).lower()
         if norm not in seen_paths:
+            is_virtual_db = reg.file_path.startswith("sql://") or reg.file_path.startswith("db://") or reg.source_type == "database"
+            
+            # Check if file exists at original path or relocated in uploads/samples
+            real_path = reg.file_path
+            if not is_virtual_db:
+                if os.path.exists(reg.file_path):
+                    real_path = reg.file_path
+                elif os.path.exists(os.path.join(upload_dir, reg.filename)):
+                    real_path = os.path.join(upload_dir, reg.filename)
+                elif os.path.exists(os.path.join(samples_dir, reg.filename)):
+                    real_path = os.path.join(samples_dir, reg.filename)
+                else:
+                    if reg.status not in ("processing", "failed", "active"):
+                        # File does not exist on disk — do not list untracked ghost files
+                        continue
+                    real_path = reg.file_path
+
             seen_paths.add(norm)
-            exists = os.path.exists(reg.file_path)
-            size_bytes = os.path.getsize(reg.file_path) if exists else reg.file_size_bytes or 0
+            exists = os.path.exists(real_path) if not is_virtual_db else True
+            size_bytes = os.path.getsize(real_path) if (not is_virtual_db and exists) else reg.file_size_bytes or 0
             active_task = active_tasks_copy.get(norm)
 
             if active_task and active_task.get("status") == "processing":

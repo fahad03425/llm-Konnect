@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "tauri": "set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

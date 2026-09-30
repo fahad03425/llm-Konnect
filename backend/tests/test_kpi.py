@@ -15,6 +15,7 @@ from app.analytics.engine import KPIEngine, KPISpec, engine
 from app.analytics.filters import KPIFilters, apply_filters
 from app.analytics.models import STATUS_OK, STATUS_UNAVAILABLE, KPIResult, Provenance
 from app.analytics.seam import AnalyticsRouter, select_kpi_keys
+from app.analytics.kpi import classify_transactions
 
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples")
 
@@ -79,6 +80,25 @@ def test_total_revenue_exact(known_frame):
     assert result.value == 4000.0
     assert result.unit == "PKR"
     assert result.provenance.row_count == 3
+
+
+def test_returned_status_is_not_counted_as_sale():
+    df = pd.DataFrame({
+        "txn_type": ["Sale", "Sale", "Sale", "Sale", "Purchase", "Purchase"],
+        "status": ["Completed", "Returned", "Partially Returned", "Cancelled", "Received", "Returned"],
+        "amount": [100.0, 25.0, 30.0, 40.0, 50.0, 60.0],
+        "quantity": [2, 1, 1, 1, 5, 2],
+        "date": ["2026-01-01"] * 6,
+    })
+
+    txn = classify_transactions(df)
+
+    assert txn.sale.tolist() == [True, False, False, False, False, False]
+    assert txn.refund.tolist() == [False, True, False, False, False, False]
+    assert txn.expense.tolist() == [False, False, False, False, True, False]
+    assert any("partially returned" in note for note in txn.notes)
+    assert engine.compute("total_revenue", df).value == 100.0
+    assert engine.compute("total_refunds", df).value == 25.0
 
 
 def test_total_expenses_exact(known_frame):

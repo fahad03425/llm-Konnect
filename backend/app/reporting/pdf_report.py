@@ -18,6 +18,8 @@ Matches executive pharmacy performance report layout:
 
 from __future__ import annotations
 
+from xml.sax.saxutils import escape
+
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -84,6 +86,7 @@ class NumberedCanvas(canvas.Canvas):
     """Two-pass canvas for running header and 'Page X of Y' footer."""
 
     def __init__(self, *args, **kwargs):
+        self.report_title = kwargs.pop("report_title", "Business Performance & Growth Report")
         super().__init__(*args, **kwargs)
         self._saved_page_states = []
 
@@ -108,7 +111,7 @@ class NumberedCanvas(canvas.Canvas):
         self.setFillColor(colors.HexColor("#64748b"))
 
         # Running Header
-        self.drawString(36, 11 * 72 - 28, "PHARMACY SALES PERFORMANCE REPORT")
+        self.drawString(36, 11 * 72 - 28, self.report_title[:100])
         self.setStrokeColor(colors.HexColor("#e2e8f0"))
         self.setLineWidth(0.5)
         self.line(36, 11 * 72 - 32, 8.5 * 72 - 36, 11 * 72 - 32)
@@ -149,15 +152,15 @@ def _build_weekly_pharmacy_pdf_story(
     # PAGE 1: COVER PAGE
     # ══════════════════════════════════════════════════════════════════════════
     story.append(Spacer(1, 2.2 * inch))
-    story.append(Paragraph("PHARMACY SALES", cover_title_style))
-    story.append(Paragraph("WEEKLY EXECUTIVE REPORT", cover_subtitle_style))
+    story.append(Paragraph(escape(report_data.business_name), cover_title_style))
+    story.append(Paragraph(escape(report_data.report_title), cover_subtitle_style))
 
     branches_str = " | ".join(em.branches_list) if em.branches_list else report_data.business_name
     story.append(Paragraph(branches_str, cover_branches_style))
     story.append(Paragraph(f"Reporting Period: {em.reporting_period}", cover_period_style))
 
     story.append(Spacer(1, 2.8 * inch))
-    story.append(Paragraph("Prepared for: Pharmacy Ownership & Management", cover_meta_style))
+    story.append(Paragraph(f"Prepared for: {escape(report_data.business_name)}", cover_meta_style))
     story.append(Paragraph(f"Prepared: {report_data.generated_at.strftime('%B %Y')}", cover_meta_style))
     story.append(
         Paragraph(
@@ -170,16 +173,11 @@ def _build_weekly_pharmacy_pdf_story(
     # ══════════════════════════════════════════════════════════════════════════
     # EXECUTIVE SUMMARY & 8-BOX KPI STAT GRID
     # ══════════════════════════════════════════════════════════════════════════
-    story.append(Paragraph("Executive Summary", section_title_style))
+    story.append(Paragraph("Owner Insights & Actions", section_title_style))
     story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
-    story.append(Paragraph("Weekly performance summary & core focus points", section_sub_style))
+    story.append(Paragraph(f"Source-specific performance summary for {escape(em.reporting_period)}", section_sub_style))
 
-    exec_lead_text = narrative if narrative else (
-        "This weekly pharmacy summary analyzes point-of-sale and inventory movements across your operations. "
-        "The focal areas below highlight revenue generation, working capital tied up in slow-moving stock, and priority obligations."
-    )
-    story.append(Paragraph(exec_lead_text, body_style))
-    story.append(Spacer(1, 6))
+    story.append(Paragraph("Figures and recommendations below are derived from this source's computed metrics.", body_style))
 
     # 8-Box KPI Stat Grid (4 rows x 2 cols)
     def kpi_box(val: str, lbl: str):
@@ -191,12 +189,13 @@ def _build_weekly_pharmacy_pdf_story(
     bal_str = f"PKR {em.outstanding_balance*1e-6:.2f}M" if em.outstanding_balance >= 1e6 else f"PKR {em.outstanding_balance:,.0f}"
     growth_str = f"{em.yoy_growth_pct:+.2f}%" if em.yoy_growth_pct is not None else "+0.65%"
 
-    kpi_grid_data = [
-        [kpi_box(rev_str, f"Total Revenue [{em.reporting_period}]"), kpi_box(f"{em.total_invoices:,}", "Total Invoices")],
-        [kpi_box(f"PKR {em.avg_bill_value:,.0f}", "Average Bill Value"), kpi_box(f"{em.unique_customers:,}", "Unique Customers Served")],
-        [kpi_box(f"{em.unique_products_count}", "Products Sold (SKUs)"), kpi_box(growth_str, "Weekly Growth")],
-        [kpi_box(disc_str, "Discounts Given"), kpi_box(bal_str, "Outstanding Balance")],
-    ]
+    display_kpis = report_data.get_display_kpis()
+    kpi_cells = [kpi_box(escape(value), escape(label)) for label, value in display_kpis]
+    if not kpi_cells:
+        kpi_cells = [Paragraph("No verified KPI values are available for this source.", body_style)]
+    kpi_grid_data = [kpi_cells[index:index + 2] for index in range(0, len(kpi_cells), 2)]
+    if len(kpi_grid_data[-1]) == 1:
+        kpi_grid_data[-1].append(Paragraph("", styles["Normal"]))
 
     col_w = (doc.width - 12) / 2
     kpi_table = Table(kpi_grid_data, colWidths=[col_w, col_w])
@@ -212,7 +211,7 @@ def _build_weekly_pharmacy_pdf_story(
     story.append(kpi_table)
     story.append(Spacer(1, 8))
 
-    th_style = ParagraphStyle("TH_W", parent=styles["Normal"], textColor=colors.white, fontSize=8, fontName="Helvetica-Bold")
+    th_style = ParagraphStyle("TH_W", parent=styles["Normal"], textColor=colors.white, fontSize=9.5, leading=12, fontName="Helvetica-Bold")
 
     def make_callout(header: str, msg: str, bg="#fffbeb", border="#fde68a", accent=GOLD_ACCENT):
         t = Table([[Paragraph(f"<b>{header}</b><br/>{msg}", callout_style)]], colWidths=[doc.width])
@@ -224,11 +223,110 @@ def _build_weekly_pharmacy_pdf_story(
         ]))
         return t
 
+    comparison_labels = {
+        "total_revenue": "Sales revenue", "transaction_count": "Transactions",
+        "gross_profit": "Gross profit", "gross_margin_pct": "Gross margin",
+        "average_transaction_value": "Average bill value",
+    }
+    comparison_rows = [[Paragraph("Measure", th_style), Paragraph("Current", th_style), Paragraph("Previous", th_style), Paragraph("Change", th_style)]]
+    for key, label in comparison_labels.items():
+        metric = report_data.period_comparison.get(key)
+        if not isinstance(metric, dict) or metric.get("current") is None or metric.get("previous") is None:
+            continue
+        unit = "PKR " if key in ("total_revenue", "gross_profit", "average_transaction_value") else ""
+        suffix = "%" if key == "gross_margin_pct" else ""
+        change = metric.get("change_pct")
+        change_str = f"{float(change):+.1f}%" if change is not None else "—"
+        comparison_rows.append([
+            Paragraph(escape(label), body_style),
+            Paragraph(f"{unit}{float(metric['current']):,.2f}{suffix}", body_style),
+            Paragraph(f"{unit}{float(metric['previous']):,.2f}{suffix}", body_style),
+            Paragraph(change_str, body_style),
+        ])
+    if len(comparison_rows) > 1:
+        story.append(Paragraph("Current period compared with the previous period", section_sub_style))
+        comparison_table = Table(comparison_rows, colWidths=[doc.width * .30, doc.width * .25, doc.width * .25, doc.width * .20])
+        comparison_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY),
+            ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("PADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(comparison_table)
+        story.append(Spacer(1, 8))
+    comparison_chart = _make_chart_image(charts.get("period_comparison"), max_w=doc.width, max_h=2.7 * inch)
+    if comparison_chart:
+        story.append(comparison_chart)
+        story.append(Paragraph("Previous and current period values; each measure has its own scale.", section_sub_style))
+        story.append(Spacer(1, 8))
+
+    for insight in report_data.get_owner_insights():
+        story.append(make_callout(
+            escape(insight["title"]),
+            f"{escape(insight['finding'])}<br/><b>Recommended next step:</b> {escape(insight['action'])}",
+        ))
+        story.append(Spacer(1, 5))
+
+    if report_data.branch_performance:
+        story.append(Paragraph("Branch Performance", section_title_style))
+        branch_chart = _make_chart_image(charts.get("branch_performance"), max_w=doc.width, max_h=2.4 * inch)
+        if branch_chart:
+            story.append(branch_chart)
+        rows = [[Paragraph("Branch", th_style), Paragraph("Sales (PKR)", th_style), Paragraph("Transactions", th_style), Paragraph("Average Bill (PKR)", th_style)]]
+        for row in report_data.branch_performance:
+            rows.append([
+                Paragraph(escape(str(row.get("branch", ""))), body_style),
+                Paragraph(f"{float(row.get('revenue', 0) or 0):,.0f}", body_style),
+                Paragraph(f"{int(row.get('invoices', 0) or 0):,}", body_style),
+                Paragraph(f"{float(row.get('avg_bill', 0) or 0):,.0f}", body_style),
+            ])
+        branch_table = Table(rows, colWidths=[doc.width * .30, doc.width * .25, doc.width * .20, doc.width * .25], repeatRows=1)
+        branch_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY), ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT), ("PADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(branch_table)
+
+    if report_data.top_products:
+        story.append(Paragraph("Products Driving Sales", section_title_style))
+        product_chart = _make_chart_image(charts.get("top_products"), max_w=doc.width, max_h=2.4 * inch)
+        if product_chart:
+            story.append(product_chart)
+        rows = [[Paragraph("Product", th_style), Paragraph("Sales (PKR)", th_style)]]
+        for row in report_data.top_products[:15]:
+            rows.append([Paragraph(escape(str(row.get("name", ""))), body_style), Paragraph(f"{float(row.get('amount', 0) or 0):,.0f}", body_style)])
+        product_table = Table(rows, colWidths=[doc.width * .68, doc.width * .32], repeatRows=1)
+        product_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY), ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT), ("PADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(product_table)
+
+    for title, rows, headers, widths, chart_key in (
+        ("Sales by Day", [[Paragraph(escape(str(row.get("day", ""))), body_style), Paragraph(f"{float(row.get('revenue', 0) or 0):,.0f}", body_style)] for row in report_data.daily_traffic], ["Day", "Sales (PKR)"], [doc.width * .45, doc.width * .55], "daily_traffic"),
+        ("Customer Activity by Hour", [[Paragraph(f"{int(row.get('hour', 0)):02d}:00", body_style), Paragraph(f"{int(row.get('count', 0)):,}", body_style)] for row in report_data.hourly_traffic], ["Hour", "Transactions"], [doc.width * .45, doc.width * .55], "hourly_traffic"),
+        ("Cashier Activity", [[Paragraph(escape(str(row.get("cashier", ""))), body_style), Paragraph(f"{float(row.get('revenue', 0) or 0):,.0f}", body_style), Paragraph(f"{int(row.get('invoices', 0) or 0):,}", body_style)] for row in report_data.cashier_performance], ["Cashier", "Sales (PKR)", "Transactions"], [doc.width * .40, doc.width * .35, doc.width * .25], ""),
+        ("Outstanding Customer Balances", [[Paragraph(escape(str(row.get("customer", ""))), body_style), Paragraph(f"{float(row.get('balance', 0) or 0):,.0f}", body_style)] for row in report_data.top_debtors], ["Customer", "Balance (PKR)"], [doc.width * .60, doc.width * .40], "top_debtors"),
+    ):
+        if not rows:
+            continue
+        story.append(Paragraph(title, section_title_style))
+        if chart_key:
+            chart = _make_chart_image(charts.get(chart_key), max_w=doc.width, max_h=2.1 * inch)
+            if chart:
+                story.append(chart)
+        grid = [[Paragraph(f"<b>{escape(header)}</b>", th_style) for header in headers], *rows]
+        table = Table(grid, colWidths=widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), PRIMARY_NAVY), ("BOX", (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_LIGHT), ("PADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(table)
+
     # ══════════════════════════════════════════════════════════════════════════
     # 1. CASH / CARD MIX
     # ══════════════════════════════════════════════════════════════════════════
     if "cash_card_mix" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("1. Cash vs. Card & Payment Channel Mix", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Settlement channels and liquidity breakdown across checkout registers", section_sub_style))
@@ -265,7 +363,6 @@ def _build_weekly_pharmacy_pdf_story(
     # 2. EXPIRY LOSS EXPOSURE
     # ══════════════════════════════════════════════════════════════════════════
     if "expiry_loss_exposure" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("2. Expiry Loss Exposure", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Stock nearing maturity (<30-90 days) and expired valuation", section_sub_style))
@@ -278,13 +375,13 @@ def _build_weekly_pharmacy_pdf_story(
 
         near_v = getattr(report_data.get_kpi("near_expiry_total") or report_data.get_kpi("expiring_value_30d"), "value", None)
         exp_v = getattr(report_data.get_kpi("expired_stock_value"), "value", None)
-        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "PKR 0.00"
-        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "PKR 0.00"
+        near_str = f"PKR {float(near_v):,.2f}" if near_v is not None else "Not available from this source"
+        exp_str = f"PKR {float(exp_v):,.2f}" if exp_v is not None else "Not available from this source"
 
         story.append(make_callout(
             "Distributor Returns Action Item",
             f"Near-expiry stock totals {near_str} while expired stock accounts for {exp_str}. "
-            "Process immediate returns to distributors or swap batches nearing expiration to secure credit notes before cutoff dates.",
+            "Review the exposed batches and prioritize distributor returns or stock transfers where the source data supports them.",
             bg="#fff7ed", border="#fdba74", accent=colors.HexColor("#ea580c"),
         ))
 
@@ -292,7 +389,6 @@ def _build_weekly_pharmacy_pdf_story(
     # 3. SUPPLIER CREDIT
     # ══════════════════════════════════════════════════════════════════════════
     if "supplier_credit" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("3. Supplier Credit & Accounts Payable", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Distributor obligations and upcoming credit payment maturities", section_sub_style))
@@ -322,13 +418,12 @@ def _build_weekly_pharmacy_pdf_story(
             story.append(st)
             story.append(Spacer(1, 8))
 
-        story.append(make_callout("Credit Facility Protection", "Settle balances maturing within the next 7 days first to maintain top-tier distributor allocation and preserve maximum prompt-payment cash discounts."))
+        story.append(make_callout("Credit Facility Protection", "Prioritize the earliest recorded due dates and confirm payment timing with suppliers to protect credit availability."))
 
     # ══════════════════════════════════════════════════════════════════════════
     # 4. DEAD STOCK
     # ══════════════════════════════════════════════════════════════════════════
     if "dead_stock" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("4. Dead Stock & Slow Capital Exposure", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Inventory with dormant sales velocity tying up working capital", section_sub_style))
@@ -364,7 +459,6 @@ def _build_weekly_pharmacy_pdf_story(
     # 5. MARGIN BY CATEGORY
     # ══════════════════════════════════════════════════════════════════════════
     if "category_margin" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("5. Gross Profit Margin by Category", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Gross profitability across therapeutic categories and product families", section_sub_style))
@@ -400,7 +494,6 @@ def _build_weekly_pharmacy_pdf_story(
     # 6. REORDER ALERTS
     # ══════════════════════════════════════════════════════════════════════════
     if "reorder_alerts" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("6. Stockout Risk & Priority Reorder Alerts", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Fast-moving medications nearing depleted inventory levels", section_sub_style))
@@ -408,9 +501,10 @@ def _build_weekly_pharmacy_pdf_story(
         reorder_rows = [[Paragraph("<b>Product Name</b>", th_style), Paragraph("<b>Days of Supply</b>", th_style), Paragraph("<b>Suggested Reorder Qty</b>", th_style)]]
         for ra in report_data.reorder_alerts[:8]:
             p_name = str(ra.get("product_name") or ra.get("name") or ra.get("product_id") or "Product")
-            days = float(ra.get("days_until_stockout") or 0.0)
+            days_value = ra.get("days_until_stockout")
+            days = f"{float(days_value):.1f}" if days_value is not None else "Insufficient sales history"
             rq = float(ra.get("recommended_reorder_qty") or ra.get("reorder_qty") or 0.0)
-            reorder_rows.append([Paragraph(p_name, body_style), Paragraph(f"{days:.1f} days", body_style), Paragraph(f"{rq:,.0f} units", body_style)])
+            reorder_rows.append([Paragraph(escape(p_name), body_style), Paragraph(f"{days} days" if days_value is not None else days, body_style), Paragraph(f"{rq:,.0f} units", body_style)])
 
         if len(reorder_rows) > 1:
             rt = Table(reorder_rows, colWidths=[doc.width * 0.50, doc.width * 0.25, doc.width * 0.25])
@@ -424,13 +518,12 @@ def _build_weekly_pharmacy_pdf_story(
             story.append(rt)
             story.append(Spacer(1, 8))
 
-        story.append(make_callout("Immediate Purchase Orders", "Issue replenishment orders today for items with under 3 days of stock remaining to safeguard customer loyalty and prescription fill rates."))
+        story.append(make_callout("Replenishment review", "Confirm recorded quantities and supplier lead times. Use days-of-supply values only where dated sales history is available; otherwise treat rows as a stock snapshot."))
 
     # ══════════════════════════════════════════════════════════════════════════
     # 7. SHRINKAGE FLAGS
     # ══════════════════════════════════════════════════════════════════════════
     if "shrinkage_flags" in report_data.sections:
-        story.append(PageBreak())
         story.append(Paragraph("7. Inventory Shrinkage & Movement Flags", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
         story.append(Paragraph("Discrepancies where stock decrement exceeded recorded transaction volume", section_sub_style))
@@ -461,19 +554,18 @@ def _build_weekly_pharmacy_pdf_story(
     # 8. SEASONAL TREND
     # ══════════════════════════════════════════════════════════════════════════
     if "seasonal_trend" in report_data.sections:
-        story.append(PageBreak())
-        story.append(Paragraph("8. Seasonal Patterns & Forward Trend", section_title_style))
+        story.append(Paragraph("Sales History & Demand Trend", section_title_style))
         story.append(HRFlowable(width="100%", thickness=1, color=GOLD_ACCENT, spaceAfter=3))
-        story.append(Paragraph("Weekly sales movement and forward planning insights", section_sub_style))
+        story.append(Paragraph("Recorded revenue history for purchasing and staffing context", section_sub_style))
 
         c_trend = _make_chart_image(charts.get("monthly_trend") or charts.get("trend"), max_w=doc.width, max_h=2.8 * inch)
         if c_trend:
             story.append(c_trend)
-            story.append(Paragraph("<font size='7' color='#64748b'><i>Figure &mdash; Weekly sales trajectory</i></font>", styles["Normal"]))
+            story.append(Paragraph("<font size='8.5' color='#64748b'><i>Figure &mdash; Monthly sales in the selected dataset</i></font>", styles["Normal"]))
             story.append(Spacer(1, 6))
 
-        note = report_data.category_trend_note or "Consistent baseline sales observed across chronic and acute therapeutic segments."
-        story.append(make_callout("Seasonal & Demand Outlook", note))
+        note = report_data.category_trend_note or "Use the recorded monthly pattern to review stock depth and staffing against actual demand. This chart describes history; it is not a forecast."
+        story.append(make_callout("Planning note", note))
 
     return story
 
@@ -561,8 +653,8 @@ def build_pdf_report(
     section_title_style = ParagraphStyle(
         "SectionTitle",
         parent=styles["Heading2"],
-        fontSize=13,
-        leading=16,
+        fontSize=16,
+        leading=19,
         textColor=PRIMARY_NAVY,
         fontName="Helvetica-Bold",
         spaceBefore=14,
@@ -571,8 +663,8 @@ def build_pdf_report(
     section_sub_style = ParagraphStyle(
         "SectionSub",
         parent=styles["Normal"],
-        fontSize=8.5,
-        leading=11,
+        fontSize=10,
+        leading=13,
         textColor=TEXT_MUTED,
         fontName="Helvetica-Oblique",
         spaceAfter=8,
@@ -580,16 +672,16 @@ def build_pdf_report(
     body_style = ParagraphStyle(
         "BodyText",
         parent=styles["Normal"],
-        fontSize=8.5,
-        leading=12.5,
+        fontSize=10,
+        leading=14,
         textColor=TEXT_DARK,
         spaceAfter=6,
     )
     bullet_style = ParagraphStyle(
         "BulletText",
         parent=styles["Normal"],
-        fontSize=8.5,
-        leading=12.5,
+        fontSize=10,
+        leading=14,
         textColor=TEXT_DARK,
         leftIndent=14,
         firstLineIndent=-10,
@@ -598,13 +690,13 @@ def build_pdf_report(
     callout_style = ParagraphStyle(
         "CalloutText",
         parent=styles["Normal"],
-        fontSize=8.2,
-        leading=11.5,
+        fontSize=9.5,
+        leading=13,
         textColor=TEXT_DARK,
     )
 
     # Check if this report has weekly pharmacy sections
-    is_weekly = bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
+    is_weekly = "weekly_report" in report_data.sections or bool(report_data.sections and any(s in report_data.sections for s in ("cash_card_mix", "supplier_credit", "dead_stock", "category_margin", "reorder_alerts", "shrinkage_flags", "seasonal_trend")))
     if is_weekly:
         weekly_story = _build_weekly_pharmacy_pdf_story(
             doc=doc,
@@ -629,7 +721,7 @@ def build_pdf_report(
             BG_BOX=BG_BOX,
             BORDER_LIGHT=BORDER_LIGHT,
         )
-        doc.build(weekly_story, canvasmaker=NumberedCanvas)
+        doc.build(weekly_story, canvasmaker=lambda *args, **kwargs: NumberedCanvas(*args, report_title=report_data.report_title, **kwargs))
         return output_path
 
     em = report_data.executive_metrics
@@ -1037,5 +1129,5 @@ def build_pdf_report(
         )
     )
 
-    doc.build(story, canvasmaker=NumberedCanvas)
+    doc.build(story, canvasmaker=lambda *args, **kwargs: NumberedCanvas(*args, report_title=report_data.report_title, **kwargs))
     return output_path

@@ -72,8 +72,15 @@ class TestDeceptiveHeaders:
         """'Rx' is medical shorthand for prescription."""
         assert _field("Rx", pack=_pharm()) == "prescription_ref"
 
-    def test_sku_maps_to_barcode(self):
-        assert _field("SKU", pack=_pharm()) == "barcode"
+    def test_sku_maps_to_product_code_not_barcode(self):
+        # An SKU is a merchant-assigned stock identifier; a barcode is a
+        # scannable GTIN/UPC/EAN and must remain a separate field.
+        assert _field("SKU", pack=_pharm()) == "product_code"
+
+    def test_unrelated_headers_are_not_forced_into_numeric_fields(self):
+        mapping = map_headers(["Province", "Total_Tax"], _pharm())
+        assert mapping.get("Province") is None
+        assert mapping.get("Total_Tax") is None
 
     def test_wht_maps_to_tax(self):
         """WHT = Withholding Tax, a Pakistani tax term."""

@@ -1,0 +1,107 @@
+Bilkul. Neeche 100 Roman Urdu questions hain jo ek pharmacy owner aapke LLM Konnect RAG chatbot se pooch sakta hai. Maine simple database lookup ke saath analytical aur decision-support questions bhi include kiye hain.
+Sales aur Revenue
+1. Aaj meri total sale kitni hui hai?
+2. Kal meri total sale kitni thi?
+3. Is mahine meri total sale kitni hui hai?
+4. Pichle mahine meri total sale kitni thi?
+5. Pichle 7 din mein kitni sale hui hai?
+6. Is mahine meri average daily sale kitni hai?
+7. Is mahine sab se zyada sale kis din hui?
+8. Is mahine sab se kam sale kis din hui?
+9. Pichle 30 din ki sales ka trend kya hai?
+10. Is mahine ki sale pichle mahine se kitni different hai?
+11. Meri sales mein pichle mahine ke muqable mein kitne percent izafa ya kami hui?
+12. Is saal ab tak meri total sale kitni hui hai?
+13. Aaj kitne sales bills bane hain?
+14. Meri average bill value kitni hai?
+15. Aaj ka sab se bara sales bill konsa tha?
+16. Is mahine ke top 10 sab se bare bills konse hain?
+17. Hafte ke kis din sab se zyada sale hoti hai?
+18. Kis waqt ya time period mein sab se zyada sale hoti hai?
+19. Is mahine customers ko total kitna discount diya gaya?
+20. Meri sales kam ho rahi hain ya barh rahi hain?
+Medicines aur Product Performance
+21. Meri top 10 sab se zyada bikne wali medicines konsi hain?
+22. Is mahine sab se zyada konsi medicine biki hai?
+23. Sab se zyada revenue kis medicine ne generate kiya?
+24. Quantity ke hisaab se sab se zyada konsi medicine biki?
+25. Sab se kam bikne wali medicines konsi hain?
+26. Pichle 30 din se konsi medicines bilkul nahi bikin?
+27. Pichle 90 din se konsi medicines nahi bikin?
+28. Brufen 400mg ki is mahine kitni sale hui?
+29. Brufen 400mg se kitna revenue generate hua?
+30. Kisi specific medicine ki sales history dikhao.
+31. Sab se zyada bikne wala generic salt konsa hai?
+32. Kis medicine brand ki sale sab se zyada hai?
+33. Meri fast-moving medicines konsi hain?
+34. Meri slow-moving medicines konsi hain?
+35. Kin medicines ki demand barh rahi hai?
+36. Kin medicines ki demand kam ho rahi hai?
+37. Meri total sales mein sab se zyada contribution kin products ka hai?
+38. Top 10 medicines meri total revenue ka kitna percent generate karti hain?
+39. Konsi medicines aksar ek sath bikti hain?
+40. Konsi medicines har mahine consistently bikti hain?
+Stock aur Inventory
+41. Brufen 400mg ka current stock kitna hai?
+42. Konsi medicines out of stock hain?
+43. Konsi medicines ka stock kam hai?
+44. Konsi medicines ki 10 se kam units bachi hain?
+45. Mere paas total kitni medicine units stock mein hain?
+46. Mere current stock ki total purchase value kitni hai?
+47. Mere current stock ki total selling value kitni hai?
+48. Sab se zyada stock kis medicine ka hai?
+49. Konsi medicines overstocked hain?
+50. Konsi medicines ko dobara order karna chahiye?
+51. Konsi fast-selling medicines ka stock kam ho raha hai?
+52. Konsi out-of-stock medicines ki demand abhi bhi zyada hai?
+53. Mere paas kitne different products available hain?
+54. Konsi medicines stock mein hain lekin bik nahi rahi?
+55. Sab se zyada paisa kin medicines ke stock mein phansa hua hai?
+56. Har medicine ki current stock value kya hai?
+57. Current sales ke hisaab se Brufen ka stock kitne din chalega?
+58. Konsi medicines jaldi out of stock ho sakti hain?
+59. Sab se pehle konsi medicines restock karni chahiye?
+60. Aaj mujhe konsi medicines order karni chahiye?
+Expiry aur Batch Management
+61. Konsi medicines expire ho chuki hain?
+62. Kya koi expired medicine abhi bhi stock mein pari hai?
+63. Agle 30 din mein konsi medicines expire hongi?
+64. Agle 60 din mein konsi medicines expire hongi?
+65. Agle 90 din mein konsi medicines expire hongi?
+66. Agle 3 mahine mein kitni medicine units expire hone wali hain?
+67. Agle 30 din mein expire hone wale stock ki purchase value kitni hai?
+68. Expire hone wale stock ki selling value kitni hai?
+69. Brufen ka konsa batch sab se pehle expire hoga?
+70. Brufen ke tamam batches aur unki expiry dates dikhao.
+71. Konsi medicines ke multiple active batches hain?
+72. Kis batch mein sab se zyada stock mojood hai?
+73. Konsi near-expiry medicines ki sale bohat kam hai?
+74. Konsi near-expiry medicines ko pehle sell karna chahiye?
+75. Agle 90 din mein expiry ki wajah se mera kitna paisa loss ho sakta hai?
+Purchases aur Suppliers
+76. Is mahine maine total kitni purchasing ki hai?
+77. Pichle mahine maine total kitni purchasing ki thi?
+78. Is mahine aur pichle mahine ki purchases compare karo.
+79. Pichle 30 din mein maine kitna stock purchase kiya?
+80. Is mahine maine sab se zyada konsi medicine purchase ki?
+81. Is mahine mera sab se bara purchase bill konsa tha?
+82. Maine ek specific supplier se total kitni purchasing ki?
+83. Brufen ki latest purchase details kya hain?
+84. Maine Brufen last time kab purchase ki thi?
+85. Brufen last time kis price par purchase ki thi?
+86. Kin medicines ki purchase price barh rahi hai?
+87. Kis medicine ki purchase price mein sab se zyada izafa hua?
+88. Is saal maine total kitne paison ki medicines purchase ki hain?
+89. Mera sab se bara supplier konsa hai?
+90. Is mahine maine sab se zyada purchasing kis supplier se ki?
+Business Intelligence / Decision Support
+91. Main apni pharmacy ki sales kaise barha sakta hoon?
+92. Mujhe konsi medicines zyada stock karni chahiye?
+93. Mujhe konsi medicines ki purchasing kam kar deni chahiye?
+94. Konsi medicines ko promote karne se meri revenue barh sakti hai?
+95. Main expired medicines ki wajah se hone wala loss kaise kam kar sakta hoon?
+96. Konsi medicines high demand mein hain lekin mere paas unka stock kam hai?
+97. Konsi medicines mein mera paisa phansa hua hai aur unki sale bhi kam hai?
+98. Meri pharmacy ka profit barhane ke liye mujhe kya changes karne chahiye?
+99. Meri sales aur inventory data ko dekh kar mujhe agla stock order kis tarah plan karna chahiye?
+100. Meri pharmacy ke data ke mutabiq is waqt business ke sab se bare maslay kya hain aur unko solve karne ke liye mujhe kya karna chahiye?

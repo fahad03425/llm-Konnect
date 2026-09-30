@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     Upload, Eye, GitMerge, Wrench, ShieldCheck, Database,
     AlertCircle, CheckCircle, AlertTriangle, ArrowRight, RefreshCw,
-    Zap, Play, Folder, HardDrive, FileText, XCircle, RotateCcw,
+    Zap, Play, Folder, HardDrive, FileText, XCircle, RotateCcw, ShoppingBag,
     CheckSquare, Square, Search, Sparkles
 } from 'lucide-react';
 import { StepIndicator } from '../components/connect/StepIndicator';
@@ -42,6 +42,25 @@ interface DatabaseDiscoveryResult {
     db_type: string;
     total_tables: number;
     tables: DiscoveredTable[];
+}
+
+interface DetectedSqlDb {
+    database_name: string;
+    file_name: string;
+    file_path: string;
+    server: string;
+    is_attached: boolean;
+    table_count: number;
+    tables: string[];
+    connection_string: string;
+    error?: string;
+}
+
+interface LocalSqlInstance {
+    database_name: string;
+    server: string;
+    driver: string;
+    connection_string: string;
 }
 
 // Helper delay for smooth auto-transition between steps
@@ -139,7 +158,7 @@ function ConnectSourceContent() {
         setActivePath
     } = useConnectSession();
 
-    const { user, activeDomainMeta, openSettings } = useUser();
+    const { user } = useUser();
     const domain = user.domain;
 
     // ── SQL Connection State (local to SQL panel) ──────────────────
@@ -155,12 +174,38 @@ function ConnectSourceContent() {
     const [dbIngestSummary, setDbIngestSummary] = useState<{
         successful_tables: number;
         total_tables: number;
-        table_results: Array<{ table_name: string; status: string; rows: number; chunks: number; error?: string }>;
+        table_results: Array<{
+            table_name: string;
+            status: string;
+            rows: number;
+            chunks: number;
+            new_rows?: number;
+            updated_rows?: number;
+            deleted_rows?: number;
+            message?: string;
+            error?: string;
+        }>;
     } | null>(null);
 
     // ── Folder Watcher State (local to Watcher panel) ──────────────
     const [watchDir, setWatchDir] = useState('');
     const [pendingFiles, setPendingFiles] = useState<string[]>([]);
+    const [detectedSqlDb, setDetectedSqlDb] = useState<DetectedSqlDb | null>(null);
+    const [localSqlInstances, setLocalSqlInstances] = useState<LocalSqlInstance[]>([]);
+    const [isScanningLocalSql, setIsScanningLocalSql] = useState(false);
+
+    // ── Tally Live State ───────────────────────────────────────────
+    const [tallyUrl, setTallyUrl] = useState('http://localhost:9000');
+    const [tallyTimeout, setTallyTimeout] = useState(10);
+    const [tallyTestMsg, setTallyTestMsg] = useState<{ status: string; text: string } | null>(null);
+    const [isTestingTally, setIsTestingTally] = useState(false);
+
+    // ── Shopify Live State ─────────────────────────────────────────
+    const [shopifyStore, setShopifyStore] = useState('');
+    const [shopifyToken, setShopifyToken] = useState('');
+    const [shopifyResource, setShopifyResource] = useState('orders');
+    const [shopifyTestMsg, setShopifyTestMsg] = useState<{ status: string; text: string } | null>(null);
+    const [isTestingShopify, setIsTestingShopify] = useState(false);
 
     const [ingestProgress, setIngestProgress] = useState<{
         percent: number;
@@ -169,10 +214,11 @@ function ConnectSourceContent() {
         stepText: string;
     } | null>(null);
 
-    // ── Load KB stats on mount ─────────────────────────────────────
+    // ── Load KB stats and local databases on mount ────────────────
     useEffect(() => {
         document.title = 'Connect Source — LLM-KONNECT';
         void fetchKBStats();
+        void fetchLocalSqlInstances();
     }, []);
 
     const fetchKBStats = async () => {
@@ -182,10 +228,26 @@ function ConnectSourceContent() {
         } catch { /* non-critical */ }
     };
 
+    const fetchLocalSqlInstances = async () => {
+        setIsScanningLocalSql(true);
+        try {
+            const res = await fetch('/api/sources/sql/local-instances');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.instances) setLocalSqlInstances(data.instances);
+            }
+        } catch { /* non-critical */ }
+        finally {
+            setIsScanningLocalSql(false);
+        }
+    };
+
     // ── Continuous sync with active background ingestion for this file ────────
     useEffect(() => {
         const activeFp = filePath || file?.name;
-        if (!activeFp) return;
+        // ONLY sync background ingestion progress if we are at Step 5 or ingesting.
+        // Never hijack step when the user is in earlier steps (0 to 4)!
+        if (!activeFp || (step < 5 && !ingestSt.loading)) return;
 
         let isMounted = true;
         const checkActiveIngest = async () => {
@@ -225,7 +287,22 @@ function ConnectSourceContent() {
             isMounted = false;
             clearInterval(interval);
         };
-    }, [filePath, file, ingestSt.loading, previewData?.total_rows]);
+    }, [filePath, file, step, ingestSt.loading, previewData?.total_rows]);
+
+    // Smooth auto-scroll to the active step as wizard advances
+    useEffect(() => {
+        if (step > 0) {
+            const timer = setTimeout(() => {
+                const el = document.getElementById(`wizard-step-${step}`)
+                    || document.getElementById(`wizard-step-${step - 1}`)
+                    || document.getElementById(`wizard-step-${step - 2}`);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }, 80);
+            return () => clearTimeout(timer);
+        }
+    }, [step]);
 
     // ── Helper: reset file and restart wizard ──────────────────────
     const resetFile = (f: File | null) => {
@@ -281,10 +358,10 @@ function ConnectSourceContent() {
             setUploadSt(idle());
             setStep(1);
 
-            if (isAuto) {
-                await delay(400);
-                await doPreview(fp, firstSheet, isAuto);
-            }
+            // In both manual and auto modes, load preview data for Step 2.
+            // If isAuto is false (Manual mode), doPreview stops here awaiting user confirmation.
+            // If isAuto is true (Auto mode), doPreview automatically cascades through to Ingest.
+            await doPreview(fp, firstSheet, isAuto);
         } catch (e: unknown) {
             setUploadSt({ loading: false, error: String((e as Error).message ?? 'Upload failed.') });
         }
@@ -308,7 +385,11 @@ function ConnectSourceContent() {
                     sample_n: 5
                 })
             });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => null);
+                const errMsg = errJson?.detail || await res.text().catch(() => 'Database discovery failed.');
+                throw new Error(errMsg);
+            }
             const data: DatabaseDiscoveryResult = await res.json();
             setDiscoveredDb(data);
             const valid = data.tables.filter(t => !t.error).map(t => t.table_name);
@@ -348,6 +429,12 @@ function ConnectSourceContent() {
                 total_tables: data.total_tables ?? selectedTables.length,
                 table_results: data.table_results ?? []
             });
+            if (data.database_name) {
+                setActivePath(`db://${data.database_name}`);
+                try {
+                    sessionStorage.removeItem('llm_konnect_user_manual_dataset_choice');
+                } catch {}
+            }
             setStep(6);
             markDataChanged();
             setUploadSt(idle());
@@ -379,7 +466,11 @@ function ConnectSourceContent() {
                     domain: domain
                 })
             });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => null);
+                const errMsg = errJson?.detail || await res.text().catch(() => 'SQL connection failed.');
+                throw new Error(errMsg);
+            }
             const data = await res.json();
 
             setPreviewData({
@@ -401,10 +492,49 @@ function ConnectSourceContent() {
 
             if (isAuto) {
                 await delay(400);
-                await doMapping(connString, proposedMap, null, isAuto);
+                await doIngestSingleSqlTable();
             }
         } catch (e: unknown) {
             setUploadSt({ loading: false, error: String((e as Error).message ?? 'SQL connection failed.') });
+        }
+    };
+
+    const doIngestSingleSqlTable = async () => {
+        if (!connString || !sqlQuery) return;
+        let tName = sqlQuery.trim();
+        const m = tName.match(/from\s+\[?([a-zA-Z0-9_#]+)\]?/i);
+        if (m) tName = m[1];
+
+        setIsIngestingDb(true);
+        setUploadSt({ loading: true, error: null });
+        try {
+            const res = await fetch('/api/kb/ingest-database', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connection_string: connString,
+                    db_type: dbType,
+                    domain: domain,
+                    tables: [tName],
+                    strategy: 'merge'
+                })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const data = await res.json();
+            setIngestMsg(data.message || `Successfully ingested table '${tName}'`);
+            setDbIngestSummary({
+                successful_tables: data.successful_tables ?? 1,
+                total_tables: 1,
+                table_results: data.table_results ?? []
+            });
+            setStep(6);
+            markDataChanged();
+            setUploadSt(idle());
+            void fetchKBStats();
+        } catch (e: any) {
+            setUploadSt({ loading: false, error: String(e.message || 'Table ingestion failed.') });
+        } finally {
+            setIsIngestingDb(false);
         }
     };
 
@@ -412,24 +542,163 @@ function ConnectSourceContent() {
     //  STEP 1C — FOLDER WATCHER
     // ==============================================================
     const doCheckWatcher = async () => {
-        if (!watchDir) return;
+        if (!watchDir.trim()) {
+            setUploadSt({ loading: false, error: 'Please enter a valid directory path or database file path.' });
+            return;
+        }
         setUploadSt({ loading: true, error: null });
         try {
             const res = await fetch('/api/sources/watcher/list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ watch_dir: watchDir, domain: domain })
+                body: JSON.stringify({ watch_dir: watchDir.trim(), domain: domain })
             });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => null);
+                const errMsg = errJson?.detail || await res.text().catch(() => 'Directory scan failed.');
+                throw new Error(errMsg);
+            }
             const data = await res.json();
             const files: string[] = data.pending_files || [];
             setPendingFiles(files);
+            if (data.detected_sql_db) {
+                setDetectedSqlDb(data.detected_sql_db);
+                if (data.detected_sql_db.file_path && data.detected_sql_db.file_path !== watchDir) {
+                    setWatchDir(data.detected_sql_db.file_path);
+                }
+            } else {
+                setDetectedSqlDb(null);
+            }
             if (files.length > 0) {
                 setFilePath(files[0]);
             }
-            setUploadSt(idle());
+            if (files.length === 0 && !data.detected_sql_db) {
+                setUploadSt({
+                    loading: false,
+                    error: `No compatible data files (.csv, .xlsx, .json, .mdf) found at: "${watchDir}". Please verify the folder or file path.`
+                });
+            } else {
+                setUploadSt(idle());
+            }
         } catch (e: unknown) {
             setUploadSt({ loading: false, error: String((e as Error).message ?? 'Directory scan failed.') });
+        }
+    };
+
+    const handleConnectDetectedSql = async (targetConn?: string) => {
+        const connToUse = targetConn || detectedSqlDb?.file_path || detectedSqlDb?.connection_string || watchDir;
+        setSourceType('sql');
+        setDbType('mssql');
+        setConnString(connToUse);
+        setIsDiscovering(true);
+        setUploadSt({ loading: true, error: null });
+        try {
+            const res = await fetch('/api/sources/sql/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connection_string: connToUse,
+                    db_type: 'mssql',
+                    domain: domain,
+                    sample_n: 5
+                })
+            });
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => null);
+                const errMsg = errJson?.detail || await res.text().catch(() => 'Database discovery failed.');
+                throw new Error(errMsg);
+            }
+            const data: DatabaseDiscoveryResult = await res.json();
+            setDiscoveredDb(data);
+            const valid = data.tables.filter(t => !t.error).map(t => t.table_name);
+            setSelectedTables(valid);
+            setUploadSt(idle());
+        } catch (e: any) {
+            setUploadSt({ loading: false, error: String(e.message || 'Database discovery failed.') });
+        } finally {
+            setIsDiscovering(false);
+        }
+    };
+
+        // ==============================================================
+    //  TALLY & SHOPIFY CONNECT HANDLERS
+    // ==============================================================
+    const doTestTally = async () => {
+        setIsTestingTally(true);
+        setTallyTestMsg(null);
+        try {
+            const res = await fetch('/api/sources/tally/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: tallyUrl.trim(), timeout: tallyTimeout })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Connection failed');
+            setTallyTestMsg({ status: 'success', text: `Connected successfully! Found ${data.total_preview_rows} sample voucher records.` });
+        } catch (err: any) {
+            setTallyTestMsg({ status: 'error', text: err.message || 'Could not connect to Tally.' });
+        } finally {
+            setIsTestingTally(false);
+        }
+    };
+
+    const doConnectTally = async (overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const targetUrl = tallyUrl.trim() || 'http://localhost:9000';
+        setFilePath(targetUrl);
+        setFileName('TallyPrime_Live_DayBook');
+        setUploadSt({ loading: true, error: null });
+        try {
+            await doPreview(targetUrl, null, isAuto);
+            setUploadSt(idle());
+        } catch (err: any) {
+            setUploadSt({ loading: false, error: err.message || 'Failed to fetch DayBook from Tally.' });
+        }
+    };
+
+    const doTestShopify = async () => {
+        if (!shopifyStore.trim() || !shopifyToken.trim()) {
+            setShopifyTestMsg({ status: 'error', text: 'Please provide both Store Name and Admin API Access Token.' });
+            return;
+        }
+        setIsTestingShopify(true);
+        setShopifyTestMsg(null);
+        try {
+            const res = await fetch('/api/sources/shopify/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    shop_name: shopifyStore.trim(),
+                    access_token: shopifyToken.trim(),
+                    resource: shopifyResource
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Connection failed');
+            setShopifyTestMsg({ status: 'success', text: `Connected to store '${shopifyStore}'! Previewed ${data.total_preview_rows} ${shopifyResource} records.` });
+        } catch (err: any) {
+            setShopifyTestMsg({ status: 'error', text: err.message || 'Shopify connection failed.' });
+        } finally {
+            setIsTestingShopify(false);
+        }
+    };
+
+    const doConnectShopify = async (overrideAuto?: boolean) => {
+        if (!shopifyStore.trim() || !shopifyToken.trim()) {
+            setUploadSt({ loading: false, error: 'Please enter store name and access token.' });
+            return;
+        }
+        const isAuto = overrideAuto ?? autoProceed;
+        const cleanStore = shopifyStore.replace('.myshopify.com', '').trim();
+        const shopifyUri = `shopify://${cleanStore}?access_token=${encodeURIComponent(shopifyToken.trim())}&resource=${shopifyResource}`;
+        setFilePath(shopifyUri);
+        setFileName(`Shopify_${cleanStore}_${shopifyResource}`);
+        setUploadSt({ loading: true, error: null });
+        try {
+            await doPreview(shopifyUri, null, isAuto);
+            setUploadSt(idle());
+        } catch (err: any) {
+            setUploadSt({ loading: false, error: err.message || 'Failed to fetch data from Shopify.' });
         }
     };
 
@@ -736,7 +1005,13 @@ function ConnectSourceContent() {
     };
 
     // ── Computed: indicator uses clean 0-6 integer ────────────────
-    const indicatorStep = Math.min(step, 6);
+    const indicatorStep =
+        step === 0 ? 0
+        : step === 1 ? 1
+        : step === 2 || step === 3 ? 2
+        : step === 4 ? 3
+        : step === 5 ? (ingestSt.loading || ingestProgress ? 5 : 4)
+        : 6;
 
     // ==============================================================
     //  RENDER
@@ -744,130 +1019,69 @@ function ConnectSourceContent() {
     return (
         <div className="connect-page">
 
-                {/* ── Header with Execution Mode Selector & Active Niche Info ── */}
+                {/* ── Header with Clean Action Toolbar & Execution Mode Toggle ── */}
                 <div className="connect-page-header">
-                    <div>
-                        <h2>Connect Your Data Source</h2>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
-                            <p style={{ margin: 0 }}>Connect data sources (Files, SQL, Folder Watcher) to your knowledge base.</p>
-                            <span
-                                style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '0.35rem',
-                                    background: 'rgba(16, 185, 129, 0.12)',
-                                    color: 'var(--accent-teal)',
-                                    border: '1px solid rgba(16, 185, 129, 0.25)',
-                                    padding: '0.2rem 0.65rem',
-                                    borderRadius: '12px',
-                                    fontSize: '0.78rem',
-                                    fontWeight: 600
-                                }}
-                            >
-                                <span>{activeDomainMeta.icon}</span> {activeDomainMeta.name} Mode
-                            </span>
-                            <button
-                                type="button"
-                                onClick={openSettings}
-                                style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    color: 'var(--text-secondary)',
-                                    fontSize: '0.76rem',
-                                    textDecoration: 'underline',
-                                    cursor: 'pointer',
-                                    padding: 0
-                                }}
-                            >
-                                Change Domain
-                            </button>
-                        </div>
+                    <div className="connect-page-header-text">
+                        <h2>Connect Data Source</h2>
+                        <p>Ingest and vectorize datasets into your local knowledge base.</p>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                    <div className="connect-header-actions">
                         {step > 0 && (
-                            <>
+                            <div className="session-actions-group">
                                 <button
                                     type="button"
-                                    className="btn-danger-outline"
-                                    onClick={() => resetConnectSession('sql')}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.4rem',
-                                        fontSize: '0.82rem',
-                                        padding: '0.45rem 0.85rem',
-                                        borderRadius: '8px'
-                                    }}
-                                    title="Cancel current progress and connect another database"
-                                >
-                                    <HardDrive size={13} /> Cancel &amp; Add DB
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn-secondary"
+                                    className="btn-header-action"
                                     onClick={() => resetConnectSession('file')}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.4rem',
-                                        fontSize: '0.82rem',
-                                        padding: '0.45rem 0.85rem',
-                                        borderRadius: '8px'
-                                    }}
-                                    title="Cancel current progress and upload a new file"
+                                    title="Upload another file"
                                 >
                                     <Upload size={13} /> Upload File
                                 </button>
                                 <button
                                     type="button"
-                                    className="btn-secondary"
+                                    className="btn-header-action"
+                                    onClick={() => resetConnectSession('sql')}
+                                    title="Connect a database instead"
+                                >
+                                    <HardDrive size={13} /> Connect DB
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-header-action btn-header-reset"
                                     onClick={() => resetConnectSession()}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.4rem',
-                                        fontSize: '0.82rem',
-                                        padding: '0.45rem 0.85rem',
-                                        borderRadius: '8px',
-                                        border: '1px solid rgba(239, 68, 68, 0.3)',
-                                        color: '#ef4444',
-                                        background: 'rgba(239, 68, 68, 0.06)'
-                                    }}
-                                    title="Discard current wizard session"
+                                    title="Reset current session"
                                 >
-                                    <XCircle size={13} /> Cancel Session
-                                </button>
-                            </>
-                        )}
-
-                        <div className="proceed-mode-container">
-                            <span className="mode-label">Execution Mode</span>
-                            <div className="proceed-mode-toggle">
-                                <button
-                                    type="button"
-                                    className={`mode-btn ${!autoProceed ? 'active' : ''}`}
-                                    onClick={() => setAutoProceed(false)}
-                                >
-                                    <Play size={13} /> Manual Proceed
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`mode-btn ${autoProceed ? 'active' : ''}`}
-                                    onClick={() => setAutoProceed(true)}
-                                >
-                                    <Zap size={13} /> Automatic Proceed
+                                    <RotateCcw size={13} /> Reset
                                 </button>
                             </div>
+                        )}
+
+                        <div className="proceed-mode-toggle">
+                            <button
+                                type="button"
+                                className={`mode-btn ${!autoProceed ? 'active' : ''}`}
+                                onClick={() => setAutoProceed(false)}
+                                title="Manual step-by-step verification"
+                            >
+                                <Play size={12} /> Manual
+                            </button>
+                            <button
+                                type="button"
+                                className={`mode-btn ${autoProceed ? 'active' : ''}`}
+                                onClick={() => setAutoProceed(true)}
+                                title="Automatically proceed through pipeline"
+                            >
+                                <Zap size={12} /> Auto Proceed
+                            </button>
                         </div>
                     </div>
                 </div>
 
-                {/* ── Auto proceed active banner ──────────────── */}
+                {/* ── Auto proceed active status chip ──────────────── */}
                 {autoProceed && (
                     <div className="auto-proceed-banner">
-                        <Zap size={16} />
-                        <span><strong>Automatic Mode Active:</strong> Pipeline steps for <strong>{domain.toUpperCase()}</strong> will execute automatically in sequence.</span>
+                        <Zap size={14} />
+                        <span>Auto Proceed Active — pipeline steps will advance automatically</span>
                     </div>
                 )}
 
@@ -877,7 +1091,7 @@ function ConnectSourceContent() {
                 {/* ════════════════════════════════════════════
                     STEP 1 — CONNECT DATA SOURCE
                 ════════════════════════════════════════════ */}
-                <div className="wizard-card">
+                <div className="wizard-card step-0-card" id="wizard-step-0">
                     {/* Source Connection Tabs */}
                     <div className="source-tabs">
                         <button
@@ -910,9 +1124,29 @@ function ConnectSourceContent() {
                         >
                             <Folder size={14} /> Folder Auto-Sync Watcher
                         </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'tally' ? 'active' : ''}`}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'tally') resetConnectSession('tally');
+                                else setSourceType('tally');
+                            }}
+                        >
+                            <RefreshCw size={14} /> Tally Prime / ERP 9 (Live XML)
+                        </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'shopify' ? 'active' : ''}`}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'shopify') resetConnectSession('shopify');
+                                else setSourceType('shopify');
+                            }}
+                        >
+                            <ShoppingBag size={14} /> Shopify Store Connection
+                        </button>
                     </div>
 
-                    <div className="wizard-card-title"><Upload size={16} /> Step 1 — Connect Source ({domain.replace('_', ' ').toUpperCase()})</div>
+                    <div className="wizard-card-title"><Upload size={16} /> Step 1 — Connect Source</div>
 
                     {/* SOURCE 1: FILE UPLOAD */}
                     {sourceType === 'file' && (
@@ -942,7 +1176,7 @@ function ConnectSourceContent() {
                                 <div className="btn-actions">
                                     <button
                                         className="btn-primary"
-                                        onClick={() => doUpload()}
+                                        onClick={() => doUpload(autoProceed)}
                                         disabled={!file || uploadSt.loading}
                                     >
                                         {uploadSt.loading
@@ -992,7 +1226,36 @@ function ConnectSourceContent() {
                             </div>
 
                             <div className="sql-form-group">
-                                <label>Connection String or File Path:</label>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <label>Connection String or File Path:</label>
+                                    {isScanningLocalSql && (
+                                        <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                                            <span className="spinner" style={{ width: 10, height: 10 }} /> Scanning local SQL instances…
+                                        </span>
+                                    )}
+                                </div>
+
+                                {localSqlInstances.length > 0 && (
+                                    <div className="local-sql-suggestions">
+                                        <span style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 600 }}>⚡ Detected Local Databases:</span>
+                                        {localSqlInstances.map(inst => (
+                                            <button
+                                                key={`${inst.server}-${inst.database_name}`}
+                                                type="button"
+                                                className="local-sql-chip"
+                                                onClick={() => {
+                                                    setDbType('mssql');
+                                                    setConnString(inst.connection_string);
+                                                    void handleConnectDetectedSql(inst.connection_string);
+                                                }}
+                                                title={`Click to connect to ${inst.database_name} on ${inst.server}`}
+                                            >
+                                                <Sparkles size={12} /> {inst.database_name} ({inst.server})
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
                                 <input
                                     type="text"
                                     className="sql-form-input"
@@ -1000,7 +1263,7 @@ function ConnectSourceContent() {
                                         dbType === 'sqlite'
                                             ? 'C:/POS_Software/pharmacy.db'
                                             : dbType === 'mssql'
-                                            ? 'mssql+pyodbc://sa:Password123@localhost/PharmacyPOS?driver=ODBC+Driver+17+for+SQL+Server'
+                                            ? 'C:/.../PharmacyPOS.mdf or .\\SQLEXPRESS/PharmacyPOS'
                                             : dbType === 'postgresql'
                                             ? 'postgresql://postgres:password@localhost:5432/pharmacy_pos'
                                             : 'mysql+pymysql://root:password@localhost:3306/pharmacy_db'
@@ -1010,7 +1273,7 @@ function ConnectSourceContent() {
                                         const val = e.target.value;
                                         setConnString(val);
                                         const lower = val.trim().toLowerCase();
-                                        if (lower.startsWith('mssql') || lower.includes('sqlexpress') || lower.includes('driver=')) {
+                                        if (lower.startsWith('mssql') || lower.includes('sqlexpress') || lower.includes('driver=') || lower.endsWith('.mdf')) {
                                             setDbType('mssql');
                                         } else if (lower.startsWith('postgres')) {
                                             setDbType('postgresql');
@@ -1021,6 +1284,13 @@ function ConnectSourceContent() {
                                         }
                                     }}
                                 />
+
+                                {connString.trim().toLowerCase().endsWith('.mdf') && (
+                                    <div className="sql-mdf-hint">
+                                        <Sparkles size={14} color="#0D7377" />
+                                        <span>Physical SQL Server MDF file recognized. Will automatically resolve to local SQLEXPRESS instance and discover all tables.</span>
+                                    </div>
+                                )}
                             </div>
 
                             {/* ── MODE A: 1-CLICK DISCOVERY & INGEST ALL TABLES ── */}
@@ -1195,31 +1465,262 @@ function ConnectSourceContent() {
                         </div>
                     )}
 
+                    {/* SOURCE 4: TALLY PRIME / ERP 9 */}
+                    {sourceType === 'tally' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Tally Server Endpoint URL:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="http://localhost:9000"
+                                    value={tallyUrl}
+                                    onChange={e => setTallyUrl(e.target.value)}
+                                />
+                                <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '0.25rem' }}>
+                                    Ensure TallyPrime / Tally.ERP 9 is open with ODBC/HTTP listening enabled on port 9000.
+                                </div>
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Connection Timeout (seconds):</label>
+                                <input
+                                    type="number"
+                                    className="sql-form-input"
+                                    value={tallyTimeout}
+                                    onChange={e => setTallyTimeout(parseInt(e.target.value, 10) || 10)}
+                                    min={3}
+                                    max={60}
+                                    style={{ maxWidth: 120 }}
+                                />
+                            </div>
+
+                            {tallyTestMsg && (
+                                <div style={{
+                                    padding: '0.6rem 0.8rem',
+                                    borderRadius: 6,
+                                    marginBottom: '0.75rem',
+                                    fontSize: '0.85rem',
+                                    backgroundColor: tallyTestMsg.status === 'success' ? '#ECFDF5' : '#FEF2F2',
+                                    color: tallyTestMsg.status === 'success' ? '#065F46' : '#991B1B',
+                                    border: `1px solid ${tallyTestMsg.status === 'success' ? '#A7F3D0' : '#FECACA'}`
+                                }}>
+                                    {tallyTestMsg.text}
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={doTestTally}
+                                        disabled={isTestingTally || uploadSt.loading}
+                                    >
+                                        {isTestingTally ? <><span className="spinner" /> Testing…</> : <><RefreshCw size={14} /> Test Connection</>}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-primary"
+                                        onClick={() => doConnectTally()}
+                                        disabled={uploadSt.loading || isTestingTally}
+                                    >
+                                        {uploadSt.loading ? <><span className="spinner" /> Connecting…</> : autoProceed ? <><Zap size={15} /> Connect &amp; Auto Ingest</> : <><RefreshCw size={15} /> Connect &amp; Preview DayBook</>}
+                                    </button>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectTally()} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* SOURCE 5: SHOPIFY STORE */}
+                    {sourceType === 'shopify' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Shopify Store Name / Subdomain:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="my-pharmacy-store (from my-pharmacy-store.myshopify.com)"
+                                    value={shopifyStore}
+                                    onChange={e => setShopifyStore(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Admin API Access Token:</label>
+                                <input
+                                    type="password"
+                                    className="sql-form-input"
+                                    placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                                    value={shopifyToken}
+                                    onChange={e => setShopifyToken(e.target.value)}
+                                />
+                                <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '0.25rem' }}>
+                                    Generated from Shopify Admin &rarr; Settings &rarr; Apps and sales channels &rarr; Develop apps.
+                                </div>
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Resource to Extract &amp; Analyze:</label>
+                                <select
+                                    className="sql-form-input"
+                                    value={shopifyResource}
+                                    onChange={e => setShopifyResource(e.target.value)}
+                                >
+                                    <option value="orders">Orders &amp; Line Items (Sales, Discounts, Tax)</option>
+                                    <option value="products">Products, Variants &amp; Inventory Quantities</option>
+                                    <option value="customers">Customers &amp; Lifetime Value</option>
+                                    <option value="reviews">Product Reviews &amp; Ratings</option>
+                                </select>
+                            </div>
+
+                            {shopifyTestMsg && (
+                                <div style={{
+                                    padding: '0.6rem 0.8rem',
+                                    borderRadius: 6,
+                                    marginBottom: '0.75rem',
+                                    fontSize: '0.85rem',
+                                    backgroundColor: shopifyTestMsg.status === 'success' ? '#ECFDF5' : '#FEF2F2',
+                                    color: shopifyTestMsg.status === 'success' ? '#065F46' : '#991B1B',
+                                    border: `1px solid ${shopifyTestMsg.status === 'success' ? '#A7F3D0' : '#FECACA'}`
+                                }}>
+                                    {shopifyTestMsg.text}
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={doTestShopify}
+                                        disabled={isTestingShopify || uploadSt.loading}
+                                    >
+                                        {isTestingShopify ? <><span className="spinner" /> Testing API…</> : <><ShoppingBag size={14} /> Test Shopify API</>}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-primary"
+                                        onClick={() => doConnectShopify()}
+                                        disabled={uploadSt.loading || isTestingShopify || !shopifyStore || !shopifyToken}
+                                    >
+                                        {uploadSt.loading ? <><span className="spinner" /> Connecting…</> : autoProceed ? <><Zap size={15} /> Connect &amp; Auto Ingest</> : <><ShoppingBag size={15} /> Connect &amp; Preview {shopifyResource.toUpperCase()}</>}
+                                    </button>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectShopify()} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* SOURCE 3: FOLDER WATCHER */}
                     {sourceType === 'watcher' && (
                         <div style={{ marginTop: '0.5rem' }}>
                             <div className="sql-form-group">
-                                <label>Automated Export Directory Path:</label>
+                                <label>Automated Export Directory Path or Database File:</label>
                                 <input
                                     type="text"
                                     className="sql-form-input"
-                                    placeholder="C:/POS_Exports/"
+                                    placeholder="C:/POS_Exports/ or C:/.../PharmacyPOS.mdf"
                                     value={watchDir}
                                     onChange={e => setWatchDir(e.target.value)}
                                 />
+                                {watchDir.trim().toLowerCase().endsWith('.mdf') && !detectedSqlDb && (
+                                    <div className="sql-mdf-hint">
+                                        <Sparkles size={14} color="#0D7377" />
+                                        <span>SQL Server Database file (.mdf) detected. Click &quot;Scan Directory&quot; to auto-connect.</span>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="btn-actions">
                                 <button
                                     className="btn-secondary"
                                     onClick={doCheckWatcher}
-                                    disabled={!watchDir || uploadSt.loading}
+                                    disabled={!watchDir || uploadSt.loading || isDiscovering}
                                 >
-                                    <Folder size={15} /> Scan Directory
+                                    {uploadSt.loading ? (
+                                        <><span className="spinner" /> Scanning…</>
+                                    ) : (
+                                        <><Folder size={15} /> Scan Directory</>
+                                    )}
                                 </button>
                             </div>
 
-                            {pendingFiles.length > 0 && (
+                            {/* Detected Microsoft SQL Server Database Card */}
+                            {detectedSqlDb && (
+                                <div className="sql-detected-card">
+                                    <div className="sql-detected-header">
+                                        <div className="sql-detected-icon-wrap">
+                                            <Sparkles size={20} />
+                                        </div>
+                                        <div>
+                                            <div className="sql-detected-title">
+                                                Microsoft SQL Server Database Detected: <span className="highlight">{detectedSqlDb.database_name}</span>
+                                            </div>
+                                            <div className="sql-detected-meta">
+                                                <span>Instance: <code>{detectedSqlDb.server}</code></span>
+                                                <span>·</span>
+                                                <span>File: <code>{detectedSqlDb.file_name}</code></span>
+                                                <span>·</span>
+                                                <span className="badge-online">● Online &amp; Ready</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="sql-detected-body">
+                                        <div style={{ fontSize: '0.85rem', color: '#334155', marginBottom: '0.5rem' }}>
+                                            Found <strong>{detectedSqlDb.table_count} tables</strong> ready for auto-vectorization and schema mapping:
+                                        </div>
+                                        <div className="sql-detected-tables-preview">
+                                            {detectedSqlDb.tables.slice(0, 8).map(t => (
+                                                <span key={t} className="db-table-pill">📊 {t}</span>
+                                            ))}
+                                            {detectedSqlDb.tables.length > 8 && (
+                                                <span className="db-table-pill more">+{detectedSqlDb.tables.length - 8} more</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="sql-detected-actions">
+                                        <button
+                                            type="button"
+                                            className="btn-primary"
+                                            onClick={() => handleConnectDetectedSql(detectedSqlDb.file_path)}
+                                            disabled={uploadSt.loading || isDiscovering}
+                                        >
+                                            {isDiscovering ? (
+                                                <><span className="spinner" /> Connecting &amp; Scanning Tables…</>
+                                            ) : (
+                                                <><Zap size={15} /> ⚡ Connect &amp; Ingest {detectedSqlDb.database_name} (1-Click)</>
+                                            )}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn-secondary"
+                                            onClick={() => {
+                                                setSourceType('sql');
+                                                setDbType('mssql');
+                                                setConnString(detectedSqlDb.file_path);
+                                            }}
+                                        >
+                                            <HardDrive size={14} /> Open in SQL Database Connection
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {pendingFiles.length > 0 && !detectedSqlDb && (
                                 <div style={{ marginTop: '1rem' }}>
                                     <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Detected Pending Files:</label>
                                     <ul style={{ fontSize: '0.85rem', color: '#374151', margin: '0.5rem 0' }}>
@@ -1234,7 +1735,7 @@ function ConnectSourceContent() {
                                 </div>
                             )}
 
-                            {step === 0 && pendingFiles.length > 0 && (
+                            {step === 0 && pendingFiles.length > 0 && !detectedSqlDb && (
                                 <div className="btn-actions" style={{ marginTop: '1rem' }}>
                                     <button
                                         className="btn-primary"
@@ -1247,36 +1748,13 @@ function ConnectSourceContent() {
                         </div>
                     )}
 
-                    {/* Success confirmation and Disconnect / Switch options */}
+                    {/* Success confirmation */}
                     {step >= 1 && (
-                        <div className="info-card" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <CheckCircle size={16} />
-                                <span>
-                                    Source connected for domain: <strong>{domain.toUpperCase()}</strong>
-                                    {sourceType === 'sql' ? ` (${dbType.toUpperCase()})` : sourceType === 'file' ? ` (${fileName || 'File'})` : ''}.
-                                </span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                                <button
-                                    type="button"
-                                    className="btn-danger-outline"
-                                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
-                                    onClick={() => resetConnectSession('sql')}
-                                    title="Cancel current progress and connect a different SQL database"
-                                >
-                                    <RotateCcw size={13} /> Cancel &amp; Add Another DB
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn-secondary"
-                                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
-                                    onClick={() => resetConnectSession('file')}
-                                    title="Switch to file upload"
-                                >
-                                    <Upload size={13} /> Switch to File
-                                </button>
-                            </div>
+                        <div className="info-card" style={{ marginTop: '1rem' }}>
+                            <CheckCircle size={16} />
+                            <span>
+                                Source connected: <strong>{sourceType === 'sql' ? `${dbType.toUpperCase()} Database` : fileName || 'Dataset file'}</strong>
+                            </span>
                         </div>
                     )}
                 </div>
@@ -1285,8 +1763,8 @@ function ConnectSourceContent() {
                     STEP 2 — PREVIEW
                 ════════════════════════════════════════════ */}
                 {step >= 1 && (
-                    <div className="wizard-card">
-                        <div className="wizard-card-title"><Eye size={16} /> Step 2 — Preview Data ({domain.toUpperCase()})</div>
+                    <div className="wizard-card step-1-card" id="wizard-step-1">
+                        <div className="wizard-card-title"><Eye size={16} /> Step 2 — Preview Data</div>
 
                         {previewSt.error && <ErrorCard msg={previewSt.error} onRetry={() => doPreview()} />}
 
@@ -1320,9 +1798,19 @@ function ConnectSourceContent() {
                                     totalRows={previewData.total_rows}
                                 />
                                 <div className="btn-actions">
-                                    <button className="btn-primary" onClick={() => doMapping()}>
-                                        {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Confirm Preview &amp; Load Mapping
-                                    </button>
+                                    {sourceType === 'sql' ? (
+                                        <button
+                                            className="btn-primary"
+                                            onClick={doIngestSingleSqlTable}
+                                            disabled={isIngestingDb}
+                                        >
+                                            {isIngestingDb ? <><span className="spinner" /> Ingesting Table…</> : <><Zap size={15} /> ⚡ Ingest Table into KnowledgeBase</>}
+                                        </button>
+                                    ) : (
+                                        <button className="btn-primary" onClick={() => doMapping(filePath, mapping, sheetName, autoProceed)}>
+                                            {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Confirm Preview &amp; Load Mapping
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
                                         className="btn-danger-outline"
@@ -1345,7 +1833,7 @@ function ConnectSourceContent() {
 
                         {step >= 2 && (
                             <div className="info-card">
-                                <CheckCircle size={16} /> Preview confirmed. Column mapping loaded for {domain.toUpperCase()}.
+                                <CheckCircle size={16} /> Preview confirmed. Schema mapping loaded.
                             </div>
                         )}
                     </div>
@@ -1355,12 +1843,12 @@ function ConnectSourceContent() {
                     STEP 3 — MAPPING
                 ════════════════════════════════════════════ */}
                 {step >= 2 && (
-                    <div className="wizard-card">
-                        <div className="wizard-card-title"><GitMerge size={16} /> Step 3 — Column Mapping ({domain.toUpperCase()})</div>
+                    <div className="wizard-card step-2-card" id="wizard-step-2">
+                        <div className="wizard-card-title"><GitMerge size={16} /> Step 3 — Column Mapping</div>
 
                         {mappingSt.loading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
-                                <span className="spinner dark" /> Detecting column mapping for {domain}…
+                                <span className="spinner dark" /> Detecting column mapping…
                             </div>
                         )}
 
@@ -1368,14 +1856,14 @@ function ConnectSourceContent() {
 
                         {!mappingSt.loading && Object.keys(mapping).length > 0 && (
                             <>
-                                <p style={{ fontSize: '0.875rem', color: '#6B7280', marginBottom: '1rem' }}>
-                                    The system detected the following column mapping for <strong>{domain.toUpperCase()}</strong>.
+                                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                                    Review detected column mapping before proceeding.
                                 </p>
                                 <MappingTable mapping={mapping} />
 
                                 {step === 3 && (
                                     <div className="btn-actions">
-                                        <button className="btn-primary" onClick={() => doNormalize()} disabled={normSt.loading}>
+                                        <button className="btn-primary" onClick={() => doNormalize(filePath, mapping, sheetName, autoProceed)} disabled={normSt.loading}>
                                             {normSt.loading
                                                 ? <><span className="spinner" /> Normalizing…</>
                                                 : autoProceed
@@ -1421,11 +1909,11 @@ function ConnectSourceContent() {
                     STEP 4 — NORMALIZE
                 ════════════════════════════════════════════ */}
                 {step >= 4 && (
-                    <div className="wizard-card">
-                        <div className="wizard-card-title"><Wrench size={16} /> Step 4 — Normalize ({domain.toUpperCase()})</div>
+                    <div className="wizard-card" id="wizard-step-4">
+                        <div className="wizard-card-title"><Wrench size={16} /> Step 4 — Normalize Data</div>
 
                         {normSt.loading && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#6B7280' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-secondary)' }}>
                                 <span className="spinner dark" /> Normalizing data…
                             </div>
                         )}
@@ -1433,12 +1921,12 @@ function ConnectSourceContent() {
                         {!normSt.loading && !normSt.error && (
                             <>
                                 <div className="info-card">
-                                    <CheckCircle size={16} /> Data normalized for {domain.toUpperCase()}. File path updated for validation and ingestion.
+                                    <CheckCircle size={16} /> Data normalized successfully. File prepared for validation and ingestion.
                                 </div>
 
                                 {step === 4 && !valSt.loading && !validateResult && (
                                     <div className="btn-actions">
-                                        <button className="btn-primary" onClick={() => doValidate()}>
+                                        <button className="btn-primary" onClick={() => doValidate(filePath, mapping, sheetName, autoProceed)}>
                                             {autoProceed ? <Zap size={15} /> : <ShieldCheck size={15} />} Run Validation
                                         </button>
                                         <button
@@ -1547,19 +2035,19 @@ function ConnectSourceContent() {
                     STEP 5 — VALIDATE SUCCESS + INGEST
                 ════════════════════════════════════════════ */}
                 {step >= 5 && (
-                    <div className="wizard-card">
-                        <div className="wizard-card-title"><Database size={16} /> Step 5/6 — Ingest to Knowledge Base</div>
+                    <div className="wizard-card" id="wizard-step-5">
+                        <div className="wizard-card-title"><Database size={16} /> Step 5 — Ingest to Knowledge Base</div>
 
                         {validateResult && (validateResult.verdict === 'usable' || validateResult.verdict === 'usable_with_warnings') && step === 5 && !ingestSt.loading && !ingestMsg && (
                             <>
                                 {validateResult.verdict === 'usable' ? (
                                     <div className="verdict-badge ok">
-                                        <CheckCircle size={16} /> Data validated — ready to ingest into {domain.toUpperCase()} Knowledge Base
+                                        <CheckCircle size={16} /> Data validated — ready to ingest into Knowledge Base
                                     </div>
                                 ) : (
                                     <>
                                         <div className="verdict-badge warn">
-                                            <AlertTriangle size={16} /> Data validated with minor warnings — ready to ingest into {domain.toUpperCase()} Knowledge Base
+                                            <AlertTriangle size={16} /> Data validated with minor warnings — ready to ingest
                                         </div>
                                         {validateResult.problems && validateResult.problems.length > 0 && (
                                             <ul className="problems-list" style={{ marginTop: '0.75rem', marginBottom: '0.75rem', maxHeight: '130px', overflowY: 'auto' }}>
@@ -1570,7 +2058,7 @@ function ConnectSourceContent() {
                                                     </li>
                                                 ))}
                                                 {validateResult.problems.length > 5 && (
-                                                    <li style={{ color: '#64748b', fontStyle: 'italic', fontSize: '0.75rem' }}>
+                                                    <li style={{ color: 'var(--text-tertiary)', fontStyle: 'italic', fontSize: '0.75rem' }}>
                                                         +{validateResult.problems.length - 5} more non-critical notice(s)
                                                     </li>
                                                 )}
@@ -1579,8 +2067,8 @@ function ConnectSourceContent() {
                                     </>
                                 )}
 
-                                <div style={{ marginTop: '1.25rem', marginBottom: '1.25rem', background: '#F8FAFC', padding: '1rem', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
-                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.6rem' }}>
+                                <div style={{ marginTop: '1.25rem', marginBottom: '1.25rem', background: 'var(--surface-container)', padding: '1rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                                    <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '0.6rem' }}>
                                         ⚡ Ingestion &amp; Chunking Strategy:
                                     </label>
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
@@ -1589,17 +2077,17 @@ function ConnectSourceContent() {
                                             style={{
                                                 padding: '0.75rem 1rem',
                                                 borderRadius: '8px',
-                                                border: strategy === 'merge' ? '2px solid #2563EB' : '1px solid #CBD5E1',
-                                                background: strategy === 'merge' ? '#EFF6FF' : '#FFFFFF',
+                                                border: strategy === 'merge' ? '2px solid var(--brand-green)' : '1px solid var(--border-color)',
+                                                background: strategy === 'merge' ? 'var(--brand-green-container)' : 'var(--surface-bg)',
                                                 cursor: 'pointer',
                                                 transition: 'all 0.15s ease'
                                             }}
                                         >
-                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'merge' ? '#1D4ED8' : '#1E293B', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'merge' ? 'var(--brand-green-text)' : 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                 <span>⚡ Merge / Grouping</span>
-                                                <span style={{ fontSize: '0.7rem', background: '#10B981', color: '#FFF', padding: '2px 6px', borderRadius: '10px', fontWeight: 700 }}>5x–10x FASTER</span>
+                                                <span style={{ fontSize: '0.7rem', background: 'var(--brand-green)', color: '#FFF', padding: '2px 6px', borderRadius: '10px', fontWeight: 700 }}>5x–10x FASTER</span>
                                             </div>
-                                            <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.3rem', lineHeight: '1.3' }}>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', lineHeight: '1.3' }}>
                                                 Groups rows by invoice/bill number into rich transaction chunks. Superior context &amp; fastest vectorization.
                                             </div>
                                         </div>
@@ -1609,16 +2097,16 @@ function ConnectSourceContent() {
                                             style={{
                                                 padding: '0.75rem 1rem',
                                                 borderRadius: '8px',
-                                                border: strategy === 'row' ? '2px solid #2563EB' : '1px solid #CBD5E1',
-                                                background: strategy === 'row' ? '#EFF6FF' : '#FFFFFF',
+                                                border: strategy === 'row' ? '2px solid var(--brand-green)' : '1px solid var(--border-color)',
+                                                background: strategy === 'row' ? 'var(--brand-green-container)' : 'var(--surface-bg)',
                                                 cursor: 'pointer',
                                                 transition: 'all 0.15s ease'
                                             }}
                                         >
-                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'row' ? '#1D4ED8' : '#1E293B' }}>
+                                            <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'row' ? 'var(--brand-green-text)' : 'var(--text-primary)' }}>
                                                 📄 Row-by-Row
                                             </div>
-                                            <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.3rem', lineHeight: '1.3' }}>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', lineHeight: '1.3' }}>
                                                 Embeds each row individually. Useful for independent catalog or item inventories.
                                             </div>
                                         </div>
@@ -1670,8 +2158,8 @@ function ConnectSourceContent() {
 
                         {ingestSt.loading && (
                             <div style={{
-                                background: '#F8FAFC',
-                                border: '1px solid #E2E8F0',
+                                background: 'var(--surface-container)',
+                                border: '1px solid var(--border-color)',
                                 borderRadius: '12px',
                                 padding: '1.25rem 1.5rem',
                                 marginTop: '1rem',
@@ -1680,7 +2168,7 @@ function ConnectSourceContent() {
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
                                         <span className="spinner dark" />
-                                        <span style={{ fontWeight: 600, color: '#1E293B', fontSize: '0.92rem' }}>
+                                        <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.92rem' }}>
                                             Ingesting data into {domain.toUpperCase()} Knowledge Base...
                                         </span>
                                     </div>
@@ -1688,13 +2176,13 @@ function ConnectSourceContent() {
                                         display: 'inline-flex',
                                         alignItems: 'center',
                                         gap: '0.4rem',
-                                        background: 'var(--accent-teal, #0D7377)',
+                                        background: 'var(--brand-green)',
                                         color: '#FFFFFF',
                                         padding: '0.35rem 0.85rem',
                                         borderRadius: '9999px',
                                         fontSize: '0.78rem',
                                         fontWeight: 600,
-                                        boxShadow: '0 1px 3px rgba(13, 115, 119, 0.25)'
+                                        boxShadow: '0 1px 3px rgba(16, 185, 129, 0.25)'
                                     }}>
                                         <Zap size={13} />
                                         <span>
@@ -1709,7 +2197,7 @@ function ConnectSourceContent() {
                                 <div style={{
                                     width: '100%',
                                     height: '8px',
-                                    background: '#E2E8F0',
+                                    background: 'var(--surface-container-high)',
                                     borderRadius: '9999px',
                                     overflow: 'hidden',
                                     marginBottom: '0.6rem'
@@ -1717,18 +2205,18 @@ function ConnectSourceContent() {
                                     <div style={{
                                         width: `${Math.min(100, Math.max(5, ingestProgress?.percent ?? 15))}%`,
                                         height: '100%',
-                                        background: 'linear-gradient(90deg, var(--accent-teal, #0D7377), #10B981)',
+                                        background: 'linear-gradient(90deg, var(--brand-green), #34D399)',
                                         borderRadius: '9999px',
                                         transition: 'width 0.3s ease'
                                     }} />
                                 </div>
 
                                 {/* Bottom Subtitle and Percentage */}
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', color: '#64748B' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                     <span>
                                         {ingestProgress?.stepText || `Ingesting chunks: 0 / ${(previewData?.total_rows || 100).toLocaleString()} (15%)...`}
                                     </span>
-                                    <span style={{ fontWeight: 600, color: 'var(--accent-teal, #0D7377)' }}>
+                                    <span style={{ fontWeight: 600, color: 'var(--brand-green)' }}>
                                         {Math.round(ingestProgress?.percent ?? 15)}%
                                     </span>
                                 </div>
@@ -1738,7 +2226,7 @@ function ConnectSourceContent() {
                         {ingestSt.error && <ErrorCard msg={ingestSt.error} onRetry={() => doIngest()} />}
 
                         {step >= 6 && !ingestSt.loading && !ingestSt.error && (
-                            <div className="success-card">
+                            <div className="success-card" id="wizard-step-6">
                                 <div className="success-card-icon">
                                     {dbIngestSummary && dbIngestSummary.successful_tables === 0 ? (
                                         <AlertTriangle size={26} color="#D97706" />
@@ -1754,25 +2242,45 @@ function ConnectSourceContent() {
                                 <p>{(typeof ingestMsg === 'string' && ingestMsg && !ingestMsg.startsWith('{')) ? ingestMsg : `Your ${domain.toUpperCase()} data is ready. The RAG chatbot is now powered by this dataset.`}</p>
 
                                 {dbIngestSummary && dbIngestSummary.table_results && dbIngestSummary.table_results.length > 0 && (
-                                    <div style={{ margin: '1rem 0 1.25rem 0', textAlign: 'left', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '0.75rem', maxHeight: '200px', overflowY: 'auto' }}>
-                                        <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#475569', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                    <div style={{ margin: '1rem 0 1.25rem 0', textAlign: 'left', background: 'var(--surface-container)', borderRadius: '10px', border: '1px solid var(--border-color)', padding: '0.85rem', maxHeight: '200px', overflowY: 'auto' }}>
+                                        <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                                             Table Ingestion Breakdown:
                                         </div>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                                             {dbIngestSummary.table_results.map((t, idx) => (
-                                                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', padding: '4px 8px', borderRadius: '4px', background: '#FFFFFF', border: '1px solid #EDF2F7' }}>
-                                                    <span style={{ fontWeight: 600, color: '#1E293B' }}>📊 {t.table_name}</span>
+                                                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', padding: '6px 10px', borderRadius: '6px', background: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>📊 {t.table_name}</span>
                                                     <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                        <span style={{ color: '#64748B', fontSize: '0.75rem' }}>{t.rows} rows · {t.chunks} chunks</span>
+                                                        <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{t.rows} rows · {t.chunks} chunks</span>
                                                         <span style={{
                                                             fontSize: '0.72rem',
                                                             fontWeight: 600,
                                                             padding: '2px 7px',
                                                             borderRadius: '999px',
-                                                            background: t.status === 'success' ? '#DEF7EC' : t.status === 'empty' ? '#F1F5F9' : '#FDE8E8',
-                                                            color: t.status === 'success' ? '#03543F' : t.status === 'empty' ? '#64748B' : '#9B1C1C'
+                                                            background: t.status === 'unchanged'
+                                                                ? 'rgba(59, 130, 246, 0.15)'
+                                                                : (t.status === 'success' || t.status === 'synced')
+                                                                ? 'var(--brand-green-container)'
+                                                                : t.status === 'empty'
+                                                                ? 'var(--surface-container-high)'
+                                                                : 'rgba(239, 68, 68, 0.15)',
+                                                            color: t.status === 'unchanged'
+                                                                ? '#2563EB'
+                                                                : (t.status === 'success' || t.status === 'synced')
+                                                                ? 'var(--brand-green-text)'
+                                                                : t.status === 'empty'
+                                                                ? 'var(--text-secondary)'
+                                                                : '#f87171'
                                                         }}>
-                                                            {t.status === 'success' ? 'Ingested' : t.status === 'empty' ? 'Empty (0 rows)' : 'Failed'}
+                                                            {t.status === 'unchanged'
+                                                                ? 'Up-to-Date (0 changes)'
+                                                                : (t.status === 'success' || t.status === 'synced')
+                                                                ? (t.new_rows || t.deleted_rows || t.updated_rows
+                                                                    ? `Synced (+${t.new_rows ?? 0} / -${t.deleted_rows ?? 0})`
+                                                                    : 'Ingested')
+                                                                : t.status === 'empty'
+                                                                ? 'Empty (0 rows)'
+                                                                : 'Failed'}
                                                         </span>
                                                     </span>
                                                 </div>

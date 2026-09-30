@@ -149,8 +149,15 @@ export default function Chatbot() {
     const [sessionId, setSessionId] = useState(() => `sess-${Math.random().toString(36).substring(2, 10)}`);
     const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
     const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-    const [models, setModels] = useState<string[]>(['qwen2.5:3b', 'gemma3:1b', 'llama3.2:1b', 'llama3.2:3b']);
-    const [activeModel, setActiveModel] = useState<string>('qwen2.5:3b');
+    const [models, setModels] = useState<string[]>([
+        'qwen2.5:1.5b',
+        'qwen2.5:0.5b',
+        'qwen2.5:3b',
+        'llama3.2:1b',
+        'llama3.2:3b',
+        'gemma3:1b'
+    ]);
+    const [activeModel, setActiveModel] = useState<string>('qwen2.5:1.5b');
 
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const chatPanelRef = useRef<HTMLDivElement>(null);
@@ -199,9 +206,10 @@ export default function Chatbot() {
             const res = await fetch('/api/chat/models');
             if (res.ok) {
                 const data = await res.json();
-                if (data.models && data.models.length > 0) {
-                    setModels(data.models);
-                }
+                const presets = ['qwen2.5:1.5b', 'qwen2.5:0.5b', 'qwen2.5:3b', 'llama3.2:1b', 'llama3.2:3b', 'gemma3:1b'];
+                const backendModels = data.models || [];
+                const merged = Array.from(new Set([...presets, ...backendModels]));
+                setModels(merged);
                 if (data.active_model) {
                     setActiveModel(data.active_model);
                 }
@@ -228,7 +236,7 @@ export default function Chatbot() {
     const fetchSessions = async () => {
         setIsLoadingSessions(true);
         try {
-            const res = await fetch('/api/chat/sessions');
+            const res = await fetch(`/api/chat/sessions?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 setSessions(data.sessions || []);
@@ -265,6 +273,7 @@ export default function Chatbot() {
 
     useEffect(() => {
         fetchSources();
+        fetchSessions();
     }, [user.domain]);
 
     useEffect(() => {
@@ -586,20 +595,29 @@ export default function Chatbot() {
                 <div className="chat-header">
                     <div className="chat-header-title">
                         <h2>RAG Chatbot</h2>
-                        <span className="monospaced model-chip" style={{ background: 'rgba(16, 185, 129, 0.12)', color: 'var(--accent-teal)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-                            {activeDomainMeta.icon} {activeDomainMeta.name}
-                        </span>
                         <select 
                             className="model-select-dropdown"
                             value={activeModel}
                             onChange={handleModelChange}
-                            title="Switch local AI model for speed or depth"
+                            title="Switch local AI model"
                         >
-                            {models.map(m => (
-                                <option key={m} value={m}>
-                                    {m.includes('gemma3') ? `⚡ ${m} (Ultra Fast 1B)` : m.includes('qwen2.5') ? `🎯 ${m} (Fast & Accurate 3B)` : m.includes('qwen3') ? `🧠 ${m} (Reasoning 4B)` : `🤖 ${m}`}
-                                </option>
-                            ))}
+                            {models.map(m => {
+                                let label = m;
+                                if (m.includes('0.5b')) label = `${m} (Ultra Lightweight 0.5B)`;
+                                else if (m.includes('1.5b')) label = `${m} (Fast & Efficient 1.5B)`;
+                                else if (m.includes('qwen2.5') || m.includes('3b')) {
+                                    if (m.includes('llama3.2:3b')) label = `${m} (Balanced 3B)`;
+                                    else label = `${m} (Accurate 3B)`;
+                                }
+                                else if (m.includes('llama3.2:1b')) label = `${m} (Fast 1B)`;
+                                else if (m.includes('gemma3')) label = `${m} (Ultra Fast 1B)`;
+                                else if (m.includes('qwen3')) label = `${m} (Reasoning 4B)`;
+                                return (
+                                    <option key={m} value={m}>
+                                        {label}
+                                    </option>
+                                );
+                            })}
                         </select>
                     </div>
                     <div className="chat-actions">
@@ -608,10 +626,10 @@ export default function Chatbot() {
                             onClick={handleNewChat}
                             title="Start a fresh conversation"
                         >
-                            <Plus size={15} /> New Chat
+                            <Plus size={14} /> New Chat
                         </button>
                         <button 
-                            className="action-btn"
+                            className="action-btn" 
                             onClick={scrollToHistory}
                             title="Scroll down to view past conversations"
                         >
@@ -634,11 +652,8 @@ export default function Chatbot() {
                             <div className="empty-state-icon">
                                 <Bot size={24} />
                             </div>
-                            <h3>Welcome to {activeDomainMeta.name} Intelligence</h3>
-                            <p style={{ color: '#6B7280', fontSize: '0.875rem', margin: '-0.5rem 0 0.5rem', fontStyle: 'italic' }}>
-                                Powered by local AI · All {activeDomainMeta.name} data stays private on your machine
-                            </p>
-                            <p>Ask a question about your {activeDomainMeta.name} datasets to get deterministic answers.</p>
+                            <h3>Query your knowledge base</h3>
+                            <p>Ask questions across your connected datasets and documents with local AI.</p>
                             <SuggestionChips
                                 chips={activeDomainMeta.suggestedQueries}
                                 onSelect={handleSuggestionClick}

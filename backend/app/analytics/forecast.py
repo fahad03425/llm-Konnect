@@ -37,7 +37,7 @@ are not a thing. This is stated in the docs and in each result's method string.
 """
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -387,6 +387,7 @@ def _forecast_kpi(
     """Tier 1/2: history plus `horizon` future periods, each with an uncertainty band."""
     horizon = _horizon(filters)
     series = build_series(df, filters, metric)
+    series = _exclude_open_month(df, series, filters)
     formula = (
         f"{metric} forecast for the next {horizon} {series.granularity} period(s), "
         f"each reported as a range rather than a single number"
@@ -399,6 +400,16 @@ def _forecast_kpi(
         )
 
     outcome = make_forecast(series, horizon)
+    if outcome.ok and any("excluded incomplete current month" in note for note in series.notes):
+        reference_period = pd.to_datetime(filters.as_of).to_period("M")
+        future_periods = pd.period_range(reference_period + 1, periods=horizon, freq="M")
+        outcome = replace(
+            outcome,
+            points=[
+                {**point, "period": period.strftime("%Y-%m")}
+                for point, period in zip(outcome.points, future_periods)
+            ],
+        )
     notes = list(series.notes) + list(outcome.notes)
     provenance = build_provenance(df, series.mask, filters, list(series.columns_used), notes)
 
@@ -415,6 +426,39 @@ def _forecast_kpi(
         key=key, name=name, value=first["value"], unit=unit, formula=formula,
         provenance=provenance, period=_series_period(series), method=outcome.method,
         series=series.points(moving_average(series.values)), forecast=outcome.points,
+    )
+
+
+def _exclude_open_month(df: pd.DataFrame, series: TimeSeries, filters: KPIFilters) -> TimeSeries:
+    """Do not use an unfinished current month as a complete forecast period."""
+    if (
+        not series.ok or series.granularity != "monthly" or
+        series.period_index is None or len(series.period_index) == 0 or not filters.as_of
+    ):
+        return series
+    as_of = pd.to_datetime(filters.as_of, errors="coerce")
+    if pd.isna(as_of) or as_of.is_month_end:
+        return series
+    current_period = as_of.to_period("M")
+    if series.period_index[-1] != current_period:
+        return series
+
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    complete_rows = series.mask & (dates.dt.to_period("M") != current_period)
+    notes = list(series.notes)
+    notes.append(
+        f"excluded incomplete current month {current_period.strftime('%Y-%m')} from forecast history "
+        f"because the reference date {as_of.strftime('%Y-%m-%d')} is before month-end"
+    )
+    return replace(
+        series,
+        labels=series.labels[:-1],
+        values=series.values[:-1],
+        observed=series.observed[:-1],
+        row_counts=series.row_counts[:-1],
+        notes=tuple(notes),
+        period_index=series.period_index[:-1],
+        mask=complete_rows,
     )
 
 

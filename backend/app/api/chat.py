@@ -46,6 +46,8 @@ def chat(request: ChatRequest):
     try:
         response = rag_chat.ask(request)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -62,6 +64,8 @@ def chat_stream(request: ChatRequest):
                 "X-Accel-Buffering": "no"
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -66,46 +66,88 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
     that case expense and refund masks are all-False but `has_column` is False, so
     callers can return "unavailable + reason" rather than a misleading zero.
     """
-    if "txn_type" not in df.columns:
-        return TxnClassification(
-            has_column=False,
-            sale=pd.Series(True, index=df.index),
-            expense=pd.Series(False, index=df.index),
-            refund=pd.Series(False, index=df.index),
-            notes=[
-                "canonical 'txn_type' column is absent; all rows treated as sales"
-            ],
+    has_txn_type = "txn_type" in df.columns
+    notes: List[str] = []
+    if has_txn_type:
+        tokens = (
+            df["txn_type"]
+            .astype(str)
+            .str.casefold()
+            .str.replace(r"[^a-z]+", " ", regex=True)
+            .str.strip()
         )
 
-    tokens = (
-        df["txn_type"]
-        .astype(str)
-        .str.casefold()
-        .str.replace(r"[^a-z]+", " ", regex=True)
-        .str.strip()
-    )
+        def _match(vocab: frozenset) -> pd.Series:
+            return tokens.apply(lambda t: bool(vocab & set(t.split())) if t else False)
 
-    def _match(vocab: frozenset) -> pd.Series:
-        return tokens.apply(lambda t: bool(vocab & set(t.split())) if t else False)
+        sale = _match(_SALE_TOKENS)
+        expense = _match(_EXPENSE_TOKENS)
+        refund = _match(_REFUND_TOKENS)
+    else:
+        sale = pd.Series(True, index=df.index)
+        expense = pd.Series(False, index=df.index)
+        refund = pd.Series(False, index=df.index)
+        notes.append("canonical 'txn_type' column is absent; all rows initially treated as sales")
 
-    sale = _match(_SALE_TOKENS)
-    expense = _match(_EXPENSE_TOKENS)
-    refund = _match(_REFUND_TOKENS)
+    # POS exports often keep TransactionType="Sale" and put the return in a
+    # separate Status column. Treat a full return as a refund even when the
+    # transaction type itself still says "Sale". Partial returns cannot be
+    # valued reliably without a returned quantity/amount, so exclude them from
+    # both sales and refund totals and disclose that limitation.
+    partial_return = pd.Series(False, index=df.index)
+    purchase_return = pd.Series(False, index=df.index)
+    cancelled = pd.Series(False, index=df.index)
+    if "status" in df.columns:
+        status = (
+            df["status"].astype(str).str.casefold()
+            .str.replace(r"[^a-z]+", " ", regex=True).str.strip()
+        )
+        status_words = status.str.split()
+        status_return = status_words.apply(lambda words: bool({"return", "returned", "refund", "refunded"} & set(words)))
+        partial_return = status_return & status_words.apply(lambda words: "partial" in words or "partially" in words)
+        purchase_return = status_return & expense & ~partial_return
+        # A returned purchase is not customer sales revenue/refund. Exclude it
+        # from expense totals until a separate return amount is available.
+        expense &= ~purchase_return
+        full_return = status_return & ~partial_return & (sale | (not has_txn_type))
+        refund |= full_return
+        cancelled = status_words.apply(lambda words: bool({"cancelled", "canceled", "void", "voided"} & set(words)))
+        sale &= ~partial_return & ~cancelled
+        expense &= ~partial_return & ~cancelled
+
+    if "is_cancelled" in df.columns:
+        flag = df["is_cancelled"].astype(str).str.casefold().str.strip().isin(
+            {"1", "true", "yes", "y", "cancelled", "canceled", "void", "voided"}
+        )
+        cancelled |= flag
+        sale &= ~flag
+        expense &= ~flag
 
     # A refund is a refund even when the label also says "sale return".
     sale = sale & ~refund
     expense = expense & ~refund
 
-    notes: List[str] = []
-    unclassified = ~(sale | expense | refund)
-    if unclassified.any():
+    if partial_return.any():
+        notes.append(
+            f"{int(partial_return.sum())} partially returned row(s) were excluded because "
+            "the returned portion is not separately recorded"
+        )
+    if purchase_return.any():
+        notes.append(
+            f"{int(purchase_return.sum())} returned purchase row(s) were excluded from expenses; "
+            "the returned purchase value is not represented as a separate amount"
+        )
+    if cancelled.any():
+        notes.append(f"{int(cancelled.sum())} cancelled/void row(s) were excluded")
+    unclassified = ~(sale | expense | refund | partial_return | cancelled)
+    if has_txn_type and unclassified.any():
         labels = sorted(set(df.loc[unclassified, "txn_type"].astype(str)))[:5]
         notes.append(
             f"{int(unclassified.sum())} row(s) have a txn_type that matched no known "
             f"sale/expense/refund term and were excluded (e.g. {labels})"
         )
 
-    return TxnClassification(has_column=True, sale=sale, expense=expense, refund=refund, notes=notes)
+    return TxnClassification(has_column=has_txn_type, sale=sale, expense=expense, refund=refund, notes=notes)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +509,7 @@ def total_revenue(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KP
     return _sum_over(
         df, filters, txn.sale,
         "total_revenue", "Total Revenue",
-        "sum of amount where txn_type is a sale",
+        "sum of amount for sale rows, excluding returned, partial-return and cancelled statuses",
         txn.notes,
     )
 
@@ -494,8 +536,8 @@ def total_refunds(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KP
     amounts; the absolute value is taken so the figure is direction-independent.
     """
     txn = classify_transactions(df)
-    formula = "sum of |amount| where txn_type is a refund or return"
-    if not txn.has_column:
+    formula = "sum of |amount| where txn_type or status identifies a full refund or return"
+    if not txn.has_column and "status" not in df.columns:
         return unavailable(
             "total_refunds", "Total Refunds", UNIT_CURRENCY, formula,
             "canonical 'txn_type' column is absent, so refund rows cannot be identified; "
@@ -740,6 +782,33 @@ def transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -
     return KPIResult(
         key="transaction_count", name="Transaction Count", value=float(value),
         unit=UNIT_COUNT, formula=formula, provenance=provenance, period=_period(df, contributing),
+    )
+
+
+def units_sold(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Sum sale quantities, excluding purchases, returns, and cancelled rows."""
+    key = "units_sold"
+    formula = "sum of quantity over sale rows"
+    txn = classify_transactions(df)
+    if "quantity" not in df.columns:
+        return unavailable(
+            key, "Units Sold", "units", formula,
+            "canonical 'quantity' column is not present in this data",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
+    quantity = pd.to_numeric(df["quantity"], errors="coerce")
+    contributing = txn.sale & quantity.notna() & (quantity > 0)
+    provenance = build_provenance(df, contributing, filters, ["quantity"], txn.notes)
+    if not contributing.any():
+        return unavailable(
+            key, "Units Sold", "units", formula,
+            "no sale rows with a positive quantity matched the requested filter",
+            provenance,
+        )
+    return KPIResult(
+        key=key, name="Units Sold", value=round(float(quantity[contributing].sum()), 2),
+        unit="units", formula=formula, provenance=provenance,
+        period=_period(df, contributing),
     )
 
 

@@ -51,11 +51,40 @@ def detect_connector(path: str) -> Connector:
     elif ext in ('.sqlite', '.db', '.sqlite3'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="sqlite")
+    elif ext == '.mdf':
+        from app.connectors.sql import SQLConnector
+        return SQLConnector(path, db_type="mssql")
     elif ext in ('.mdb', '.accdb'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="access")
+    elif path.startswith("shopify://"):
+        from app.connectors.shopify import ShopifyConnector
+        return ShopifyConnector.from_url(path)
     elif ext == '.xml' or path.startswith("tally://") or path.startswith("http://") or path.startswith("https://"):
         from app.connectors.tally import TallyConnector
         return TallyConnector(path)
     else:
         raise ValueError(f"Unsupported file extension: {ext}. Cannot detect appropriate connector.")
+
+
+def is_network_or_custom_source(path_or_url: str) -> bool:
+    """Checks if path is an HTTP, Tally, Shopify, SQL, or custom scheme source."""
+    if not path_or_url or not isinstance(path_or_url, str):
+        return False
+    return (
+        path_or_url.startswith("http://")
+        or path_or_url.startswith("https://")
+        or path_or_url.startswith("tally://")
+        or path_or_url.startswith("shopify://")
+        or path_or_url.startswith("sql://")
+        or path_or_url.startswith("db://")
+    )
+
+
+def source_exists(path_or_url: str) -> bool:
+    """Checks if a local file exists or if a network/custom URL is structurally valid."""
+    if not path_or_url or not isinstance(path_or_url, str):
+        return False
+    if is_network_or_custom_source(path_or_url):
+        return True
+    return os.path.exists(path_or_url)

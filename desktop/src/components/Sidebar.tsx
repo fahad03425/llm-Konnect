@@ -8,47 +8,62 @@ import {
     CalendarDays,
     Settings,
     Shield,
-    Lock
+    Lock,
+    Sparkles,
+    RefreshCw
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
+import { useReport } from '../context/ReportContext';
 
 const Sidebar = () => {
     const { openSettings, activeDomainMeta } = useUser();
+    const { weeklyIsGenerating, exportIsGenerating } = useReport();
 
     return (
         <aside className="sidebar">
             <div className="brand">
-                <div className="brand-title">LLM-KONNECT</div>
-                <div className="status-badge monospaced">
+                <div className="brand-header">
+                    <div className="brand-logo-mark">
+                        <Sparkles size={16} />
+                    </div>
+                    <div className="brand-title">LLM-Konnect</div>
+                </div>
+                <div className="status-badge">
                     <div className="status-dot" />
-                    Ollama Engine: RUNNING
+                    <span>Ollama: Active</span>
                 </div>
             </div>
 
             <nav className="nav-menu">
                 <NavLink to="/" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <LayoutDashboard size={18} />
+                    <LayoutDashboard size={19} />
                     <span>Dashboard</span>
                 </NavLink>
                 <NavLink to="/connect" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Database size={18} />
+                    <Database size={19} />
                     <span>Connect Source</span>
                 </NavLink>
                 <NavLink to="/files" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Files size={18} />
+                    <Files size={19} />
                     <span>Uploaded Files</span>
                 </NavLink>
                 <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <MessageSquare size={18} />
+                    <MessageSquare size={19} />
                     <span>RAG Chatbot</span>
                 </NavLink>
                 <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <FileOutput size={18} />
-                    <span>Report Export</span>
+                    <FileOutput size={19} />
+                    <span style={{ flex: 1 }}>Report Export</span>
+                    {exportIsGenerating && (
+                        <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--brand-teal)' }} />
+                    )}
                 </NavLink>
                 <NavLink to="/weekly-report" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <CalendarDays size={18} />
-                    <span>Weekly Report</span>
+                    <CalendarDays size={19} />
+                    <span style={{ flex: 1 }}>Weekly Report</span>
+                    {weeklyIsGenerating && (
+                        <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--brand-teal)' }} />
+                    )}
                 </NavLink>
             </nav>
 
@@ -56,7 +71,6 @@ const Sidebar = () => {
                 <button
                     className="nav-item"
                     onClick={openSettings}
-                    style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer' }}
                 >
                     <Settings size={18} />
                     <span>Settings</span>
@@ -64,14 +78,14 @@ const Sidebar = () => {
                 <button
                     className="nav-item"
                     onClick={openSettings}
-                    style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%', cursor: 'pointer', marginBottom: '1rem' }}
+                    style={{ marginBottom: '0.25rem' }}
                 >
                     <Shield size={18} />
                     <span>Domain: {activeDomainMeta.name}</span>
                 </button>
                 <button className="btn-lock" onClick={openSettings}>
-                    <Lock size={16} />
-                    Account & Lock
+                    <Lock size={15} />
+                    Account &amp; Lock
                 </button>
             </div>
         </aside>

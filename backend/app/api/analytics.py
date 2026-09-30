@@ -27,6 +27,7 @@ from app.schema.mapper import map_headers
 from app.schema.normalize import apply_mapping
 from app.schema.validate import validate
 from app.ingestion.store import KnowledgeBase
+from app.ingestion.registry import file_registry
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -131,10 +132,6 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     sales_header, sh_name = find_table(r"sales.*header|order.*header|invoice.*header|bill.*header|pos.*header|sale_header|order_header|order_main|sales_main")
     sales_gen, sg_name = find_table(r"^sales?$|^orders?$|^transactions?$|^bills?$|^invoices?$|^pos$")
 
-    purchase_header, ph_name = find_table(r"purchase.*header|expense.*header|vendor_bill|supplier_invoice")
-    purchase_detail, pd_name = find_table(r"purchase.*detail|purchase.*item|expense.*detail|vendor.*detail")
-    purchase_gen, pg_name = find_table(r"^purchases?$|^expenses?$|^supplier_bills?$|^bills_payable$")
-
     stock_tbl, st_name = find_table(r"batch|inventory|stock|warehouse")
     prod_tbl, pr_name = find_table(r"product|item|article|sku|catalog")
 
@@ -150,7 +147,7 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
         if join_keys:
             join_key = join_keys[0]
             header_cols = [
-                c for c in ["date", "month", "year", "customer_id", "doctor_name", "discount", "client_id", "user_id", "buyer_id"]
+                c for c in ["date", "month", "year", "customer_id", "doctor_name", "discount", "client_id", "user_id", "buyer_id", "payment_method", "payment_type", "sales_type", "user_name"]
                 if _has_valid_col(sales_header, c)
             ]
             clean_sd = sales_detail.drop(
@@ -259,15 +256,38 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     purchase_gen, pg_name = find_table(r"^(tbl_)?(purchases?|expenses?|supplier_bills?|bills_payable)$", exclude=used_sales_names)
     purch_detail, pdet_name = find_table(r"purchase.*detail|purchase.*item|expense.*detail|vendor.*detail", exclude=used_sales_names)
 
-    if purchase_header is not None:
-        purchases = purchase_header.copy()
-        purchases["txn_type"] = "expense"
+    if purch_detail is not None and purchase_header is not None:
+        join_keys = [
+            c for c in ["transaction_id", "purchase_id", "bill_id", "invoice_id", "header_id", "order_id"]
+            if _has_valid_col(purch_detail, c) and _has_valid_col(purchase_header, c)
+        ]
+        if join_keys:
+            join_key = join_keys[0]
+            header_cols = [
+                c for c in ["date", "month", "year", "supplier_name", "supplier_id", "vendor_name", "invoice_id", "bill_no", "payment_method", "net_payable"]
+                if _has_valid_col(purchase_header, c)
+            ]
+            clean_pd = purch_detail.drop(
+                columns=[c for c in header_cols if c in purch_detail.columns and not purch_detail[c].notna().any()]
+            )
+            purchases = clean_pd.merge(purchase_header[[join_key] + header_cols], on=join_key, how="left")
+            purchases["txn_type"] = "purchase_detail"
+        else:
+            purchases = purch_detail.copy()
+            purchases["txn_type"] = "purchase_detail"
+        if "cost" in purchases.columns and "quantity" in purchases.columns:
+            if "amount" not in purchases.columns or (pd.to_numeric(purchases["amount"], errors="coerce") == 0).all():
+                purchases["amount"] = pd.to_numeric(purchases["cost"], errors="coerce") * pd.to_numeric(purchases["quantity"], errors="coerce")
         parts.append(purchases)
     elif purch_detail is not None:
         purchases = purch_detail.copy()
         if "cost" in purchases.columns and "quantity" in purchases.columns:
             if "amount" not in purchases.columns or (pd.to_numeric(purchases["amount"], errors="coerce") == 0).all():
                 purchases["amount"] = pd.to_numeric(purchases["cost"], errors="coerce") * pd.to_numeric(purchases["quantity"], errors="coerce")
+        purchases["txn_type"] = "purchase_detail"
+        parts.append(purchases)
+    elif purchase_header is not None:
+        purchases = purchase_header.copy()
         purchases["txn_type"] = "expense"
         parts.append(purchases)
     elif purchase_gen is not None:
@@ -293,19 +313,50 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
 
     if parts:
         combined = pd.concat(parts, ignore_index=True)
+        # Cross-table unambiguous product_code -> product_id resolution
+        if "product_code" in combined.columns and "product_id" in combined.columns:
+            valid_pairs = combined[combined["product_code"].notna() & combined["product_id"].notna()]
+            if not valid_pairs.empty:
+                code_to_ids: Dict[str, set] = {}
+                for _, row in valid_pairs.iterrows():
+                    c_val = str(row["product_code"]).strip().lower()
+                    p_val = str(row["product_id"]).strip()
+                    if c_val and p_val and p_val.lower() != "none" and p_val.lower() != "nan":
+                        code_to_ids.setdefault(c_val, set()).add(p_val)
+                
+                unambiguous_map = {c: next(iter(p_set)) for c, p_set in code_to_ids.items() if len(p_set) == 1}
+                if unambiguous_map:
+                    def _fill_pid(row):
+                        pid = row.get("product_id")
+                        if pd.isna(pid) or not str(pid).strip() or str(pid).lower() in ("none", "nan"):
+                            c_val = str(row.get("product_code", "")).strip().lower()
+                            if c_val in unambiguous_map:
+                                return unambiguous_map[c_val]
+                        return pid
+                    
+                    combined["product_id"] = combined.apply(_fill_pid, axis=1)
+
         return combined
 
     return df
 
 
-def _load_canonical(req: KPIRequest):
+def _load_canonical(req: KPIRequest, include_raw: bool = False):
     """Connector -> mapping -> canonical DataFrame with in-memory caching."""
+
+    def _loaded(canonical, mapping, raw=None):
+        if include_raw:
+            # The report generator treats source frames as read-only. Use a
+            # shallow copy to avoid another full-sized allocation for large XLSX files.
+            return canonical.copy(deep=False), mapping, (raw if raw is not None else canonical).copy(deep=False)
+        return canonical.copy(), mapping
+
     # Handle Whole Database Selection (e.g. db://PharmacyPOS)
     if req.file_path.startswith("db://"):
         db_name = req.file_path.replace("db://", "").strip()
         cache_key = f"db:{db_name}:{req.domain}"
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            return _loaded(_df_cache[cache_key]["canonical"], _df_cache[cache_key]["mapping"])
         try:
             import pandas as pd
             kb_inst = KnowledgeBase()
@@ -316,11 +367,31 @@ def _load_canonical(req: KPIRequest):
             if not res or not res.get("metadatas") or len(res["metadatas"]) == 0:
                 raise HTTPException(status_code=404, detail=f"Database '{db_name}' records not found in KnowledgeBase")
             
+            # Check for registry index gaps
+            active_tables = [
+                r for r in file_registry.list_files()
+                if getattr(r, "status", "") == "active" and (
+                    getattr(r, "group_name", "") == db_name or getattr(r, "database_name", "") == db_name
+                )
+            ]
+            if active_tables:
+                indexed_file_ids = {m.get("file_id") for m in (res.get("metadatas") or []) if m.get("file_id")}
+                indexed_table_names = {m.get("table_name") for m in (res.get("metadatas") or []) if m.get("table_name")}
+                missing = [
+                    r for r in active_tables
+                    if r.file_id not in indexed_file_ids and getattr(r, "table_name", None) not in indexed_table_names
+                ]
+                if missing:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{len(missing)} active source table(s) have no indexed rows in KnowledgeBase"
+                    )
+
             raw_canonical = pd.DataFrame(res["metadatas"])
             canonical = _build_canonical_database(raw_canonical)
             mapping = {col_name: col_name for col_name in canonical.columns}
             _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
-            return canonical.copy(), mapping
+            return _loaded(canonical, mapping)
         except HTTPException:
             raise
         except Exception as e:
@@ -330,7 +401,7 @@ def _load_canonical(req: KPIRequest):
     if req.file_path.startswith("sql://"):
         cache_key = f"{req.file_path}:{req.domain}"
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            return _loaded(_df_cache[cache_key]["canonical"], _df_cache[cache_key]["mapping"])
         try:
             import pandas as pd
             kb_inst = KnowledgeBase()
@@ -346,26 +417,37 @@ def _load_canonical(req: KPIRequest):
             canonical = _build_canonical_database(canonical)
             mapping = {col_name: col_name for col_name in canonical.columns}
             _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
-            return canonical.copy(), mapping
+            return _loaded(canonical, mapping)
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Error loading database records: {e}")
 
-    if not os.path.exists(req.file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    actual_path = req.file_path
+    if not os.path.exists(actual_path):
+        fname = Path(req.file_path).name
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        up_cand = os.path.join(base_dir, "data", "uploads", fname)
+        samp_cand = os.path.join(base_dir, "data", "samples", fname)
+        if os.path.exists(up_cand):
+            actual_path = up_cand
+        elif os.path.exists(samp_cand):
+            actual_path = samp_cand
+        else:
+            raise HTTPException(status_code=404, detail=f"File '{fname}' does not exist on disk.")
 
     try:
-        mtime = os.path.getmtime(req.file_path)
+        mtime = os.path.getmtime(actual_path)
         mapping_str = str(sorted(req.mapping.items())) if req.mapping else "auto"
-        cache_key = f"{req.file_path}:{mtime}:{req.domain}:{req.sheet_name}:{req.table_or_query}:{mapping_str}"
+        cache_key = f"{actual_path}:{mtime}:{req.domain}:{req.sheet_name}:{req.table_or_query}:{mapping_str}"
         
         if cache_key in _df_cache:
-            return _df_cache[cache_key]["canonical"].copy(), _df_cache[cache_key]["mapping"]
+            cached = _df_cache[cache_key]
+            return _loaded(cached["canonical"], cached["mapping"])
     except Exception:
         cache_key = None
 
-    connector = detect_connector(req.file_path)
+    connector = detect_connector(actual_path)
     kwargs: Dict[str, Any] = {}
     if req.sheet_name:
         kwargs["sheet_name"] = req.sheet_name
@@ -394,7 +476,7 @@ def _load_canonical(req: KPIRequest):
             _df_cache.pop(next(iter(_df_cache)))
         _df_cache[cache_key] = {"canonical": canonical, "mapping": mapping}
 
-    return canonical.copy(), mapping
+    return _loaded(canonical, mapping, raw)
 
 
 def _filters(req: KPIRequest, canonical: Optional[pd.DataFrame] = None) -> KPIFilters:
@@ -433,14 +515,15 @@ class ExpiryReportRequest(KPIRequest):
     )
 
 
-def _envelope(req: KPIRequest, canonical, mapping: Dict[str, str]) -> Dict[str, Any]:
+def _envelope(req: KPIRequest, canonical, mapping: Dict[str, str], include_validation: Optional[bool] = None) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "file_path": req.file_path,
         "domain": req.domain,
         "mapping_used": mapping,
         "total_rows": int(len(canonical)),
     }
-    if req.include_validation:
+    should_validate = req.include_validation if include_validation is None else include_validation
+    if should_validate:
         body["validation_report"] = validate(canonical, domain=req.domain).to_dict()
     return body
 
@@ -611,6 +694,8 @@ def forecast(req: TrendRequest):
     try:
         canonical, mapping = _load_canonical(req)
         filters = _trend_filters(req)
+        if not filters.as_of:
+            filters = replace(filters, as_of=date.today().isoformat())
 
         if req.product_id:
             key = "product_demand_forecast"

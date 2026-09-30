@@ -1,9 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
     Send,
-    Lock,
     ShieldCheck,
-    Zap,
     FileText,
     Globe,
     X,
@@ -11,7 +9,6 @@ import {
     ChevronUp,
     Database,
     Layers,
-    Search,
     CheckSquare,
     Square
 } from 'lucide-react';
@@ -251,19 +248,19 @@ export const Composer = ({
             {availableFiles.length > 0 && onSelectFiles && (
                 <div className="multi-scope-wrapper">
                     <div className="scope-selector-container">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#4B5563' }}>
+                        <div className="scope-label-wrapper">
                             {selectedFiles.length === 0 ? (
-                                <Globe size={14} color="#6B7280" />
+                                <Globe size={14} className="scope-icon" />
                             ) : selectedFiles.length === 1 ? (
                                 selectedFiles[0].source_type === 'database' ? (
-                                    <Database size={14} color="#0D7377" />
+                                    <Database size={14} className="scope-icon active" />
                                 ) : (
-                                    <FileText size={14} color="#0D7377" />
+                                    <FileText size={14} className="scope-icon active" />
                                 )
                             ) : (
-                                <Layers size={14} color="#0D7377" />
+                                <Layers size={14} className="scope-icon active" />
                             )}
-                            <span style={{ fontWeight: 600 }}>Data Scope:</span>
+                            <span className="scope-label-text">Data Scope:</span>
                         </div>
 
                         {/* Custom Dropdown Trigger */}
@@ -276,17 +273,16 @@ export const Composer = ({
                         >
                             <span className="trigger-label">
                                 {selectedFiles.length === 0 ? (
-                                    <>🌐 All Knowledge Base ({totalKbChunks.toLocaleString()} chunks)</>
+                                    <>All Knowledge Base ({totalKbChunks.toLocaleString()} chunks)</>
                                 ) : activeDbGroup ? (
-                                    <>⭐ {activeDbGroup.name} (Whole Database — {activeDbGroup.chunks.toLocaleString()} chunks)</>
+                                    <>{activeDbGroup.name} (Whole Database — {activeDbGroup.chunks.toLocaleString()} chunks)</>
                                 ) : selectedFiles.length === 1 ? (
                                     <>
-                                        {selectedFiles[0].source_type === 'database' ? '📊' : '📄'}{' '}
                                         {selectedFiles[0].filename} ({selectedFiles[0].chunk_count.toLocaleString()} chunks)
                                     </>
                                 ) : (
                                     <>
-                                        📚 {selectedFiles.length} Sources Selected ({selectedTotalChunks.toLocaleString()} chunks)
+                                        {selectedFiles.length} Sources Selected ({selectedTotalChunks.toLocaleString()} chunks)
                                     </>
                                 )}
                             </span>
@@ -310,7 +306,7 @@ export const Composer = ({
                         <div className="multi-scope-popover" ref={popoverRef}>
                             <div className="popover-header">
                                 <div className="popover-title">
-                                    <Layers size={15} color="#0D7377" />
+                                    <Layers size={15} className="popover-title-icon" />
                                     <span>Select Knowledge Sources</span>
                                 </div>
                                 <div className="popover-actions">
@@ -335,7 +331,6 @@ export const Composer = ({
 
                             {/* Search Filter */}
                             <div className="popover-search">
-                                <Search size={13} color="#9CA3AF" />
                                 <input
                                     type="text"
                                     placeholder="Filter tables or files…"
@@ -358,7 +353,7 @@ export const Composer = ({
                             <div className="popover-list">
                                 {/* Option for All Knowledge Base */}
                                 <div
-                                    className={`popover-item ${selectedFileIds.length === 0 ? 'selected' : ''}`}
+                                    className={`popover-item kb-all-item ${selectedFileIds.length === 0 ? 'selected' : ''}`}
                                     onClick={handleClearSelection}
                                 >
                                     <input
@@ -368,7 +363,7 @@ export const Composer = ({
                                         onChange={() => {}}
                                     />
                                     <div className="item-icon">
-                                        <Globe size={14} color="#2563EB" />
+                                        <Globe size={14} />
                                     </div>
                                     <div className="item-info">
                                         <div className="item-name">All Knowledge Base (Everything)</div>
@@ -399,7 +394,7 @@ export const Composer = ({
                                         <div key={groupName} className="popover-group">
                                             <div className="group-header">
                                                 <div className="group-title">
-                                                    <Database size={13} color="#0D7377" />
+                                                    <Database size={13} className="group-title-icon" />
                                                     <span>{groupName}</span>
                                                 </div>
                                                 <button
@@ -417,12 +412,6 @@ export const Composer = ({
                                             {/* Whole Database Selectable Row */}
                                             <div
                                                 className={`popover-item whole-db-item ${allSelected ? 'selected' : ''}`}
-                                                style={{
-                                                    background: allSelected ? 'rgba(13, 115, 119, 0.12)' : 'rgba(241, 245, 249, 0.65)',
-                                                    borderLeft: allSelected ? '3px solid #0D7377' : '3px solid transparent',
-                                                    margin: '0.2rem 0 0.4rem',
-                                                    padding: '0.45rem 0.65rem'
-                                                }}
                                                 onClick={handleToggleWholeGroup}
                                             >
                                                 <input
@@ -432,13 +421,13 @@ export const Composer = ({
                                                     onChange={() => {}}
                                                 />
                                                 <div className="item-icon">
-                                                    <Database size={14} color="#0D7377" />
+                                                    <Database size={14} />
                                                 </div>
                                                 <div className="item-info">
-                                                    <div className="item-name" style={{ color: '#0F172A', fontWeight: 700, fontSize: '0.86rem' }}>
-                                                        ⭐ {groupName} (Whole Database)
+                                                    <div className="item-name">
+                                                        {groupName} (Whole Database)
                                                     </div>
-                                                    <div className="item-sub" style={{ color: '#0D7377', fontWeight: 500 }}>
+                                                    <div className="item-sub">
                                                         {groupChunks.toLocaleString()} chunks across all {files.length} tables
                                                     </div>
                                                 </div>
@@ -450,8 +439,7 @@ export const Composer = ({
                                                 return (
                                                     <div
                                                         key={f.file_id}
-                                                        className={`popover-item ${isChecked ? 'selected' : ''}`}
-                                                        style={{ paddingLeft: '1.25rem' }}
+                                                        className={`popover-item db-table-item ${isChecked ? 'selected' : ''}`}
                                                         onClick={() => handleToggleFile(f.file_id)}
                                                     >
                                                         <input
@@ -460,8 +448,8 @@ export const Composer = ({
                                                             checked={isChecked}
                                                             onChange={() => {}}
                                                         />
-                                                        <div className="item-icon">
-                                                            <span style={{ fontSize: '0.75rem', color: '#94A3B8' }}>↳</span>
+                                                        <div className="item-icon table-icon">
+                                                            <span className="table-icon-arrow">↳</span>
                                                         </div>
                                                         <div className="item-info">
                                                             <div className="item-name">{f.table_name || f.filename}</div>
@@ -469,7 +457,7 @@ export const Composer = ({
                                                                 {f.chunk_count > 0 ? (
                                                                     `${f.chunk_count.toLocaleString()} chunks`
                                                                 ) : (
-                                                                    <span style={{ color: '#9CA3AF' }}>Empty table (0 chunks)</span>
+                                                                    <span className="empty-chunk-note">Empty table (0 chunks)</span>
                                                                 )}
                                                             </div>
                                                         </div>
@@ -485,7 +473,7 @@ export const Composer = ({
                                     <div className="popover-group">
                                         <div className="group-header">
                                             <div className="group-title">
-                                                <FileText size={13} color="#4B5563" />
+                                                <FileText size={13} className="group-title-icon" />
                                                 <span>Uploaded Files</span>
                                             </div>
                                         </div>
@@ -503,8 +491,8 @@ export const Composer = ({
                                                         checked={isChecked}
                                                         onChange={() => {}}
                                                     />
-                                                    <div className="item-icon">
-                                                        <FileText size={13} color="#4B5563" />
+                                                    <div className="item-icon file-icon">
+                                                        <FileText size={13} />
                                                     </div>
                                                     <div className="item-info">
                                                         <div className="item-name">{f.filename}</div>
@@ -653,13 +641,7 @@ export const Composer = ({
             </div>
             <div className="chat-footer">
                 <div className="footer-item">
-                    <Lock size={12} /> End-to-End Encrypted
-                </div>
-                <div className="footer-item">
-                    <ShieldCheck size={12} /> No data leaves your machine
-                </div>
-                <div className="footer-item">
-                    <Zap size={12} /> Deterministic Output
+                    <ShieldCheck size={12} /> Local AI · 100% offline &amp; private
                 </div>
             </div>
         </div>

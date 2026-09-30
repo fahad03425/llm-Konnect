@@ -1,0 +1,58 @@
+[
+  {
+    "id": 1,
+    "title": "Cashier Anomaly & Return Rate",
+    "question": "Which cashier has the highest return or refund rate percentage relative to their total sales transactions in the dataset?",
+    "route": "analytics",
+    "timing": 18.31,
+    "answer": "**Analytics results**\n\n- Total Refunds: PKR 4,360,982.05\n- Refund Rate %: 19.66%"
+  },
+  {
+    "id": 2,
+    "title": "Supplier Concentration Risk",
+    "question": "What percentage of total procurement budget is concentrated in the top 3 suppliers?",
+    "route": "analytics",
+    "timing": 0.64,
+    "answer": "**Analytics results**\n\n- Expense Breakdown by Supplier: PKR 102,503,146.40\n- Top results: Habib Pharma Traders (PKR 14,657,364.00), Novartis Pakistan Ltd (PKR 13,668,066.80), GSK Distribution Karachi (PKR 13,556,440.60), AGP Pharma Distributors (PKR 13,477,226.40), Zafar Brothers Wholesale Medicine (PKR 13,262,559.20)"
+  },
+  {
+    "id": 3,
+    "title": "Supply Chain Capital Lockup",
+    "question": "How much total capital is locked in Pending or Partially Received purchase orders?",
+    "route": "analytics",
+    "timing": 0.36,
+    "answer": "**Analytics results**\n\n- Total Expenses: PKR 102,503,146.40\n- Expense Breakdown by Category: PKR 102,503,146.40\n- Top results: Medical Device (PKR 47,411,770.00), Antidiabetic (PKR 19,216,029.00), Vitamin (PKR 12,673,726.50), Baby Care (PKR 5,113,070.00), Ophthalmic (PKR 3,357,264.00)"
+  },
+  {
+    "id": 4,
+    "title": "Category Return Rate Vulnerability",
+    "question": "Which product category has the highest return rate percentage in the dataset?",
+    "route": "analytics",
+    "timing": 0.53,
+    "answer": "**Analytics results**\n\n- Total Refunds: PKR 4,360,982.05\n- Refund Rate %: 19.66%"
+  },
+  {
+    "id": 5,
+    "title": "Discount vs Full-Price Return Correlation",
+    "question": "What is the return rate percentage of discounted sales compared to full-price sales?",
+    "route": "rag",
+    "timing": 21.37,
+    "answer": "The return rate percentage of discounted sales compared to full-price sales:\n- Discounted sales: 30% (Rs 10.0 * 50%) and Rs 2.5 (Rs 10.0 * 5 + Rs 0.0)\n- Full-price sales: Rs 45.0, Rs 47.5, Rs 45.0, Rs 47.5\n\nThe return rate is calculated as:\n\\[ \\frac{30\\%}{(Rs 45.0 + Rs 47.5 + Rs 45.0 + Rs 47.5)} = \\frac{30\\%}{Rs 180} = 16.67\\% \\]\n\nSo, the return rate is approximately 16.67%."
+  },
+  {
+    "id": 6,
+    "title": "Peak-Hour Payment Method Shift",
+    "question": "What is the distribution of payment methods during peak evening hours (17:00 to 22:00) compared to morning hours?",
+    "route": "rag",
+    "timing": 6.59,
+    "answer": "The provided data does not include specific information about peak evening hours versus morning hours for payment methods used during transactions. Therefore, no records found for that query in the connected data sources."
+  },
+  {
+    "id": 7,
+    "title": "Procurement Realization Deficit (Capital Drag)",
+    "question": "Which products have the highest purchase spend compared to sales revenue?",
+    "route": "analytics",
+    "timing": 0.65,
+    "answer": "**Analytics results**\n\n- Total Expenses: PKR 102,503,146.40\n- Expense Breakdown by Category: PKR 102,503,146.40\n- Top results: Medical Device (PKR 47,411,770.00), Antidiabetic (PKR 19,216,029.00), Vitamin (PKR 12,673,726.50), Baby Care (PKR 5,113,070.00), Ophthalmic (PKR 3,357,264.00)"
+  }
+]

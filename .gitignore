@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 .env
 .pytest_cache/
+.test-python313/
+.test-python313-embed.zip
+.test-wheelhouse/
+.test-tmp/
 
 data/storage/
 backend/data/storage/

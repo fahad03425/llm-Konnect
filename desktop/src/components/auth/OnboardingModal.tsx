@@ -33,7 +33,7 @@ export default function OnboardingModal() {
             completeOnboarding({
                 accountName: accountName.trim(),
                 organization: organization.trim() || 'My Enterprise',
-                email: email.trim() || 'admin@llm-konnect.local',
+                email: email.trim() || 'admin@konnect.ai',
                 domain: selectedDomain
             });
         }
@@ -54,11 +54,11 @@ export default function OnboardingModal() {
                     <div className="onboarding-badge">
                         <Sparkles size={14} /> Initial Setup & Customization
                     </div>
-                    <h2 className="onboarding-title">Welcome to LLM-KONNECT</h2>
+                    <h2 className="onboarding-title">Welcome to KonnectAI</h2>
                     <p className="onboarding-subtitle">
                         {step === 1 && "Let's set up your administrator profile to get started with local data intelligence."}
                         {step === 2 && "Choose your primary business domain. The entire interface, data ingestion, and AI pipelines will be tailored for you."}
-                        {step === 3 && "Review your configuration and launch your customized LLM-KONNECT workspace."}
+                        {step === 3 && "Review your configuration and launch your customized KonnectAI workspace."}
                     </p>
 
                     {/* Stepper */}

@@ -19,10 +19,10 @@ from app.security.crypto import decrypt_file_to_bytes, is_encrypted_file
 
 
 def _parse_tally_number(val: Optional[str]) -> float:
-    """Extracts numeric float value from Tally strings like '50 Box', '18.00/Box', '-900.00'."""
+    """Extracts numeric float value from Tally strings like '50 Box', '18.00/Box', '-900.00', '1,234.50'."""
     if not val:
         return 0.0
-    val = val.strip()
+    val = str(val).strip().replace(",", "")
     match = re.search(r"[-+]?\d*\.?\d+", val)
     if match:
         try:

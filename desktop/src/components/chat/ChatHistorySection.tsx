@@ -66,15 +66,15 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
     const getDomainBadge = (dom: string) => {
         switch (dom?.toLowerCase()) {
             case 'pharmacy':
-                return { label: '💊 Pharmacy & Health', color: '#0D7377', bg: 'rgba(13, 115, 119, 0.1)' };
+                return { label: 'Pharmacy & Health', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
             case 'retail':
-                return { label: '🛒 Retail & E-Commerce', color: '#D97706', bg: 'rgba(217, 119, 6, 0.1)' };
+                return { label: 'Retail & E-Commerce', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
             case 'finance':
-                return { label: '💳 Financial Services', color: '#2563EB', bg: 'rgba(37, 99, 235, 0.1)' };
+                return { label: 'Financial Services', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
             case 'fmcg':
-                return { label: '📦 FMCG & CPG', color: '#059669', bg: 'rgba(5, 150, 105, 0.1)' };
+                return { label: 'FMCG & CPG', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
             default:
-                return { label: `🏢 ${dom || 'General'}`, color: '#6B7280', bg: 'rgba(107, 114, 128, 0.1)' };
+                return { label: dom || 'General', color: '#9ca3af', bg: 'rgba(255, 255, 255, 0.08)' };
         }
     };
 
@@ -93,18 +93,13 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
                 <div className="history-header-left">
                     <div className="history-title-row">
                         <div className="history-icon-badge">
-                            <MessageSquare size={20} />
+                            <MessageSquare size={18} />
                         </div>
-                        <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                <h3>Conversation History</h3>
-                                <span className="history-count-badge">
-                                    {sessions.length} {sessions.length === 1 ? 'saved chat' : 'saved chats'}
-                                </span>
-                            </div>
-                            <p className="history-subtitle">
-                                Reopen past conversations to review answers or continue asking questions from where you left off.
-                            </p>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                            <h3>Conversation History</h3>
+                            <span className="history-count-badge">
+                                {sessions.length} {sessions.length === 1 ? 'chat' : 'chats'}
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -138,7 +133,7 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
                                 onClick={() => setConfirmClear(true)}
                                 title="Clear all conversation history"
                             >
-                                <Trash2 size={14} /> Clear History
+                                <Trash2 size={13} /> Clear History
                             </button>
                         )
                     )}
@@ -147,11 +142,11 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
 
             <div className="history-toolbar">
                 <div className="history-search-wrapper">
-                    <Search size={15} className="history-search-icon" />
+                    <Search size={14} className="history-search-icon" />
                     <input 
                         type="text"
                         className="history-search-input"
-                        placeholder="Search conversations by keyword or question..."
+                        placeholder="Search conversations..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                     />
@@ -161,14 +156,14 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
                 </div>
 
                 <div className="history-filter-group">
-                    <Filter size={14} className="history-filter-icon" />
+                    <Filter size={13} className="history-filter-icon" />
                     <select 
                         className="history-domain-select"
                         value={domainFilter}
                         onChange={(e) => setDomainFilter(e.target.value as 'all' | 'current')}
                     >
                         <option value="all">All Domains ({sessions.length})</option>
-                        <option value="current">Current Domain Only ({sessions.filter(s => s.domain?.toLowerCase() === currentDomain.toLowerCase()).length})</option>
+                        <option value="current">Current Domain ({sessions.filter(s => s.domain?.toLowerCase() === currentDomain.toLowerCase()).length})</option>
                     </select>
                 </div>
             </div>
@@ -180,26 +175,17 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
                 </div>
             ) : filteredSessions.length === 0 ? (
                 <div className="history-empty-card">
-                    <div className="history-empty-icon">
-                        <Sparkles size={28} />
-                    </div>
-                    {sessions.length === 0 ? (
-                        <>
-                            <h4>No saved conversations yet</h4>
-                            <p>Every chat query and response is automatically saved. Type a question above to start building your history!</p>
-                        </>
-                    ) : (
-                        <>
-                            <h4>No matching conversations found</h4>
-                            <p>No chat sessions matched your search query "{searchQuery}". Try changing your search or filter.</p>
-                            <button className="btn-reset-filters" onClick={() => { setSearchQuery(''); setDomainFilter('all'); }}>
-                                Reset Filters
-                            </button>
-                        </>
+                    <Sparkles size={24} className="history-empty-icon" />
+                    <h4>{sessions.length === 0 ? 'No saved conversations' : 'No matching conversations'}</h4>
+                    <p>{sessions.length === 0 ? 'Conversations will appear here as you chat.' : `No chat sessions matched "${searchQuery}".`}</p>
+                    {sessions.length > 0 && (
+                        <button className="btn-reset-filters" onClick={() => { setSearchQuery(''); setDomainFilter('all'); }}>
+                            Reset Filters
+                        </button>
                     )}
                 </div>
             ) : (
-                <div className="history-grid">
+                <div className="history-list">
                     {filteredSessions.map((session) => {
                         const isActive = session.id === activeSessionId;
                         const domainBadge = getDomainBadge(session.domain);
@@ -207,69 +193,58 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
                         return (
                             <div 
                                 key={session.id} 
-                                className={`history-card ${isActive ? 'active-chat' : ''}`}
+                                className={`history-row ${isActive ? 'active-chat' : ''}`}
                                 onClick={() => onResumeSession(session.id)}
                             >
-                                <div className="history-card-top">
-                                    <div className="history-card-header-left">
+                                <div className="history-row-left">
+                                    <div className="history-row-icon">
+                                        <MessageSquare size={14} />
+                                    </div>
+                                    <div className="history-row-content">
+                                        <span className="history-row-title" title={session.title}>
+                                            {session.title || 'Untitled Conversation'}
+                                        </span>
+                                        {session.last_message && (
+                                            <span className="history-row-snippet" title={session.last_message}>
+                                                — {session.last_message}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="history-row-right">
+                                    {session.domain && session.domain.toLowerCase() !== currentDomain?.toLowerCase() && (
                                         <span 
                                             className="history-domain-pill"
                                             style={{ color: domainBadge.color, backgroundColor: domainBadge.bg }}
                                         >
                                             {domainBadge.label}
                                         </span>
-                                        {isActive && (
-                                            <span className="history-active-badge">
-                                                <span className="pulse-dot"></span> Active Now
-                                            </span>
-                                        )}
-                                    </div>
-
-                                    <div className="history-card-meta">
-                                        <span className="history-time" title={new Date(session.updated_at).toLocaleString()}>
-                                            <Clock size={12} /> {formatTime(session.updated_at)}
+                                    )}
+                                    {isActive && (
+                                        <span className="history-active-badge">
+                                            <span className="pulse-dot"></span> Active
                                         </span>
-                                        <button 
-                                            className="history-delete-item-btn"
-                                            title="Delete this conversation"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (window.confirm("Are you sure you want to delete this conversation?")) {
-                                                    onDeleteSession(session.id);
-                                                }
-                                            }}
-                                        >
-                                            <Trash2 size={13} />
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <h4 className="history-card-title" title={session.title}>
-                                    {session.title || 'Untitled Conversation'}
-                                </h4>
-
-                                {session.last_message && (
-                                    <p className="history-card-snippet">
-                                        "{session.last_message}"
-                                    </p>
-                                )}
-
-                                <div className="history-card-footer">
-                                    <div className="history-message-count">
-                                        <MessageSquare size={13} />
-                                        <span>{session.message_count} {session.message_count === 1 ? 'message' : 'messages'}</span>
-                                    </div>
-
+                                    )}
+                                    <span className="history-pill-msgs">
+                                        {session.message_count} {session.message_count === 1 ? 'msg' : 'msgs'}
+                                    </span>
+                                    <span className="history-row-time" title={new Date(session.updated_at).toLocaleString()}>
+                                        <Clock size={12} /> {formatTime(session.updated_at)}
+                                    </span>
                                     <button 
-                                        className={`btn-resume-chat ${isActive ? 'btn-resume-active' : ''}`}
+                                        className="history-delete-item-btn"
+                                        title="Delete this conversation"
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            onResumeSession(session.id);
+                                            if (window.confirm("Are you sure you want to delete this conversation?")) {
+                                                onDeleteSession(session.id);
+                                            }
                                         }}
                                     >
-                                        <span>{isActive ? 'Current Chat' : 'Resume Conversation'}</span>
-                                        <ChevronRight size={14} />
+                                        <Trash2 size={13} />
                                     </button>
+                                    <ChevronRight size={14} className="history-row-arrow" />
                                 </div>
                             </div>
                         );

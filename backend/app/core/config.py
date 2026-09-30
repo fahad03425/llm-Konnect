@@ -15,9 +15,9 @@ class Settings(BaseSettings):
     
     # Ollama
     ollama_host: str = "http://127.0.0.1:11434"
-    llm_model: str = "qwen2.5:3b"
-    llm_keep_alive: str = "30m"  # keeps model in VRAM for instant subsequent responses
-    llm_keep_alive_chat: str = "30m"  # keeps model in VRAM for interactive chat
+    llm_model: str = "qwen2.5:1.5b"
+    llm_keep_alive: str = "5m"  # automatically unloads from RAM after 5m idle
+    llm_keep_alive_chat: str = "5m"  # automatically unloads after 5m idle
     llm_num_predict: int = 256
     llm_chat_history_size: int = 3
     llm_temperature: float = 0.2
@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     vault_key_path: str = "data/.vault_key"
     # Domain configuration
     default_domain: str = "pharmacy"
+    # Security & Tokens
+    api_token: str = "local-dev-api-token-2026"
 
     model_config = SettingsConfigDict(env_prefix="KONNECT_")
 

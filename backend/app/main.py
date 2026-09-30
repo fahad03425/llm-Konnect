@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Safely pre-warm embedding model and LLM in background daemon thread
+    # Safely pre-warm embedding model in background daemon thread (LLM is lazy-loaded on demand)
     def _prewarm():
         try:
             kb_inst = KnowledgeBase()
@@ -17,13 +17,6 @@ async def lifespan(app: FastAPI):
             print("[Startup] Embedding model pre-warmed and ready.")
         except Exception as e:
             print(f"[Startup] Embedding model warm-up notice: {e}")
-        try:
-            from app.core.llm import llm
-            client = llm._get_client()
-            active_model = llm._resolve_model(client)
-            print(f"[Startup] Local LLM ({active_model}) ready.")
-        except Exception as e:
-            print(f"[Startup] Local LLM warm-up notice: {e}")
 
     threading.Thread(target=_prewarm, daemon=True).start()
 
