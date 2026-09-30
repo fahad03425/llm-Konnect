@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from app.core.config import settings, get_default_domain
 from app.core.llm import llm
+from app.reporting.grounding import parse_response
 
 try:
     from app.analytics.models import KPIResult
@@ -310,7 +311,7 @@ def generate_weekly_executive_lead(
             f"Weekly executive lead generation failed — Ollama inference error: {exc}"
         ) from exc
 
-    return lead.strip()
+    return parse_response(lead.strip(), report_data_or_kpis)
 
 
 def generate_narrative(
@@ -386,4 +387,4 @@ def generate_narrative(
             f"Narrative generation failed — Ollama inference error: {exc}"
         ) from exc
 
-    return narrative.strip()
+    return parse_response(narrative.strip(), report_data_or_kpis)

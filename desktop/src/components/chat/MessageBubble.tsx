@@ -20,12 +20,34 @@ export const MessageBubble: React.FC<{ msg: Message; isLatest: boolean }> = ({ m
         // Normalize unseparated multi-table lists like "... Total amount For tbl_PurchaseHeader: - Date..."
         let normalized = content
             .replace(/([^\n])\s+(For\s+[\w_]+:)/g, '$1\n\n$2')
-            .replace(/([^\n])\s+([•\-*]\s+)/g, '$1\n$2');
+            .split('\n')
+            .map(line => line.includes('|') ? line : line.replace(/([^\n])\s+([•\-*]\s+)/g, '$1\n$2'))
+            .join('\n');
 
         const blocks = normalized.split(/\n\n+/);
 
         return blocks.map((block, bIdx) => {
             const lines = block.split(/\n/);
+            const isMarkdownTable = lines.length >= 2
+                && lines[0].includes('|')
+                && /^\s*\|?\s*:?-{3,}/.test(lines[1]);
+
+            if (isMarkdownTable) {
+                const cells = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+                const headers = cells(lines[0]);
+                const rows = lines.slice(2).filter(line => line.includes('|')).map(cells);
+                return (
+                    <div className="message-table-wrap" key={bIdx}>
+                        <table className="message-table">
+                            <thead><tr>{headers.map((header, index) => <th key={index}>{header}</th>)}</tr></thead>
+                            <tbody>{rows.map((row, rowIndex) => (
+                                <tr key={rowIndex}>{headers.map((_, cellIndex) => <td key={cellIndex}>{row[cellIndex] ?? ''}</td>)}</tr>
+                            ))}</tbody>
+                        </table>
+                    </div>
+                );
+            }
+
             const isBulletList = lines.every(l => l.trim().startsWith('- ') || l.trim().startsWith('• ') || l.trim().startsWith('* ') || l.trim().length === 0);
 
             if (isBulletList && lines.some(l => l.trim().length > 0)) {

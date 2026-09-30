@@ -495,10 +495,10 @@ def test_chatbot_expiry_question_number_comes_from_code_not_llm(stock):
     assert response.route == "analytics"
     assert response.computed_values["near_expiry_total"]["value"] == 2500.0
 
-    # The prompt handed to the LLM contained the already-computed figure.
-    prompt = llm.chat.call_args.kwargs["messages"][-1]["content"]
-    assert "2500.0" in prompt
-    assert "Computed Values from Analytics Engine" in prompt
+    # Analytics answers are rendered directly from deterministic values; the
+    # language model must not rewrite or override a computed financial amount.
+    llm.chat.assert_not_called()
+    assert "2,500" in response.answer or "2500" in response.answer
 
     # And the sources point back at the at-risk rows.
     assert sorted(s.source_row for s in response.sources) == [4, 5, 6, 7, 8, 9]

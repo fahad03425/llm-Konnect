@@ -324,6 +324,36 @@
     word-break: break-word;
 }
 
+.message-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+}
+
+.message-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    white-space: normal;
+}
+
+.message-table th,
+.message-table td {
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border-color);
+    text-align: left;
+    vertical-align: top;
+}
+
+.message-table th {
+    background: rgba(128, 128, 128, 0.08);
+    font-weight: 600;
+}
+
+.message-table td:nth-child(n+2) {
+    font-variant-numeric: tabular-nums;
+}
+
 .message-wrapper.user .bubble {
     background: var(--brand-green);
     color: #ffffff;

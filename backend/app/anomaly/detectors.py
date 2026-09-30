@@ -511,6 +511,185 @@ def detect_stock_movement_mismatch(df: pd.DataFrame) -> List[AnomalyRecord]:
     return anomalies
 
 
+def detect_ecommerce_margin_erosion(df: pd.DataFrame) -> List[AnomalyRecord]:
+    """
+    Detect e-commerce line items sold below cost price (negative profit / severe margin erosion).
+    """
+    anomalies: List[AnomalyRecord] = []
+    if df.empty:
+        return anomalies
+
+    cost_col = None
+    for cand in ["cost_per_item", "cost", "cogs"]:
+        if cand in df.columns and df[cand].notna().any():
+            cost_col = cand
+            break
+
+    price_col = None
+    for cand in ["unit_price", "price", "sale_amount", "amount"]:
+        if cand in df.columns and df[cand].notna().any():
+            price_col = cand
+            break
+
+    if not cost_col or not price_col:
+        return anomalies
+
+    clean_df = df.copy()
+    clean_df["_cost"] = pd.to_numeric(clean_df[cost_col], errors="coerce")
+    clean_df["_price"] = pd.to_numeric(clean_df[price_col], errors="coerce")
+    clean_df["_qty"] = pd.to_numeric(clean_df["quantity"], errors="coerce").fillna(1.0) if "quantity" in clean_df.columns else 1.0
+
+    valid_mask = clean_df["_cost"].notna() & clean_df["_price"].notna() & (clean_df["_cost"] > 0)
+    valid_df = clean_df[valid_mask]
+
+    for idx, row in valid_df.iterrows():
+        unit_cost = float(row["_cost"])
+        unit_price = float(row["_price"])
+        if unit_price < unit_cost:
+            loss_per_unit = unit_cost - unit_price
+            loss_pct = (loss_per_unit / unit_cost) * 100.0
+            row_ref = _get_row_ref(row, int(idx) if isinstance(idx, int) else 0)
+            severity = Severity.HIGH if (loss_pct > 25.0 or loss_per_unit > 50.0) else Severity.MEDIUM
+
+            prod_name = str(row.get("product_name") or row.get("product_sku") or row.get("product_id") or "Item")
+            order_id = str(row.get("order_id") or row.get("invoice_id") or "")
+
+            anomalies.append(
+                AnomalyRecord(
+                    id=f"anom_mrg_{uuid.uuid4().hex[:8]}",
+                    anomaly_type=AnomalyType.MARGIN_EROSION,
+                    severity=severity,
+                    metric_name="margin_erosion",
+                    observed_value=round(unit_price, 2),
+                    expected_range=f">= {unit_cost:.2f} (unit cost)",
+                    statistical_score=round(loss_per_unit, 2),
+                    method="unit_economics_check",
+                    source_row=row_ref,
+                    source_file=str(row.get("source_file") or ""),
+                    metadata={
+                        "product_name": prod_name,
+                        "order_id": order_id,
+                        "unit_price": round(unit_price, 2),
+                        "unit_cost": round(unit_cost, 2),
+                        "loss_per_unit": round(loss_per_unit, 2),
+                        "loss_pct": round(loss_pct, 2),
+                    },
+                )
+            )
+
+    return anomalies
+
+
+def detect_ecommerce_refund_surges(df: pd.DataFrame) -> List[AnomalyRecord]:
+    """
+    Detect e-commerce products with abnormal refund rates (> 20% on >= 3 orders).
+    """
+    anomalies: List[AnomalyRecord] = []
+    if df.empty:
+        return anomalies
+
+    sku_col = None
+    for cand in ["product_sku", "product_name", "product_id"]:
+        if cand in df.columns and df[cand].notna().any():
+            sku_col = cand
+            break
+
+    if not sku_col or "refund_amount" not in df.columns:
+        return anomalies
+
+    clean_df = df.copy()
+    clean_df["_refund"] = pd.to_numeric(clean_df["refund_amount"], errors="coerce").fillna(0.0)
+    clean_df["_sales"] = pd.to_numeric(clean_df["sale_amount"] if "sale_amount" in clean_df.columns else clean_df.get("amount", 0.0), errors="coerce").fillna(0.0)
+
+    for sku, grp in clean_df.groupby(sku_col):
+        if len(grp) < 2:
+            continue
+        total_sales = float(grp["_sales"].sum())
+        total_refund = float(grp["_refund"].sum())
+        if total_sales > 0 and total_refund > 0:
+            refund_rate = (total_refund / total_sales) * 100.0
+            if refund_rate > 20.0 and total_refund >= 20.0:
+                first_row = grp.iloc[0]
+                row_ref = _get_row_ref(first_row, int(grp.index[0]) if isinstance(grp.index[0], int) else 0)
+                severity = Severity.HIGH if refund_rate > 40.0 else Severity.MEDIUM
+
+                anomalies.append(
+                    AnomalyRecord(
+                        id=f"anom_ref_{uuid.uuid4().hex[:8]}",
+                        anomaly_type=AnomalyType.REFUND_SURGE,
+                        severity=severity,
+                        metric_name="refund_surge",
+                        observed_value=round(refund_rate, 2),
+                        expected_range="< 10.0% refund rate",
+                        statistical_score=round(refund_rate, 2),
+                        method="product_refund_ratio",
+                        source_row=row_ref,
+                        source_file=str(first_row.get("source_file") or ""),
+                        metadata={
+                            "product_sku": str(sku),
+                            "product_name": str(first_row.get("product_name") or sku),
+                            "total_sales": round(total_sales, 2),
+                            "total_refund": round(total_refund, 2),
+                            "refund_rate_pct": round(refund_rate, 2),
+                        },
+                    )
+                )
+
+    return anomalies
+
+
+def detect_ecommerce_review_rating_drops(df: pd.DataFrame) -> List[AnomalyRecord]:
+    """
+    Detect e-commerce products with low average customer satisfaction (average rating < 3.0 on >= 2 reviews).
+    """
+    anomalies: List[AnomalyRecord] = []
+    if df.empty or "rating" not in df.columns:
+        return anomalies
+
+    sku_col = None
+    for cand in ["product_name", "product_sku", "product_id"]:
+        if cand in df.columns and df[cand].notna().any():
+            sku_col = cand
+            break
+
+    if not sku_col:
+        return anomalies
+
+    clean_df = df.copy()
+    clean_df["_rating"] = pd.to_numeric(clean_df["rating"], errors="coerce")
+    valid_reviews = clean_df[clean_df["_rating"].notna() & (clean_df["_rating"] > 0)]
+
+    for sku, grp in valid_reviews.groupby(sku_col):
+        if len(grp) >= 2:
+            avg_r = float(grp["_rating"].mean())
+            if avg_r < 3.0:
+                first_row = grp.iloc[0]
+                row_ref = _get_row_ref(first_row, int(grp.index[0]) if isinstance(grp.index[0], int) else 0)
+                severity = Severity.HIGH if avg_r <= 2.0 else Severity.MEDIUM
+
+                anomalies.append(
+                    AnomalyRecord(
+                        id=f"anom_rev_{uuid.uuid4().hex[:8]}",
+                        anomaly_type=AnomalyType.REVIEW_RATING_DROP,
+                        severity=severity,
+                        metric_name="review_rating_drop",
+                        observed_value=round(avg_r, 2),
+                        expected_range=">= 4.0 stars",
+                        statistical_score=round(5.0 - avg_r, 2),
+                        method="rating_cluster_analysis",
+                        source_row=row_ref,
+                        source_file=str(first_row.get("source_file") or ""),
+                        metadata={
+                            "product": str(sku),
+                            "average_rating": round(avg_r, 2),
+                            "review_count": len(grp),
+                        },
+                    )
+                )
+
+    return anomalies
+
+
 def detect_all_anomalies(df: pd.DataFrame, domain: Optional[str] = None) -> AnomalyScanResult:
     """
     Master runner: Executes all statistical detectors, compiles summary,
@@ -537,9 +716,13 @@ def detect_all_anomalies(df: pd.DataFrame, domain: Optional[str] = None) -> Anom
     # 5. Zero or Negative Pricing
     all_anomalies.extend(detect_negative_or_zero_prices(df))
 
-    # 6. Domain-specific checks (Pharmacy inventory shrinkage)
+    # 6. Domain-specific checks
     if effective_domain and str(effective_domain).strip().lower() == "pharmacy":
         all_anomalies.extend(detect_stock_movement_mismatch(df))
+    elif effective_domain and str(effective_domain).strip().lower() == "ecommerce":
+        all_anomalies.extend(detect_ecommerce_margin_erosion(df))
+        all_anomalies.extend(detect_ecommerce_refund_surges(df))
+        all_anomalies.extend(detect_ecommerce_review_rating_drops(df))
 
     # Severity ordering: HIGH > MEDIUM > LOW
     severity_order = {Severity.HIGH: 0, Severity.MEDIUM: 1, Severity.LOW: 2}

@@ -115,21 +115,40 @@ def test_api_sql_discover_and_ingest(temp_pharmacy_db):
         })
         assert ingest_res.status_code == 200
         ingest_data = ingest_res.json()
-        assert ingest_data["success"] is True
+        assert ingest_data["success"] is True, f"Ingestion failed: {ingest_data}"
         assert ingest_data["database_name"] == "MockTestPOS"
         assert ingest_data["total_tables"] == 3
         assert ingest_data["total_rows"] == 7
         assert ingest_data["total_chunks"] >= 7
+
+        # A requested table failure must be visible as an incomplete ingestion,
+        # even when another table in the same request is already indexed.
+        partial_res = client.post("/api/kb/ingest-database", json={
+            "connection_string": f"sqlite:///{temp_pharmacy_db}",
+            "db_type": "sqlite",
+            "domain": "pharmacy",
+            "strategy": "row",
+            "tables": ["transactions", "missing_table"],
+        })
+        assert partial_res.status_code == 200
+        partial_data = partial_res.json()
+        assert partial_data["success"] is False
+        assert partial_data["error_tables"] == 1
+        assert "missing_table" in partial_data["message"]
         
         # Verify records in file registry
         registered_files = file_registry.list_files(include_all=True)
         db_records = [f for f in registered_files if f.group_name == "MockTestPOS"]
-        assert len(db_records) == 3
+        active_records = [f for f in db_records if f.status == "active"]
+        failed_records = [f for f in db_records if f.table_name == "missing_table"]
+        assert len(active_records) == 3
+        assert len(failed_records) == 1
+        assert failed_records[0].status == "failed"
         
         # 3. Delete database group endpoint
         del_res = client.delete("/api/kb/database/MockTestPOS")
         assert del_res.status_code == 200
-        assert del_res.json()["deleted_tables"] == 3
+        assert del_res.json()["deleted_tables"] == 4
     finally:
         try:
             client.delete("/api/kb/database/MockTestPOS")

@@ -236,7 +236,7 @@ export default function Chatbot() {
     const fetchSessions = async () => {
         setIsLoadingSessions(true);
         try {
-            const res = await fetch('/api/chat/sessions');
+            const res = await fetch(`/api/chat/sessions?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 setSessions(data.sessions || []);
@@ -273,6 +273,7 @@ export default function Chatbot() {
 
     useEffect(() => {
         fetchSources();
+        fetchSessions();
     }, [user.domain]);
 
     useEffect(() => {

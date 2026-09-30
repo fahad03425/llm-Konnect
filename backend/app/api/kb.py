@@ -456,6 +456,9 @@ def ingest_sql_database(req: IngestDatabaseRequest):
 
             if empty_tables:
                 msg += f" ({len(empty_tables)} empty tables skipped)."
+            if error_tables:
+                err_names = ", ".join(t['table_name'] for t in error_tables)
+                msg += f" ({len(error_tables)} tables failed: {err_names})."
             # Automatically save connection for continuous background auto-sync (<2ms DMV check)
             file_registry.save_db_connection(
                 database_name=database_name,
@@ -469,12 +472,13 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                 row_count=total_rows
             )
         elif len(error_tables) > 0:
-            msg = f"0 tables ingested from database '{database_name}'. {len(error_tables)} tables encountered errors."
+            err_names = ", ".join(t['table_name'] for t in error_tables)
+            msg = f"0 tables ingested from database '{database_name}'. {len(error_tables)} tables encountered errors ({err_names})."
         else:
             msg = f"0 tables ingested: all {len(empty_tables)} selected tables in database '{database_name}' contain 0 rows."
 
         return {
-            "success": len(successful_tables) > 0 or len(error_tables) == 0,
+            "success": len(error_tables) == 0 and (len(successful_tables) > 0 or len(empty_tables) > 0),
             "database_name": database_name,
             "db_type": req.db_type,
             "total_tables": len(tables_to_ingest),
@@ -498,6 +502,11 @@ def delete_database_group(database_name: str = Path(..., description="The databa
         for r in records:
             _kb.delete_source(r.file_id)
             _kb.delete_source(r.file_path)
+        try:
+            col = _kb._get_chroma()
+            col.delete(where={"group_name": database_name})
+        except Exception:
+            pass
         
         deleted_count = file_registry.delete_group(database_name)
         file_registry.delete_db_connection(database_name)

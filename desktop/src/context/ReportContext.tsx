@@ -220,11 +220,16 @@ export const ReportProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         if (formats.length === 0) formats.push('pdf');
 
         try {
+            const currentDomain = user?.domain || 'pharmacy';
+            const defaultBiz = currentDomain === 'ecommerce' 
+                ? (user?.organization ? `${user.organization} - E-Commerce Weekly Report` : 'E-Commerce Weekly Store Performance Report')
+                : (weeklyBusinessName || 'Pharmacy Weekly Executive Report');
+
             const payload = {
                 file_path: fileToUse,
-                domain: user?.domain || 'pharmacy',
-                business_name: weeklyBusinessName || 'Pharmacy Weekly Executive Report',
-                report_type: 'weekly_pharmacy',
+                domain: currentDomain,
+                business_name: weeklyBusinessName || defaultBiz,
+                report_type: currentDomain === 'pharmacy' ? 'weekly_pharmacy' : 'standard',
                 max_regeneration_attempts: weeklyAllowRetry ? 1 : 0,
                 formats: formats
             };

@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     vault_key_path: str = "data/.vault_key"
     # Domain configuration
     default_domain: str = "pharmacy"
+    # Security & Tokens
+    api_token: str = "local-dev-api-token-2026"
 
     model_config = SettingsConfigDict(env_prefix="KONNECT_")
 

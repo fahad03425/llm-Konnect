@@ -21,6 +21,10 @@ class AnomalyType(str, Enum):
     ABNORMAL_REFUND = "abnormal_refund"
     UNUSUAL_DISCOUNT = "unusual_discount"
     NEGATIVE_OR_ZERO_PRICE = "negative_or_zero_price"
+    MARGIN_EROSION = "margin_erosion"
+    REFUND_SURGE = "refund_surge"
+    REVIEW_RATING_DROP = "review_rating_drop"
+    STOCK_MOVEMENT_MISMATCH = "stock_movement_mismatch"
 
 
 class Severity(str, Enum):

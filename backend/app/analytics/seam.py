@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from app.language.roman_urdu import normalize_roman_urdu_intent
 from app.analytics.engine import KPIEngine, engine as default_engine
 from app.analytics.filters import KPIFilters
 from app.analytics.models import KPIResult
@@ -35,7 +36,8 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
       "expected sales", "agle mahine", "agle month"),
      ("revenue_forecast", "demand_forecast")),
     (("stock sold", "stock was sold", "units sold", "units were sold", "quantity sold",
-      "quantity was sold", "items sold", "items were sold", "how much stock", "how many units", "how many items"),
+      "quantity was sold", "items sold", "items were sold", "how much stock", "how many units", "how many items",
+      "kitni dawaiyan bechi", "kitni dawayian bechi", "kitni goliyan biki", "kitni dawa bechi", "kitni dawai bechi", "kitne item beche", "kitne units beche"),
      ("units_sold",)),
     (("rising", "fastest growing", "top movers", "growing fastest"), ("top_rising_products",)),
     (("declining", "falling", "dropping", "slowing down"), ("top_declining_products",)),
@@ -46,10 +48,10 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
       "duplicate invoice", "duplicate invoices", "abnormal refund", "fraud", "irregularity", "irregularities",
       "statistical scan", "audit risk", "suspicious"),
      ("anomaly_count", "anomaly_breakdown")),
-    (("margin", "margins"), ("gross_margin_pct", "net_margin_pct", "gross_profit")),
-    (("refund", "refunds", "return", "returns", "wapsi"),
+    (("margin", "margins", "munafay ki sharah"), ("gross_margin_pct", "net_margin_pct", "gross_profit")),
+    (("refund", "refunds", "return", "returns", "wapsi", "maal wapsi"),
      ("total_refunds", "refund_rate_pct")),
-    (("profit", "munafa", "nafa"), ("net_profit", "gross_profit", "total_revenue")),
+    (("profit", "munafa", "nafa", "faida", "fayda", "bachat"), ("net_profit", "gross_profit", "total_revenue")),
     (("highest total qty", "highest qty", "highest quantity", "total qty", "total quantity",
       "most purchased", "most bought", "qty purchased", "quantity purchased", "top qty",
       "top quantity", "most sold", "top selling by quantity", "by quantity", "most items", "highest items",
@@ -63,17 +65,17 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
       "ziada sale", "zyada sale", "dawai ki sale", "dawa ki sale", "kis dawai", "konsi dawai", "kon si dawai",
       "highest sale", "highest selling"),
      ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
-    (("expense", "expenses", "spend", "spent", "purchase", "purchases", "kharcha", "kharch"),
+    (("expense", "expenses", "spend", "spent", "purchase", "purchases", "kharcha", "kharch", "karcha", "akhrajat", "lagat", "laagat"),
      ("total_expenses", "expense_breakdown_by_category")),
     (("total revenue and average", "revenue and average", "sales and average", "average and total", "total and average", "total sales and average"),
      ("total_revenue", "average_transaction_value", "transaction_count")),
     (("average", "avg", "mean", "ausat"), ("average_transaction_value", "transaction_count")),
-    (("how many rows", "row count", "total rows", "number of rows", "dataset size", "total records", "how many records", "rows in this", "rows are in", "how many items are in this data"),
+    (("how many rows", "row count", "total rows", "number of rows", "dataset size", "total records", "how many records", "rows in this", "rows are in", "how many items are in this data", "transaction rows", "credit rows", "cash rows"),
      ("row_count", "transaction_count")),
     (("how many", "count", "number of", "kitne"), ("transaction_count",)),
     (("per month", "monthly", "by month", "each month"), ("revenue_by_month",)),
     (("by category", "per category"), ("revenue_breakdown_by_category",)),
-    (("revenue", "sales", "sale", "turnover", "total", "how much", "sum", "kitna", "bikri"),
+    (("revenue", "sales", "sale", "turnover", "total", "how much", "sum", "kitna", "bikri", "bikree", "farukht", "farokht", "frokt", "frokht", "aamdani", "amdani", "kamai", "udhar", "naqad", "naqd", "rokra", "galla"),
      ("total_revenue", "transaction_count")),
 ]
 
@@ -107,9 +109,18 @@ def select_kpi_keys(question: str, domain: str = "") -> List[str]:
     yields the same keys in the same order. Domain rules first, then core rules.
     First matching rule wins.
     """
-    q = (question or "").casefold()
-    for keywords, keys in list(_domain_rules(domain)) + _INTENT_RULES:
-        if any(word in q for word in keywords):
+    raw_q = (question or "").casefold()
+    q = normalize_roman_urdu_intent(question).casefold()
+    if (re.search(r"\b(cash|credit)\b", q) or re.search(r"\b(cash|credit)\b", raw_q)) and (re.search(r"\b(rows?|records?)\b", q) or re.search(r"\b(rows?|records?)\b", raw_q)):
+        return ["row_count"]
+
+    domain_rules = _domain_rules(domain)
+    for keywords, keys in domain_rules:
+        if any(word in q or word in raw_q for word in keywords):
+            return list(keys)
+
+    for keywords, keys in _INTENT_RULES:
+        if any(word in q or word in raw_q for word in keywords):
             return list(keys)
     return list(_DEFAULT_KEYS)
 
@@ -173,9 +184,21 @@ def compute_for_question(
     Returns (results_by_key, source_rows) where `source_rows` is the sorted union
     of the rows that contributed to any available result.
     """
+    question = normalize_roman_urdu_intent(question)
     active_engine = kpi_engine or default_engine
     kpi_filters = KPIFilters.from_dict(filters)
     keys = select_kpi_keys(question, domain)
+
+    # Specialized dataset-grain handling belongs to the active domain pack;
+    # the shared selector remains independent of any one business vocabulary.
+    try:
+        from app.analytics.domains import analyze_specialized_question
+        specialized = analyze_specialized_question(question, df, kpi_filters, domain)
+        if specialized is not None:
+            rows = specialized.provenance.source_rows if specialized.is_available else []
+            return {specialized.key: specialized}, rows
+    except ImportError:
+        pass
 
     # A per-product forecast needs to know WHICH product. Resolve it from the
     # question against the ids present in the data, rather than guessing.
@@ -257,10 +280,12 @@ class AnalyticsRouter:
     def compute(
         self,
         question: str,
-        filters: Dict[str, Any],
-        kb_records: Any,
+        filters: Any = None,
+        kb_records: Any = None,
         domain: str = "",
     ) -> Tuple[Optional[Dict[str, Any]], list]:
+        if isinstance(filters, (pd.DataFrame, list)) and (isinstance(kb_records, dict) or kb_records is None):
+            filters, kb_records = kb_records or {}, filters
         """
         Compute the numeric answer for a chat question.
 

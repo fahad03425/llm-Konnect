@@ -93,7 +93,7 @@ class KPIResult:
 
     key: str
     name: str
-    value: Optional[float]
+    value: Optional[Any]
     unit: str
     formula: str
     provenance: Provenance
@@ -120,7 +120,11 @@ class KPIResult:
         return {
             "key": self.key,
             "name": self.name,
-            "value": None if self.value is None else float(self.value),
+            "value": (
+                None if self.value is None
+                else float(self.value) if isinstance(self.value, (int, float))
+                else self.value
+            ),
             "unit": self.unit,
             "formula": self.formula,
             "status": self.status,

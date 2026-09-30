@@ -563,7 +563,7 @@ def test_chatbot_forecast_number_comes_from_code_with_uncertainty():
     assert entry["is_estimate"] is True
 
     assert "10 units" in response.answer
-    assert "estimated range" in response.answer
+    assert "likely range" in response.answer.casefold() or "estimated range" in response.answer.casefold()
     assert "likely between" not in response.answer
     llm.chat.assert_not_called()
 

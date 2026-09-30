@@ -16,8 +16,17 @@ class PharmacyDomainPack(DomainPack):
             "mfg_date", "pack_size", "barcode", "mrp", "drap_reg_no", 
             "schedule_flag", "scheme", "rack_location", "reorder_level", 
             "prescription_ref", "doctor_name", "mobile_number", "bonus_quantity",
+            "branch", "cashier_name", "client_type", "customer_alias",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
-            "opening_stock_qty", "closing_stock_qty", "status"
+            "opening_stock_qty", "closing_stock_qty", "status", "transaction_id",
+            "time_of_day", "is_cancelled", "stock_qty",
+            "supplier_name", "product_code", "net_payable", "tax_amount",
+            "discount_amount", "tax_pct", "margin_pct", "discount_pct",
+            "total_qty", "total_bonus", "total_items", "total_pack",
+            "invoice_total", "paid_amount", "customer_balance", "previous_balance",
+            "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
+            "line_discount_amount", "line_tax_amount", "invoice_discount",
+            "invoice_tax", "carriage_charges", "other_charges"
         ]
 
     @property
@@ -27,16 +36,30 @@ class PharmacyDomainPack(DomainPack):
             "description", "category", "supplier_id", "customer_id", "invoice_id",
             "doctor_name", "mobile_number",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
-            "opening_stock_qty", "closing_stock_qty"
+            "opening_stock_qty", "closing_stock_qty", "category", "reorder_level",
+            "time_of_day", "status", "is_cancelled", "tax", "tax_amount",
+            "branch", "cashier_name", "client_type", "customer_alias",
+            "discount_amount", "discount_pct", "margin_pct", "line_discount_amount",
+            "line_tax_amount", "invoice_discount", "invoice_tax", "total_qty",
+            "invoice_total", "paid_amount", "customer_balance", "previous_balance",
+            "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
+            "bonus_quantity", "pack_size", "rack_location", "stock_qty"
         ]
 
     @property
     def filter_metadata_fields(self) -> List[str]:
         return [
-            "date", "txn_type", "amount", "unit_price", "quantity",
-            "product_id", "supplier_id", "customer_id", "invoice_id",
+            "date", "txn_type", "payment_method", "transaction_id", "amount", "net_payable", "unit_price", "quantity",
+            "product_id", "product_code", "supplier_id", "supplier_name", "customer_id", "invoice_id",
             "generic_name", "manufacturer", "batch_no", "expiry_date",
             "mrp", "drap_reg_no", "schedule_flag", "doctor_name", "discount", "cost",
+            "category", "reorder_level", "time_of_day", "status", "is_cancelled",
+            "tax", "tax_amount", "discount_amount", "discount_pct", "margin_pct",
+            "line_discount_amount", "line_tax_amount", "invoice_discount", "invoice_tax",
+            "invoice_total", "paid_amount", "customer_balance", "previous_balance",
+            "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
+            "total_qty", "total_bonus", "pack_size", "rack_location", "stock_qty",
+            "branch", "cashier_name", "client_type",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
             "opening_stock_qty", "closing_stock_qty"
         ]
@@ -79,6 +102,7 @@ class PharmacyDomainPack(DomainPack):
         fields = [
             ("txn_type", "Transaction type", ""),
             ("date", "Date", ""),
+            ("transaction_id", "Transaction", ""),
             ("invoice_id", "Invoice", ""),
             ("purchase_order_no", "Purchase Order", ""),
             ("customer_id", "Customer", ""),
@@ -92,6 +116,7 @@ class PharmacyDomainPack(DomainPack):
             ("manufacturer", "Manufacturer", ""),
             ("supplier_id", "Supplier", ""),
             ("supplier_name", "Supplier", ""),
+            ("product_code", "Product code", ""),
             ("quantity", "Quantity", ""),
             ("qty_sold", "Quantity sold", ""),
             ("qty_ordered", "Quantity ordered", ""),
@@ -102,6 +127,11 @@ class PharmacyDomainPack(DomainPack):
             ("unit_price", "Unit price", "Rs "),
             ("sale_price", "Sale price", "Rs "),
             ("amount", "Total amount", "Rs "),
+            ("net_payable", "Net payable", "Rs "),
+            ("tax_amount", "GST amount", "Rs "),
+            ("tax_pct", "GST", "%"),
+            ("margin_pct", "Margin", "%"),
+            ("discount_amount", "Discount amount", "Rs "),
             ("discount", "Discount", "Rs "),
             ("cost", "Cost price", "Rs "),
             ("cost_price", "Cost price", "Rs "),
@@ -182,6 +212,27 @@ class PharmacyDomainPack(DomainPack):
                 "closing balance", "cl stock", "cl qty", "cl. stock", "cl. qty",
                 "closing units", "closing count", "ending stock", "ending qty",
             ] + ([] if is_legacy_test else ["closing stock"]),
+            "stock_qty": [
+                "stock qty", "stock quantity", "stock units", "stockunits",
+                "current stock units", "currentstockunits", "current stock",
+                "on hand units", "onhandunits", "available stock units",
+            ],
+            "reorder_level": [
+                "reorder", "reorder level", "min stock", "minimum stock",
+                "reorder qty", "reorder quantity", "reorder point", "rop",
+                "safety stock", "min level", "minimum level", "min stock level",
+                "minstocklevel", "minimumstocklevel",
+            ],
+            "time_of_day": [
+                "time", "time of sale", "time of transaction", "transaction time",
+                "timeofsale", "transactiontime", "bill time", "billtime",
+                "invoice time", "invoicetime", "sale time", "timestamp time",
+            ],
+            "is_cancelled": ["is cancelled", "is canceled", "iscancelled", "iscanceled", "voided"],
+            "branch": ["branch", "branch name", "store branch", "store name"],
+            "cashier_name": ["cashier", "cashier name", "cashier_name", "operator name"],
+            "client_type": ["client type", "client_type", "customer type", "account type"],
+            "customer_alias": ["customer alias", "customer alias name", "alias name"],
 
             # --- Pharmacy-specific fields ---
             "doctor_name": [
@@ -192,15 +243,14 @@ class PharmacyDomainPack(DomainPack):
             "mobile_number": [
                 "mobile", "mobile number", "mobile no", "mobile_number",
                 "mobilenumber", "mobileno", "phone", "phone number",
-                "contact", "cell",
+                "contact", "cell", "customer mobile", "customer mobile number", "customer phone",
             ],
             "bonus_quantity": [
-                "bonus", "bon", "bon.", "bonus count", "total bonus",
-                "total bonus count", "bonus qty", "bonus quantity",
+                "bonus", "bon", "bon.", "bonus count", "bonus qty", "bonus quantity",
             ],
             "expiry_date": [
                 "exp", "exp date", "exp.date", "expiry", "expiry date",
-                "e.date", "exp dt", "expdt", "میعاد", "expiry_date",
+                "e.date", "exp dt", "expdt", "میعاد", "expiry_date", "inventory exp",
             ],
             "mfg_date": [
                 "mfg date", "mfg dt", "mfgdate", "manufacture date",
@@ -208,21 +258,21 @@ class PharmacyDomainPack(DomainPack):
             ],
             "batch_no": [
                 "batch", "batch no", "batch#", "batch number", "batchno",
-                "lot", "lot no", "lot number", "lot#",
+                "lot", "lot no", "lot number", "lot#", "inventory batch",
             ],
             "generic_name": [
                 "generic", "formula", "salt", "molecule", "composition",
-                "generic name", "active ingredient", "ingredient",
+                "generic name", "active ingredient", "ingredient", "product generic",
             ],
             "mrp": [
                 "mrp", "retail price", "sale price", "max retail",
                 "maximum retail price", "retail", "selling price",
-                "s price", "s. price", "s price 1", "s. price 1", "sprice",
+                "s price", "s. price", "s price 1", "s. price 1", "sprice", "pricing retail price",
             ],
-            "barcode": [
-                "barcode", "bar code", "ean", "ean13", "upc", "sku",
-                "item code", "product code",
-            ],
+            "barcode": ["barcode", "bar code", "ean", "ean13", "upc"],
+            "product_code": ["product code", "product_code", "item code", "medicine code", "sku", "stock keeping unit"],
+            "transaction_id": ["transaction no", "transaction number", "transaction #", "txn no", "txn number"],
+            "supplier_name": ["supplier name", "vendor name", "distributor name"],
             "pack_size": [
                 "pack size", "packsize", "pack", "packing", "pack qty",
                 "strip size", "tabs per strip",
@@ -237,18 +287,43 @@ class PharmacyDomainPack(DomainPack):
             "rack_location": [
                 "rack", "location", "rack location", "rack no",
                 "shelf", "bin", "store location", "s.l.", "sl", "loc.", "loc",
-                "shelf location",
+                "shelf location", "location code",
             ],
             "reorder_level": [
                 "reorder", "reorder level", "min stock", "minimum stock",
                 "reorder qty", "reorder quantity", "reorder point", "rop",
-                "safety stock", "min level", "minimum level",
+                "safety stock", "min level", "minimum level", "min stock level",
+                "minstocklevel", "minimumstocklevel",
             ],
             "prescription_ref": [
                 "prescription", "rx", "prescription no", "prescription ref",
                 "prescription number", "script",
             ],
-            "scheme": ["scheme", "bonus", "deal", "offer", "discount scheme"],
+            "scheme": ["scheme", "deal", "offer", "discount scheme"],
+            "net_payable": ["net payable", "net payable amount", "nettotalamount"],
+            "tax_amount": ["gst amount", "vat amount", "tax amount"],
+            "invoice_total": ["invoice total", "bill total", "total amount", "grand total", "value including tax", "total amount including tax"],
+            "paid_amount": ["paid amount", "amount paid", "payment amount"],
+            "customer_balance": ["customer balance", "balance due"],
+            "previous_balance": ["previous balance", "prior balance"],
+            "invoice_tax_pct": ["invoice gst percentage", "invoice gst percent", "invoice tax percentage"],
+            "invoice_discount_pct": ["discount by percentage", "invoice discount percentage"],
+            "sales_subtotal": ["sales subtotal", "subtotal", "sub total"],
+            "other_charges": ["misc amount", "additional amount", "miscellaneous amount"],
+            "discount_amount": ["discount amount", "discount value"],
+            "tax_pct": ["gst percent", "gst percentage", "tax percent", "vat percent"],
+            "margin_pct": ["margin percent", "margin percentage", "profit margin percent"],
+            "discount_pct": ["discount percent", "discount percentage", "disc percent"],
+            "total_qty": ["total qty", "total quantity"],
+            "total_bonus": ["total bonus", "total bonus qty", "total bonus quantity"],
+            "total_items": ["total items", "item count"],
+            "total_pack": ["total pack", "total packs"],
+            "line_discount_amount": ["item discount", "item discount amount"],
+            "line_tax_amount": ["item gst", "item tax", "item gst amount"],
+            "invoice_discount": ["flat discount", "invoice discount"],
+            "invoice_tax": ["flat gst", "invoice gst", "invoice tax"],
+            "carriage_charges": ["carriage charges", "carriage"],
+            "other_charges": ["other charges", "additional charges"],
 
             # --- Core fields: pharmacy-specific aliases ---
             "manufacturer": [
@@ -258,11 +333,11 @@ class PharmacyDomainPack(DomainPack):
             "product_id": [
                 "name", "product name", "item name", "brand name", "medicine",
                 "product", "drug name", "medicine name", "drug",
-                "item", "product desc", "product_name", "item_name", "drug_name",
+                "item", "product desc", "product_name", "item_name", "drug_name", "product title",
             ],
             "supplier_id": [
-                "supplier", "vendor", "distributor", "supplier name",
-                "vendor name", "distributor name", "party", "party name",
+                "supplier", "supplier id", "vendor", "vendor id", "distributor",
+                "distributor id", "party", "party id", "party name",
             ],
             "customer_id": [
                 "patient name", "patient", "patientname", "customer",
@@ -280,36 +355,35 @@ class PharmacyDomainPack(DomainPack):
             ],
             "quantity": [
                 "qty", "quantity", "stock", "on hand", "units",
-                "available qty", "total qty", "total quantity",
+                "available qty", "stock units", "stockunits", "current stock units",
+                "currentstockunits", "stock qty", "stock quantity", "current stock", "inventory stock",
+                "on hand units", "onhandunits",
             ] + (["closing stock"] if is_legacy_test else []),
             "unit_price": [
                 "price", "rate", "unit price", "rate pkr",
                 "selling rate", "per unit",
             ],
             "amount": [
-                "total", "amount", "net amount", "line total",
-                "total amount", "value", "net value", "net total amount",
-                "net payable", "nettotalamount",
+                "amount", "line amount", "product amount", "line total",
+                "total", "net amount", "value", "net value",
             ],
             "cost": [
                 "trade price", "tp", "purchase price", "cost price",
-                "pp", "cost", "landed cost", "p price", "p. price", "pprice",
+                "pp", "cost", "landed cost", "p price", "p. price", "pprice", "pricing cost price",
             ],
             "date": [
                 "date", "txn date", "invoice date", "transaction date",
                 "posting date", "voucher date", "invoice date time",
                 "invoicedatetime", "invoice_date_time", "inv date", "inv. date",
                 "date & time", "bill date", "bill_date", "billdate",
-                "bill time", "bill_time", "bill datetime", "bill_datetime",
+                "bill datetime", "bill_datetime",
                 "sale date", "sales date", "sales_date", "order date", "order_date",
                 "created at", "created_at", "timestamp", "receipt date", "receipt_date",
             ],
             "invoice_id": [
                 "invoice", "bill no", "receipt no", "invoice no",
                 "invoice number", "bill number", "voucher no",
-                "challan no", "order no", "billno", "transaction #",
-
-                "transaction no",
+                "challan no", "order no", "billno",
             ],
             "discount": [
                 "discount", "disc", "disc%", "discount%",

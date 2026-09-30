@@ -115,6 +115,14 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
         sale &= ~partial_return & ~cancelled
         expense &= ~partial_return & ~cancelled
 
+    if "is_cancelled" in df.columns:
+        flag = df["is_cancelled"].astype(str).str.casefold().str.strip().isin(
+            {"1", "true", "yes", "y", "cancelled", "canceled", "void", "voided"}
+        )
+        cancelled |= flag
+        sale &= ~flag
+        expense &= ~flag
+
     # A refund is a refund even when the label also says "sale return".
     sale = sale & ~refund
     expense = expense & ~refund

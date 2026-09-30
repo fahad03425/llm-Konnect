@@ -9,6 +9,8 @@ Enforces offline execution:
 - Tests chart PNG rendering and HTML/PDF assembly.
 """
 
+import json
+from app.reporting.grounding import parse_response
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -229,11 +231,10 @@ def test_render_charts(mock_kpi_results, tmp_path):
 def test_narrative_verification_pass(mock_kpi_results):
     """Accurate narrative passes verification on first attempt."""
     rd = gather_report_data(domain="pharmacy", kpi_results=mock_kpi_results)
-    accurate_narrative = (
-        "During January 2026, total revenue reached PKR 1,250,000.00 with a strong gross margin of 28.0%. "
-        "The pharmacy successfully processed 450 transactions. "
-        "Stock expiry analysis shows PKR 45,000.00 at risk within 30 days and PKR 12,000.00 in expired stock."
-    )
+    accurate_narrative = parse_response(json.dumps({
+        "fact_ids": ["total_revenue", "gross_margin_pct", "transaction_count", "expiring_value_30d", "expired_stock_value"],
+        "commentary": ["Review expiry exposure and prioritize affected batches."],
+    }), rd)
 
     vr = verify(accurate_narrative, rd)
     assert vr.all_verified is True
@@ -247,7 +248,7 @@ def test_narrative_verification_retry_and_pass(mock_kpi_results, tmp_path):
     rd = gather_report_data(domain="pharmacy", kpi_results=mock_kpi_results)
 
     bad_narrative = "Revenue was PKR 9,999,999.00 and margin was 99.0%."
-    good_narrative = "Revenue was PKR 1,250,000.00 with a gross margin of 28.0%."
+    good_narrative = json.dumps({"fact_ids": ["total_revenue", "gross_margin_pct"], "commentary": []})
 
     with patch("app.core.llm.llm.generate", side_effect=[bad_narrative, good_narrative]):
         with patch.object(settings, "reports_dir", str(tmp_path)):
@@ -306,9 +307,9 @@ def test_small_integer_exclusion(mock_kpi_results):
     )
 
     vr = verify(narrative_with_ordinals, rd)
-    # Step 1 and top 3 should not be marked as unmatched hallucinations
-    assert vr.all_verified is True
-    assert vr.unmatched_count == 0
+    # Unbound counts must not evade verification, even when phrased as a ranking.
+    assert vr.all_verified is False
+    assert vr.unmatched_count > 0
 
 
 def test_graceful_degradation_when_llm_offline(mock_kpi_results, tmp_path):
@@ -698,10 +699,10 @@ def test_weekly_executive_lead_verification():
     )
 
     # 1. Grounded response: matches all verifiable numbers
-    grounded_response = (
-        "You made PKR 120,000.00 this week. PKR 15,000.00 of stock needs attention. "
-        "Panadol is about to run out. You owe Getz Pharma PKR 45,000.00, due 2026-03-15."
-    )
+    grounded_response = json.dumps({
+        "fact_ids": list(dict.fromkeys(key for key, _, _ in rd.get_all_verifiable_numbers()))[:3],
+        "commentary": ["Review affected stock and supplier payment priorities."],
+    })
 
     with patch("app.core.llm.llm.generate", return_value=grounded_response):
         lead = generate_weekly_executive_lead(rd)
@@ -740,7 +741,7 @@ def test_weekly_executive_lead_verification():
 
     vr_unmatched = verify(lead_unmatched, rd)
     assert vr_unmatched.all_verified is False
-    assert vr_unmatched.unmatched_count >= 1
+    assert vr_unmatched.mismatch_count >= 1
 
     # 4. Conditional omission: when payables & expiry are absent, lead cleanly omits them
     rd_minimal = ReportData(
@@ -758,9 +759,7 @@ def test_weekly_executive_lead_verification():
         },
         reorder_alerts=[{"product_name": "Panadol", "days_until_stockout": 2.0}],
     )
-    omitted_response = (
-        "You made PKR 120,000.00 this week. Panadol is about to run out."
-    )
+    omitted_response = json.dumps({"fact_ids": ["net_profit"], "commentary": []})
 
     with patch("app.core.llm.llm.generate", return_value=omitted_response):
         lead_omitted = generate_weekly_executive_lead(rd_minimal)

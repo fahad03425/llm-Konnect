@@ -171,10 +171,10 @@ export default function Dashboard() {
         };
     }, []);
 
-    // Load available datasets and auto-select if none active or current is invalid
+    // Load available datasets and auto-select if none active or current is invalid for the active domain
     useEffect(() => {
         let isMounted = true;
-        fetch('/api/files')
+        fetch(`/api/files?domain=${encodeURIComponent(user.domain)}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
                 if (!isMounted || !data?.files) return;
@@ -212,10 +212,10 @@ export default function Dashboard() {
 
                 const allList = [...dbList, ...fileList];
 
-                // Check if user has explicitly chosen a dataset during their session
+                // Check if user has explicitly chosen a dataset for this domain during their session
                 let manualChoice: string | null = null;
                 try {
-                    manualChoice = sessionStorage.getItem('llm_konnect_user_manual_dataset_choice');
+                    manualChoice = sessionStorage.getItem(`llm_konnect_user_manual_dataset_${user.domain}`);
                 } catch {}
 
                 const isManualValid = Boolean(manualChoice && allList.some((d: any) => d.path === manualChoice));
@@ -224,24 +224,28 @@ export default function Dashboard() {
                     if (activePath !== manualChoice) {
                         setActivePath(manualChoice);
                     }
+                } else if (allList.some((d: any) => d.path === activePath)) {
+                    // Current active path is already valid for this domain; retain it
                 } else if (wholeDbEntries.length > 0) {
-                    // Default to complete database if one is ingested
-                    const isAlreadyWholeDb = wholeDbEntries.some((w: any) => w.path === activePath);
-                    if (!isAlreadyWholeDb) {
-                        setActivePath(wholeDbEntries[0].path);
-                    }
-                } else if ((!activePath || !allList.some((d: any) => d.path === activePath)) && allList.length > 0) {
-                    // Fallback to sales-related file or first available
-                    const preferred = allList.find((d: any) => d.name.toLowerCase().includes('sales')) || allList[0];
+                    setActivePath(wholeDbEntries[0].path);
+                } else if (allList.length > 0) {
+                    // Fallback to domain-relevant preferred file or first available
+                    const preferred = allList.find((d: any) => 
+                        user.domain === 'ecommerce' 
+                            ? (d.name.toLowerCase().includes('order') || d.name.toLowerCase().includes('ecommerce') || d.name.toLowerCase().includes('shopify'))
+                            : (d.name.toLowerCase().includes('sales') || d.name.toLowerCase().includes('pharmacy'))
+                    ) || allList[0];
                     if (preferred && activePath !== preferred.path) {
                         setActivePath(preferred.path);
                     }
+                } else {
+                    setActivePath('');
                 }
             })
             .catch(() => {});
 
         return () => { isMounted = false; };
-    }, [activePath]);
+    }, [user.domain]);
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} Dashboard — LLM-KONNECT`;
@@ -710,17 +714,42 @@ export default function Dashboard() {
                 <div className="kpi-grid">
                     {[1, 2, 3, 4, 5, 6].map(i => <KPISkeleton key={i} />)}
                 </div>
+            ) : user.domain === 'ecommerce' ? (
+                <div className="kpi-grid">
+                    {renderKPICard("gmv", "Gross Merchandise Value (GMV)", <DollarSign size={18} />, "PKR", kpis?.['gmv'] || kpis?.['total_revenue'])}
+                    {renderKPICard("net_sales", "Net Sales", <DollarSign size={18} />, "PKR", kpis?.['ecommerce_net_sales'] || kpis?.['total_revenue'])}
+                    {renderKPICard("gp", "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['ecom_gross_profit'] || kpis?.['gross_profit'])}
+                    {renderKPICard("gm", "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['ecom_gross_margin_pct'] || kpis?.['gross_margin_pct'] || kpis?.['gross_margin'])}
+                    {renderKPICard("tx", "Total Orders", <Receipt size={18} />, "count", kpis?.['transaction_count'] || kpis?.['total_orders'])}
+                    {renderKPICard("atv", "Avg Order Value (AOV)", <CreditCard size={18} />, "PKR", kpis?.['average_order_value_ecom'] || kpis?.['average_transaction_value'] || kpis?.['avg_transaction_value'])}
+                    {renderKPICard("refund_rate", "Refund Rate", <AlertTriangle size={18} />, "%", kpis?.['refund_rate_pct_ecom'] || kpis?.['refund_rate_pct'])}
+                    {renderKPICard("repeat_rate", "Repeat Customer Rate", <ShoppingBag size={18} />, "%", kpis?.['repeat_customer_rate_pct'])}
+                    {renderKPICard("skus", "Active SKUs / Products", <ShoppingBag size={18} />, "count", kpis?.['active_skus'] || kpis?.['total_products'] || kpis?.['unique_customers_count'])}
+                </div>
+            ) : user.domain === 'home_finance' ? (
+                <div className="kpi-grid">
+                    {renderKPICard("rev", "Total Inflow / Income", <DollarSign size={18} />, "PKR", kpis?.['total_income'] || kpis?.['total_revenue'])}
+                    {renderKPICard("gp", "Net Savings", <TrendingUp size={18} />, "PKR", kpis?.['net_savings'] || kpis?.['gross_profit'])}
+                    {renderKPICard("gm", "Savings Rate", <BarChart2 size={18} />, "%", kpis?.['savings_rate'] || kpis?.['gross_margin_pct'])}
+                    {renderKPICard("tx", "Transactions", <Receipt size={18} />, "count", kpis?.['transaction_count'])}
+                    {renderKPICard("expenses", "Monthly Expenses", <AlertTriangle size={18} />, "PKR", kpis?.['total_expenses'])}
+                </div>
+            ) : user.domain === 'finance' ? (
+                <div className="kpi-grid">
+                    {renderKPICard("rev", "Total Revenue", <DollarSign size={18} />, "PKR", kpis?.['total_revenue'])}
+                    {renderKPICard("gp", "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['gross_profit'])}
+                    {renderKPICard("gm", "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['gross_margin_pct'] || kpis?.['gross_margin'])}
+                    {renderKPICard("tx", "Total Invoices", <Receipt size={18} />, "count", kpis?.['transaction_count'])}
+                    {renderKPICard("ebitda", "Operating Balance", <Briefcase size={18} />, "PKR", kpis?.['operating_balance'] || kpis?.['ebitda'])}
+                </div>
             ) : (
                 <div className="kpi-grid">
-                    {renderKPICard("rev", user.domain === 'home_finance' ? "Total Inflow / Income" : "Total Revenue", <DollarSign size={18} />, "PKR", kpis?.['total_revenue'] || kpis?.['total_income'])}
-                    {renderKPICard("gp", user.domain === 'home_finance' ? "Net Savings" : "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['gross_profit'] || kpis?.['net_savings'])}
-                    {renderKPICard("gm", user.domain === 'home_finance' ? "Savings Rate" : "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['gross_margin_pct'] || kpis?.['gross_margin'] || kpis?.['savings_rate'])}
-                    {renderKPICard("tx", user.domain === 'ecommerce' ? "Total Orders" : "Total Transactions", <Receipt size={18} />, "count", kpis?.['transaction_count'] || kpis?.['total_orders'])}
-                    {renderKPICard("atv", user.domain === 'ecommerce' ? "Avg Order Value (AOV)" : "Avg Transaction Value", <CreditCard size={18} />, "PKR", kpis?.['average_transaction_value'] || kpis?.['avg_transaction_value'] || kpis?.['avg_order_value'])}
-                    {user.domain === 'pharmacy' && renderKPICard("exp", "Near-Expiry Items", <AlertTriangle size={18} />, "count", expiry?.['near_expiry_item_count'])}
-                    {user.domain === 'ecommerce' && renderKPICard("skus", "Active SKUs / Products", <ShoppingBag size={18} />, "count", kpis?.['active_skus'] || kpis?.['total_products'])}
-                    {user.domain === 'finance' && renderKPICard("ebitda", "Operating Balance", <Briefcase size={18} />, "PKR", kpis?.['operating_balance'] || kpis?.['ebitda'])}
-                    {user.domain === 'home_finance' && renderKPICard("expenses", "Monthly Expenses", <AlertTriangle size={18} />, "PKR", kpis?.['total_expenses'])}
+                    {renderKPICard("rev", "Total Revenue", <DollarSign size={18} />, "PKR", kpis?.['total_revenue'])}
+                    {renderKPICard("gp", "Gross Profit", <TrendingUp size={18} />, "PKR", kpis?.['gross_profit'])}
+                    {renderKPICard("gm", "Gross Margin", <BarChart2 size={18} />, "%", kpis?.['gross_margin_pct'] || kpis?.['gross_margin'])}
+                    {renderKPICard("tx", "Total Transactions", <Receipt size={18} />, "count", kpis?.['transaction_count'])}
+                    {renderKPICard("atv", "Avg Transaction Value", <CreditCard size={18} />, "PKR", kpis?.['average_transaction_value'] || kpis?.['avg_transaction_value'])}
+                    {renderKPICard("exp", "Near-Expiry Items", <AlertTriangle size={18} />, "count", expiry?.['near_expiry_item_count'])}
                 </div>
             )}
 

@@ -26,7 +26,7 @@ _FIELD_COLUMNS = {
 # (and shown in provenance) but never filter anything by themselves.
 _ROW_FILTER_FIELDS = (
     "date_from", "date_to", "month", "year",
-    "category", "product_id", "supplier_id", "customer_id", "txn_type",
+    "category", "product_id", "supplier_id", "customer_id", "txn_type", "payment_label",
 )
 
 
@@ -60,6 +60,7 @@ class KPIFilters:
     supplier_id: Optional[str] = None
     customer_id: Optional[str] = None
     txn_type: Optional[str] = None
+    payment_label: Optional[str] = None
     as_of: Optional[str] = None
     options: Dict[str, Any] = field(default_factory=dict)
 
@@ -155,5 +156,18 @@ def apply_filters(
             continue
         col = df[column].astype(str).str.strip().str.casefold()
         mask &= col == str(wanted).strip().casefold()
+
+    if filters.payment_label is not None:
+        # Some exports encode payment type in a transaction-type field, while
+        # others use a dedicated payment-method column.
+        column = next(
+            (name for name in ("payment_method", "txn_type") if name in df.columns),
+            None,
+        )
+        if column is None:
+            notes.append("payment label filter requested but neither payment_method nor txn_type exists")
+        else:
+            col = df[column].astype(str).str.strip().str.casefold()
+            mask &= col == str(filters.payment_label).strip().casefold()
 
     return df.loc[mask], notes

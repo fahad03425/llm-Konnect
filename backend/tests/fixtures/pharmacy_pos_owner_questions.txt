@@ -1,0 +1,107 @@
+Sales & Revenue
+1. What are my total sales today?
+2. What were my total sales yesterday?
+3. What are my total sales this month?
+4. What were my total sales last month?
+5. How much did I sell in the last 7 days?
+6. What is my average daily sale this month?
+7. Which day had the highest sales this month?
+8. Which day had the lowest sales this month?
+9. Show me the sales trend for the last 30 days.
+10. Compare this month's sales with last month's sales.
+11. By what percentage have my sales increased or decreased compared with last month?
+12. What were my total sales between two specific dates?
+13. How many sales invoices were generated today?
+14. What is the average value of a sales invoice?
+15. What was my biggest sale today?
+16. What are my top 10 highest-value sales invoices this month?
+17. Which hour of the day generates the most sales?
+18. Which day of the week usually generates the most sales?
+19. How much discount did I give customers this month?
+20. How much GST/tax was collected from sales this month?
+Products & Medicine Performance
+21. What are my top 10 best-selling medicines?
+22. What are my top-selling medicines this month?
+23. Which medicine generated the most revenue?
+24. Which medicines sold the most units?
+25. Which medicines have the lowest sales?
+26. Which medicines haven't sold in the last 30 days?
+27. Which medicines haven't sold in the last 90 days?
+28. How many units of Brufen 400mg have I sold this month?
+29. How much revenue did Brufen 400mg generate?
+30. Show me the sales history of a particular medicine.
+31. Which generic salt sells the most?
+32. Which medicine brand generates the most revenue?
+33. What are my fastest-moving medicines?
+34. What are my slowest-moving medicines?
+35. Which medicines have recently experienced an increase in demand?
+36. Which medicines have experienced declining sales?
+37. Which products contribute the most to overall sales?
+38. What percentage of my revenue comes from my top 10 products?
+39. Which products are frequently sold together?
+40. Which products sell consistently every month?
+Inventory & Stock
+41. What is my current stock of a particular medicine?
+42. Which medicines are currently out of stock?
+43. Which medicines are low in stock?
+44. Show products with fewer than 10 units remaining.
+45. How many total medicine units do I currently have?
+46. What is the total purchase value of my current inventory?
+47. What is the estimated selling value of my current inventory?
+48. Which medicines have the highest stock quantity?
+49. Which medicines are overstocked?
+50. Which medicines need to be reordered?
+51. Which fast-selling medicines are running low?
+52. Which products are out of stock but had sales recently?
+53. How many different products are currently available?
+54. Which medicines have stock but haven't sold recently?
+55. Which products have the highest amount of money tied up in inventory?
+56. What is the current stock value by medicine?
+57. How long will the current stock of a particular medicine last based on its recent sales?
+58. Which medicines are likely to run out soon?
+59. Which medicines should I restock first?
+60. Give me a list of medicines I should consider ordering today.
+Expiry & Batch Management
+61. Which medicines have already expired?
+62. Are there expired batches that still have stock?
+63. Which medicines will expire in the next 30 days?
+64. Which medicines will expire in the next 60 days?
+65. Which medicines will expire in the next 90 days?
+66. How many units are going to expire within the next 3 months?
+67. What is the purchase value of stock expiring in the next 30 days?
+68. What is the selling value of stock expiring soon?
+69. Which batch of a particular medicine will expire first?
+70. Show all batches of a particular medicine with their expiry dates.
+71. Which medicines have multiple active batches?
+72. Which batch currently has the highest stock?
+73. Which near-expiry products have low sales?
+74. Which near-expiry medicines should I prioritize selling?
+75. How much money could I potentially lose from stock expiring in the next 90 days?
+Purchases
+76. What were my total purchases this month?
+77. What were my total purchases last month?
+78. Compare this month's purchases with last month's.
+79. How much stock did I purchase in the last 30 days?
+80. Which medicines did I purchase most this month?
+81. What was my largest purchase invoice this month?
+82. How much did I purchase from a particular supplier?
+83. Show me the latest purchase of a particular medicine.
+84. When did I last purchase Brufen 400mg?
+85. What price did I last pay for a particular medicine?
+86. Has the purchase price of a medicine increased?
+87. Which products have experienced the largest increase in purchase price?
+88. How much money have I spent on purchases this year?
+Suppliers
+89. Who are my top suppliers by purchase value?
+90. Which supplier did I purchase from the most this month?
+91. How much have I purchased from each supplier?
+92. Which medicines do I purchase from a particular supplier?
+93. When was my last purchase from a particular supplier?
+94. Which suppliers haven't supplied anything recently?
+Profitability & Business Decisions
+95. Which medicines have the highest profit margin?
+96. Which medicines generate the most estimated profit?
+97. What is my estimated gross profit this month?
+98. Which high-stock medicines have poor sales and are tying up my cash?
+99. Which products have high sales but low margins?
+100. Based on current stock, recent sales, expiry dates, and purchasing history, which medicines should I restock, avoid purchasing, or prioritize selling?

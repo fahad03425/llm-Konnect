@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     Upload, Eye, GitMerge, Wrench, ShieldCheck, Database,
     AlertCircle, CheckCircle, AlertTriangle, ArrowRight, RefreshCw,
-    Zap, Play, Folder, HardDrive, FileText, XCircle, RotateCcw,
+    Zap, Play, Folder, HardDrive, FileText, XCircle, RotateCcw, ShoppingBag,
     CheckSquare, Square, Search, Sparkles
 } from 'lucide-react';
 import { StepIndicator } from '../components/connect/StepIndicator';
@@ -193,6 +193,19 @@ function ConnectSourceContent() {
     const [detectedSqlDb, setDetectedSqlDb] = useState<DetectedSqlDb | null>(null);
     const [localSqlInstances, setLocalSqlInstances] = useState<LocalSqlInstance[]>([]);
     const [isScanningLocalSql, setIsScanningLocalSql] = useState(false);
+
+    // ── Tally Live State ───────────────────────────────────────────
+    const [tallyUrl, setTallyUrl] = useState('http://localhost:9000');
+    const [tallyTimeout, setTallyTimeout] = useState(10);
+    const [tallyTestMsg, setTallyTestMsg] = useState<{ status: string; text: string } | null>(null);
+    const [isTestingTally, setIsTestingTally] = useState(false);
+
+    // ── Shopify Live State ─────────────────────────────────────────
+    const [shopifyStore, setShopifyStore] = useState('');
+    const [shopifyToken, setShopifyToken] = useState('');
+    const [shopifyResource, setShopifyResource] = useState('orders');
+    const [shopifyTestMsg, setShopifyTestMsg] = useState<{ status: string; text: string } | null>(null);
+    const [isTestingShopify, setIsTestingShopify] = useState(false);
 
     const [ingestProgress, setIngestProgress] = useState<{
         percent: number;
@@ -604,6 +617,88 @@ function ConnectSourceContent() {
             setUploadSt({ loading: false, error: String(e.message || 'Database discovery failed.') });
         } finally {
             setIsDiscovering(false);
+        }
+    };
+
+        // ==============================================================
+    //  TALLY & SHOPIFY CONNECT HANDLERS
+    // ==============================================================
+    const doTestTally = async () => {
+        setIsTestingTally(true);
+        setTallyTestMsg(null);
+        try {
+            const res = await fetch('/api/sources/tally/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: tallyUrl.trim(), timeout: tallyTimeout })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Connection failed');
+            setTallyTestMsg({ status: 'success', text: `Connected successfully! Found ${data.total_preview_rows} sample voucher records.` });
+        } catch (err: any) {
+            setTallyTestMsg({ status: 'error', text: err.message || 'Could not connect to Tally.' });
+        } finally {
+            setIsTestingTally(false);
+        }
+    };
+
+    const doConnectTally = async (overrideAuto?: boolean) => {
+        const isAuto = overrideAuto ?? autoProceed;
+        const targetUrl = tallyUrl.trim() || 'http://localhost:9000';
+        setFilePath(targetUrl);
+        setFileName('TallyPrime_Live_DayBook');
+        setUploadSt({ loading: true, error: null });
+        try {
+            await doPreview(targetUrl, null, isAuto);
+            setUploadSt(idle());
+        } catch (err: any) {
+            setUploadSt({ loading: false, error: err.message || 'Failed to fetch DayBook from Tally.' });
+        }
+    };
+
+    const doTestShopify = async () => {
+        if (!shopifyStore.trim() || !shopifyToken.trim()) {
+            setShopifyTestMsg({ status: 'error', text: 'Please provide both Store Name and Admin API Access Token.' });
+            return;
+        }
+        setIsTestingShopify(true);
+        setShopifyTestMsg(null);
+        try {
+            const res = await fetch('/api/sources/shopify/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    shop_name: shopifyStore.trim(),
+                    access_token: shopifyToken.trim(),
+                    resource: shopifyResource
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Connection failed');
+            setShopifyTestMsg({ status: 'success', text: `Connected to store '${shopifyStore}'! Previewed ${data.total_preview_rows} ${shopifyResource} records.` });
+        } catch (err: any) {
+            setShopifyTestMsg({ status: 'error', text: err.message || 'Shopify connection failed.' });
+        } finally {
+            setIsTestingShopify(false);
+        }
+    };
+
+    const doConnectShopify = async (overrideAuto?: boolean) => {
+        if (!shopifyStore.trim() || !shopifyToken.trim()) {
+            setUploadSt({ loading: false, error: 'Please enter store name and access token.' });
+            return;
+        }
+        const isAuto = overrideAuto ?? autoProceed;
+        const cleanStore = shopifyStore.replace('.myshopify.com', '').trim();
+        const shopifyUri = `shopify://${cleanStore}?access_token=${encodeURIComponent(shopifyToken.trim())}&resource=${shopifyResource}`;
+        setFilePath(shopifyUri);
+        setFileName(`Shopify_${cleanStore}_${shopifyResource}`);
+        setUploadSt({ loading: true, error: null });
+        try {
+            await doPreview(shopifyUri, null, isAuto);
+            setUploadSt(idle());
+        } catch (err: any) {
+            setUploadSt({ loading: false, error: err.message || 'Failed to fetch data from Shopify.' });
         }
     };
 
@@ -1029,6 +1124,26 @@ function ConnectSourceContent() {
                         >
                             <Folder size={14} /> Folder Auto-Sync Watcher
                         </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'tally' ? 'active' : ''}`}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'tally') resetConnectSession('tally');
+                                else setSourceType('tally');
+                            }}
+                        >
+                            <RefreshCw size={14} /> Tally Prime / ERP 9 (Live XML)
+                        </button>
+                        <button
+                            type="button"
+                            className={`source-tab-btn ${sourceType === 'shopify' ? 'active' : ''}`}
+                            onClick={() => {
+                                if (step > 0 && sourceType !== 'shopify') resetConnectSession('shopify');
+                                else setSourceType('shopify');
+                            }}
+                        >
+                            <ShoppingBag size={14} /> Shopify Store Connection
+                        </button>
                     </div>
 
                     <div className="wizard-card-title"><Upload size={16} /> Step 1 — Connect Source</div>
@@ -1345,6 +1460,164 @@ function ConnectSourceContent() {
                             {uploadSt.error && (
                                 <div style={{ marginTop: '1rem' }}>
                                     <ErrorCard msg={uploadSt.error} onRetry={() => sqlMode === 'all_tables' ? doDiscoverDatabase() : doConnectSQL()} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* SOURCE 4: TALLY PRIME / ERP 9 */}
+                    {sourceType === 'tally' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Tally Server Endpoint URL:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="http://localhost:9000"
+                                    value={tallyUrl}
+                                    onChange={e => setTallyUrl(e.target.value)}
+                                />
+                                <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '0.25rem' }}>
+                                    Ensure TallyPrime / Tally.ERP 9 is open with ODBC/HTTP listening enabled on port 9000.
+                                </div>
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Connection Timeout (seconds):</label>
+                                <input
+                                    type="number"
+                                    className="sql-form-input"
+                                    value={tallyTimeout}
+                                    onChange={e => setTallyTimeout(parseInt(e.target.value, 10) || 10)}
+                                    min={3}
+                                    max={60}
+                                    style={{ maxWidth: 120 }}
+                                />
+                            </div>
+
+                            {tallyTestMsg && (
+                                <div style={{
+                                    padding: '0.6rem 0.8rem',
+                                    borderRadius: 6,
+                                    marginBottom: '0.75rem',
+                                    fontSize: '0.85rem',
+                                    backgroundColor: tallyTestMsg.status === 'success' ? '#ECFDF5' : '#FEF2F2',
+                                    color: tallyTestMsg.status === 'success' ? '#065F46' : '#991B1B',
+                                    border: `1px solid ${tallyTestMsg.status === 'success' ? '#A7F3D0' : '#FECACA'}`
+                                }}>
+                                    {tallyTestMsg.text}
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={doTestTally}
+                                        disabled={isTestingTally || uploadSt.loading}
+                                    >
+                                        {isTestingTally ? <><span className="spinner" /> Testing…</> : <><RefreshCw size={14} /> Test Connection</>}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-primary"
+                                        onClick={() => doConnectTally()}
+                                        disabled={uploadSt.loading || isTestingTally}
+                                    >
+                                        {uploadSt.loading ? <><span className="spinner" /> Connecting…</> : autoProceed ? <><Zap size={15} /> Connect &amp; Auto Ingest</> : <><RefreshCw size={15} /> Connect &amp; Preview DayBook</>}
+                                    </button>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectTally()} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* SOURCE 5: SHOPIFY STORE */}
+                    {sourceType === 'shopify' && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                            <div className="sql-form-group">
+                                <label>Shopify Store Name / Subdomain:</label>
+                                <input
+                                    type="text"
+                                    className="sql-form-input"
+                                    placeholder="my-pharmacy-store (from my-pharmacy-store.myshopify.com)"
+                                    value={shopifyStore}
+                                    onChange={e => setShopifyStore(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Admin API Access Token:</label>
+                                <input
+                                    type="password"
+                                    className="sql-form-input"
+                                    placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                                    value={shopifyToken}
+                                    onChange={e => setShopifyToken(e.target.value)}
+                                />
+                                <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '0.25rem' }}>
+                                    Generated from Shopify Admin &rarr; Settings &rarr; Apps and sales channels &rarr; Develop apps.
+                                </div>
+                            </div>
+
+                            <div className="sql-form-group">
+                                <label>Resource to Extract &amp; Analyze:</label>
+                                <select
+                                    className="sql-form-input"
+                                    value={shopifyResource}
+                                    onChange={e => setShopifyResource(e.target.value)}
+                                >
+                                    <option value="orders">Orders &amp; Line Items (Sales, Discounts, Tax)</option>
+                                    <option value="products">Products, Variants &amp; Inventory Quantities</option>
+                                    <option value="customers">Customers &amp; Lifetime Value</option>
+                                    <option value="reviews">Product Reviews &amp; Ratings</option>
+                                </select>
+                            </div>
+
+                            {shopifyTestMsg && (
+                                <div style={{
+                                    padding: '0.6rem 0.8rem',
+                                    borderRadius: 6,
+                                    marginBottom: '0.75rem',
+                                    fontSize: '0.85rem',
+                                    backgroundColor: shopifyTestMsg.status === 'success' ? '#ECFDF5' : '#FEF2F2',
+                                    color: shopifyTestMsg.status === 'success' ? '#065F46' : '#991B1B',
+                                    border: `1px solid ${shopifyTestMsg.status === 'success' ? '#A7F3D0' : '#FECACA'}`
+                                }}>
+                                    {shopifyTestMsg.text}
+                                </div>
+                            )}
+
+                            {step === 0 && (
+                                <div className="btn-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        onClick={doTestShopify}
+                                        disabled={isTestingShopify || uploadSt.loading}
+                                    >
+                                        {isTestingShopify ? <><span className="spinner" /> Testing API…</> : <><ShoppingBag size={14} /> Test Shopify API</>}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn-primary"
+                                        onClick={() => doConnectShopify()}
+                                        disabled={uploadSt.loading || isTestingShopify || !shopifyStore || !shopifyToken}
+                                    >
+                                        {uploadSt.loading ? <><span className="spinner" /> Connecting…</> : autoProceed ? <><Zap size={15} /> Connect &amp; Auto Ingest</> : <><ShoppingBag size={15} /> Connect &amp; Preview {shopifyResource.toUpperCase()}</>}
+                                    </button>
+                                </div>
+                            )}
+
+                            {uploadSt.error && (
+                                <div style={{ marginTop: '1rem' }}>
+                                    <ErrorCard msg={uploadSt.error} onRetry={() => doConnectShopify()} />
                                 </div>
                             )}
                         </div>

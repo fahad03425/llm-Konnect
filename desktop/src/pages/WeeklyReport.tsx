@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useFilePath } from '../context/FileContext';
 import { useReport } from '../context/ReportContext';
+import { useUser } from '../context/UserContext';
 import './ReportExport.css';
 
 interface FileOption {
@@ -32,6 +33,7 @@ interface FileOption {
     dir_type?: string;
     is_ingested?: boolean;
     source_type?: string;
+    domain?: string;
 }
 
 interface ReportHistoryItem {
@@ -53,7 +55,7 @@ interface ReportHistoryItem {
 
 const API_BASE = '';
 
-const WEEKLY_SECTIONS = [
+const WEEKLY_SECTIONS_PHARMACY = [
     { id: 'cash_card_mix', label: '1. Cash vs. Card Mix', icon: CreditCard, desc: 'Settlement breakdown across checkout registers' },
     { id: 'expiry_loss_exposure', label: '2. Expiry Loss Exposure', icon: AlertTriangle, desc: 'Near-term capital risk in 30/60/90 day buckets' },
     { id: 'supplier_credit', label: '3. Supplier Payables', icon: Layers, desc: 'Distributor balances & earliest due dates' },
@@ -64,7 +66,19 @@ const WEEKLY_SECTIONS = [
     { id: 'seasonal_trend', label: '8. Seasonal Patterns', icon: TrendingUp, desc: 'Week-over-week trajectory & forward trend' },
 ];
 
+const WEEKLY_SECTIONS_ECOMMERCE = [
+    { id: 'gmv_sales_mix', label: '1. GMV & Revenue Performance', icon: CreditCard, desc: 'Gross merchandise value, net sales, discounts & tax' },
+    { id: 'aov_basket_size', label: '2. Average Order Value (AOV)', icon: TrendingUp, desc: 'Basket size trajectory & average spend per transaction' },
+    { id: 'refund_rate_exposure', label: '3. Refund & Return Exposure', icon: AlertTriangle, desc: 'Return rate %, refunded revenue & impacted product lines' },
+    { id: 'customer_retention', label: '4. Customer Retention & Repeat Orders', icon: Layers, desc: 'First-time vs. recurring customer order distribution' },
+    { id: 'product_margin_health', label: '5. Product & Category Margins', icon: Percent, desc: 'Gross margin retention ranked across merchandising lines' },
+    { id: 'fulfillment_speed', label: '6. Fulfillment & Dispatch Metrics', icon: BellRing, desc: 'Unfulfilled backlog, fulfillment rate & shipping mix' },
+    { id: 'payment_gateway_mix', label: '7. Payment Gateway Performance', icon: AlertCircle, desc: 'Shopify Payments, Stripe, PayPal & COD settlement mix' },
+    { id: 'weekly_seasonal_trend', label: '8. Weekly Trajectory & Growth', icon: TrendingUp, desc: 'Week-over-week sales trajectory & forward forecast' },
+];
+
 export default function WeeklyReport() {
+    const { user, activeDomainMeta } = useUser();
     const { activePath } = useFilePath();
     const {
         weeklyIsGenerating: isGenerating,
@@ -89,20 +103,22 @@ export default function WeeklyReport() {
         clearWeeklyResult
     } = useReport();
 
+    const weeklySections = user.domain === 'ecommerce' ? WEEKLY_SECTIONS_ECOMMERCE : WEEKLY_SECTIONS_PHARMACY;
+
     // Local list of files from backend
     const [availableFiles, setAvailableFiles] = useState<FileOption[]>([]);
     const [availableDatabases, setAvailableDatabases] = useState<{ database_name: string; domain?: string }[]>([]);
     const [history, setHistory] = useState<ReportHistoryItem[]>([]);
 
     useEffect(() => {
-        document.title = 'Weekly Executive Report — LLM-KONNECT';
+        document.title = `${activeDomainMeta.name} Weekly Report — LLM-KONNECT`;
         fetchAvailableFiles();
         fetchDiskReports();
-    }, [activePath]);
+    }, [activePath, user.domain]);
 
     const fetchDiskReports = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/report/list`);
+            const res = await fetch(`${API_BASE}/api/report/list?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 const diskReports: any[] = data.reports || [];
@@ -110,11 +126,11 @@ export default function WeeklyReport() {
                     id: r.id || r.stem,
                     stem: r.stem,
                     timestamp: r.created_formatted || 'Recently',
-                    businessName: r.business_name || businessName || 'Pharmacy Weekly Executive Report',
-                    domain: r.domain || 'pharmacy',
-                    sourceFile: r.source_file || 'Uploaded Ledger',
+                    businessName: r.business_name || businessName || (user.domain === 'ecommerce' ? 'E-Commerce Weekly Store Performance' : 'Pharmacy Weekly Executive Report'),
+                    domain: r.domain || user.domain,
+                    sourceFile: r.source_file || 'Uploaded Dataset',
                     verificationPassed: r.verification_passed ?? true,
-                    verifiedCount: r.verified_count || 9,
+                    verifiedCount: r.verified_count || 8,
                     downloadHtmlUrl: r.download_url_html || undefined,
                     downloadPdfUrl: r.download_url_pdf || undefined,
                     hasHtml: Boolean(r.download_url_html),
@@ -132,7 +148,7 @@ export default function WeeklyReport() {
     const fetchAvailableFiles = async () => {
         let listedFiles: FileOption[] = [];
         try {
-            const res = await fetch(`${API_BASE}/api/files`);
+            const res = await fetch(`${API_BASE}/api/files?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 const rawFiles: any[] = data.files || [];
@@ -152,7 +168,8 @@ export default function WeeklyReport() {
                         extension: f.extension,
                         file_size_formatted: f.file_size_formatted,
                         dir_type: f.dir_type || 'upload',
-                        is_ingested: f.is_ingested || false
+                        is_ingested: f.is_ingested || false,
+                        domain: f.domain
                     }));
                 setAvailableFiles(filesList);
                 listedFiles = filesList;
@@ -171,11 +188,11 @@ export default function WeeklyReport() {
             const res = await fetch(`${API_BASE}/api/kb/database-connections`);
             if (res.ok) {
                 const data = await res.json();
-                const databases = (data.connections || []).map((c: any) => ({ database_name: c.database_name, domain: c.domain }));
+                const databases = (data.connections || [])
+                    .filter((c: any) => (c.domain || 'pharmacy') === user.domain)
+                    .map((c: any) => ({ database_name: c.database_name, domain: c.domain }));
                 setAvailableDatabases(databases);
                 const activeDatabase = databases.find((database: { database_name: string }) => activePath === `db://${database.database_name}`);
-                // activePath follows navigation elsewhere in the app. Keep the
-                // report's explicit source selection when the page is revisited.
                 if (!selectedFile && activeDatabase) {
                     setSelectedFile(activePath);
                 } else if (!selectedFile && databases.length > 0 && listedFiles.length === 0) {
@@ -263,13 +280,15 @@ export default function WeeklyReport() {
                     </div>
                     <div>
                         <div className="re-title-row">
-                            <h1 className="re-title">Weekly Executive Report</h1>
+                            <h1 className="re-title">{activeDomainMeta.name} Weekly Report</h1>
                             <span className="re-badge-live">
                                 <ShieldCheck size={12} /> 7-Day Audit
                             </span>
                         </div>
                         <p className="re-subtitle">
-                            Automated operational intelligence across settlements, margins, expiry risks, and inventory.
+                            {user.domain === 'ecommerce'
+                                ? 'Automated operational intelligence across GMV, order volume, refunds, customer retention, and merchandising.'
+                                : 'Automated operational intelligence across settlements, margins, expiry risks, and inventory.'}
                         </p>
                     </div>
                 </div>
@@ -279,7 +298,7 @@ export default function WeeklyReport() {
             <div className="weekly-pillars-bar">
                 <span className="weekly-pillars-label">Coverage:</span>
                 <div className="weekly-pillars-list">
-                    {WEEKLY_SECTIONS.map((sec) => {
+                    {weeklySections.map((sec) => {
                         const IconComp = sec.icon;
                         return (
                             <div key={sec.id} className="weekly-pillar-chip" title={sec.desc}>
@@ -310,7 +329,9 @@ export default function WeeklyReport() {
 
                     <div className="re-form-group">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-                            <label className="re-label" style={{ margin: 0 }}>POS / Ledger Source</label>
+                            <label className="re-label" style={{ margin: 0 }}>
+                                {user.domain === 'ecommerce' ? 'Store Orders / Catalog Dataset' : 'POS / Ledger Source'}
+                            </label>
                             <button
                                 type="button"
                                 onClick={fetchAvailableFiles}

@@ -42,7 +42,24 @@ class FakeCollection:
     def count(self):
         return len(self.data)
 
-    def delete(self, where):
+    def get(self, ids=None, where=None, include=None):
+        filtered = list(self.data)
+        if ids:
+            id_set = set(ids)
+            filtered = [d for d in filtered if d["id"] in id_set]
+        if where:
+            for k, v in where.items():
+                filtered = [d for d in filtered if d["metadata"].get(k) == v]
+        return {
+            "ids": [d["id"] for d in filtered],
+            "documents": [d["document"] for d in filtered],
+            "metadatas": [d["metadata"] for d in filtered],
+        }
+
+    def delete(self, where=None, ids=None):
+        if ids:
+            id_set = set(ids)
+            self.data = [d for d in self.data if d["id"] not in id_set]
         if not where:
             return
         if "$or" in where:

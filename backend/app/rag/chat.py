@@ -4,6 +4,7 @@ import time
 import json
 from datetime import date
 from typing import Generator, List, Dict, Any, Optional, Tuple
+from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.llm import llm
@@ -11,7 +12,8 @@ from app.ingestion.models import RetrievedChunk
 from app.ingestion.store import KnowledgeBase
 from app.rag.models import ChatRequest, ChatResponse, SourceReference
 from app.rag.history import session_manager
-from app.rag.router import classify_route, extract_filters, AnalyticsRouter, RouteType
+from app.rag.router import classify_route, extract_filters, is_advice_question, AnalyticsRouter, RouteType
+from app.language.roman_urdu import normalize_roman_urdu_intent
 
 class RAGChat:
     def __init__(self):
@@ -117,6 +119,10 @@ class RAGChat:
             (r'\b(shuruwat)\b', 'aaghaz'),
             (r'\b(namaste)\b', 'assalam o alaikum'),
             (r'\b(sukriya)\b', 'shukriya'),
+            (r'\b(sahayata)\b', 'madad'),
+            (r'\b(suchna)\b', 'ittila'),
+            (r'\b(anurodh)\b', 'guzaarish'),
+            (r'\b(sambandhit)\b', 'mutalliq'),
         ]
         cleaned = text
         for pattern, repl in replacements:
@@ -151,7 +157,14 @@ class RAGChat:
             "thoda", "thora", "chahiye", "skte", "sakte", "sakty", "apka", "aapka", "apki", "aapki",
             "apke", "aapke", "hume", "humara", "hamara", "nhi", "shukriya", "shukria", "kiska",
             "kiski", "kiske", "rha", "rhi", "rhe", "raha", "rahi", "rahe", "karna", "karta", "karti",
-            "karte", "hwi", "hui", "bhej", "mangwaya", "mangwayi"
+            "karte", "hwi", "hui", "bhej", "mangwaya", "mangwayi", "mangwana", "muje", "mujy", "mujhy", "meri",
+            "mera", "mere", "mene", "maine", "dawaiyan", "dawayian", "dawayan", "dawaon", "bikri", "bikree",
+            "bechi", "bechay", "biki", "bikay", "munafa", "nafa", "faida", "nuqsan", "nuksan", "kharcha",
+            "aamdani", "amdani", "kamai", "pichlay", "pichle", "guzishta", "kal", "aaj", "barhao", "barha",
+            "barhane", "badhao", "khareeda", "khareedna", "maal", "main", "qareeb", "dheemi", "tabdeeli",
+            "bunyaad", "maslay", "karun", "karon", "mujc", "mjhe", "mjy", "farukht", "farokht", "frokt", "frokht",
+            "udhar", "udhari", "naqad", "naqd", "rokra", "baqaya", "rasid", "raseed", "parchi", "hisab", "hisaab",
+            "khata", "khaata", "wasooli", "bachat", "khasara", "laagat", "lagat"
         }
         medium_roman_urdu = {
             "kis", "hai", "hain", "ho", "hu", "hoon", "hun", "tm", "tum", "kr", "kar", "karo",
@@ -171,6 +184,11 @@ class RAGChat:
     def _is_data_source_inquiry(self, question: str) -> bool:
         import re
         q = question.strip().lower().rstrip("?.! ")
+
+        # Users often phrase a simple metadata request politely. Normalize the
+        # wrapper before matching so it reaches the deterministic registry
+        # lookup instead of vector retrieval (which may not contain filenames).
+        q = re.sub(r"^(?:please\s+)?(?:can|could|would)\s+you\s+", "", q)
         
         # Exclude questions asking about capabilities, help, or types of questions
         if re.search(r"\b(type\s+of\s+questions?|what\s+can\s+you\s+do|how\s+to\s+use|help|questions?\s+can\s+i\s+ask|capabilities|examples?|suggest\s+questions?)\b", q):
@@ -180,6 +198,8 @@ class RAGChat:
             r"^(what|which)\s+(is|are)\s+(the\s+|my\s+|active\s+|current\s+|selected\s+)?(data\s*sources?|datasets?|source\s*files?|files?|tables?|database)\b",
             r"^(what|which)\s+(data\s*sources?|datasets?|source\s*files?|files?|tables?)\s+(are\s+)?(active|selected|loaded|connected|used|in\s+use|being\s+used)\b",
             r"^(list|show|display|tell\s+me|name)\s+(the\s+|all\s+|active\s+|current\s+|selected\s+)?(data\s*sources?|datasets?|source\s*files?|tables?|active\s*scope)\b",
+            r"^(tell\s+me|give\s+me|show\s+me|what\s+is|name)\s+(?:the\s+)?(?:name\s+of\s+)?(?:the\s+)?(?:active\s+|current\s+|selected\s+|connected\s+)?(data\s*sources?|datasets?|source\s*files?|files?|tables?|databases?)\b",
+            r"^(what|which)\s+(?:is\s+)?(?:the\s+)?(?:name\s+of\s+)?(?:active\s+|current\s+|selected\s+|connected\s+)?(data\s*source|dataset|source\s*file|file|table|database)\s+(?:is\s+)?(?:active|current|selected|connected|loaded|in\s+use)\b",
             r"^(data\s*sources?|active\s*sources?|active\s*scope|active\s*files?|active\s*datasets?|connected\s*datasets?|current\s*dataset)$",
             r"^where\s+(is\s+the\s+data\s+from|are\s+you\s+getting\s+the\s+data)\b",
             r"^(what|which)\s+(data\s*source|dataset|file|table)\s+are\s+you\s+using\b"
@@ -294,7 +314,7 @@ class RAGChat:
                         lines.append(f"- **{s}**")
                     return "\n".join(lines)
 
-    def _get_system_prompt(self, domain: str, route: str, selected_sources: Optional[List[str]] = None, lang: str = "english") -> str:
+    def _get_system_prompt(self, domain: str, route: str, selected_sources: Optional[List[str]] = None, lang: str = "english", question: str = "") -> str:
         """
         Domain-agnostic core logic, but uses domain pack if available.
         For now, a generic prompt with strict grounding constraints.
@@ -377,9 +397,17 @@ class RAGChat:
                 "Answer the user's question clearly, accurately, and concisely in 1 to 3 sentences using the provided Context Records. "
                 "Do not repeat raw metadata tags or row numbers unless specifically requested. "
                 "Be concise and do not guess information not in the records. "
-                "If the Context Records are empty or contain no relevant data for the question asked, "
+                "For factual lookup questions, if the Context Records are empty or contain no relevant data for the question asked, "
                 "respond with: 'No records found for that query in the connected data sources.'"
             )
+            if is_advice_question(question):
+                base_prompt += (
+                    " The user is asking for advice or an action plan, not a KPI total. Give a short, practical answer. "
+                    "Use Context Records only for claims about this pharmacy; do not pretend a few retrieved rows are a full-dataset analysis. "
+                    "If the records do not establish a specific sales trend or cause, say so briefly, then offer clearly labeled general actions "
+                    "the owner can try and measure (for example availability, repeat-customer follow-up, relevant add-ons, and margin-aware promotions). "
+                    "Do not invent figures or guarantee that an action will increase sales."
+                )
         elif route == RouteType.ANALYTICS:
             base_prompt += (
                 "CRITICAL: The exact numeric answer has already been calculated and provided below under 'Calculated Metric'.\n"
@@ -622,7 +650,7 @@ class RAGChat:
                 if period and period not in periods:
                     periods.append(period)
                 label = "Estimated units" if unit == "units" else "Estimated revenue"
-                detail = f"- {label}: {self._format_analytics_number(value, unit)}"
+                detail = f"{label}: {self._format_analytics_number(value, unit)}"
                 if lower is not None and upper is not None:
                     detail += (
                         f"\n  Likely range: {self._format_analytics_number(lower, unit)}"
@@ -647,35 +675,95 @@ class RAGChat:
                     except (TypeError, ValueError):
                         pass
                     heading += f" — {period}"
-                return f"**{heading}**\n\n" + "\n".join(parts) + f"\n\n{caveat}"
+                return f"{heading}\n\n" + "\n".join(parts) + f"\n\n{caveat}"
 
         parts = []
         for key, item in available.items():
             label = item.get("name", key)
-            parts.append(f"{label}: {self._format_analytics_number(item['value'], item.get('unit', ''))}")
             breakdown = item.get("breakdown") or []
+            transaction_summary = next((row for row in breakdown if row.get("transaction_id") is not None), None)
+            transaction_items = [row for row in breakdown if row.get("product_id") is not None]
+            if transaction_summary is not None and transaction_items:
+                lines = [f"**Transaction {transaction_summary['transaction_id']}**"]
+                if transaction_summary.get("supplier_name"):
+                    lines.append(f"Supplier: {transaction_summary['supplier_name']}")
+                if transaction_summary.get("invoice_id"):
+                    lines.append(f"Invoice: {transaction_summary['invoice_id']}")
+                lines.extend([
+                    "",
+                    "| Product | Quantity | Amount | GST | Margin |",
+                    "| --- | ---: | ---: | ---: | ---: |",
+                ])
+                for row in transaction_items:
+                    product = str(row.get("product_id", "")).replace("|", "\\|")
+                    quantity = self._format_analytics_number(row.get("quantity"), "units")
+                    amount = self._format_analytics_number(row.get("amount"), "PKR")
+                    gst = self._format_analytics_number(row.get("tax_pct"), "percent")
+                    margin = self._format_analytics_number(row.get("margin_pct"), "percent")
+                    lines.append(f"| {product} | {quantity} | {amount} | {gst} | {margin} |")
+                totals = []
+                for field, title, unit in (
+                    ("total_quantity", "Total quantity", "units"),
+                    ("total_product_amount", "Total product amount", "PKR"),
+                    ("total_bonus", "Total bonus", "units"),
+                    ("net_payable", "Net payable", "PKR"),
+                ):
+                    if transaction_summary.get(field) is not None:
+                        totals.append(f"| {title} | {self._format_analytics_number(transaction_summary[field], unit)} |")
+                if totals:
+                    lines.extend(["", "| Summary | Value |", "| --- | ---: |", *totals])
+                parts.append("\n".join(lines))
+                continue
+            parts.append(f"{label}: {self._format_analytics_number(item['value'], item.get('unit', ''))}")
             if breakdown:
-                rows = []
-                for row in breakdown[:5]:
-                    label_key = next((k for k in ("product_id", "product", "medicine_name", "supplier_id", "category", "payment_method") if row.get(k)), None)
-                    value_key = next((k for k in ("revenue", "amount", "quantity", "units", "profit", "count", "value") if row.get(k) is not None), None)
-                    if label_key and value_key:
-                        rows.append(f"{row[label_key]} ({self._format_analytics_number(row[value_key], item.get('unit', ''))})")
-                if rows:
-                    parts.append(f"Top results: {', '.join(rows)}")
+                label_keys = (
+                    "product_id", "product", "medicine_name", "supplier_name", "supplier_id",
+                    "category", "group", "payment_method", "type", "year", "transaction_id",
+                    "invoice_id", "batch_no", "product_code", "location_code", "month",
+                    "action", "risk", "expires",
+                )
+                metric_keys = (
+                    "revenue", "net_payable", "amount", "quantity", "units", "records",
+                    "invoices", "rows", "count", "average_margin_pct", "margin_pct",
+                    "discount_amount", "discount_pct", "tax_pct", "tax_amount", "total_quantity",
+                    "cost", "mrp", "average_purchase_price", "average_discount_pct",
+                    "distinct_suppliers", "distinct_products", "bonus_records", "bonus_units",
+                    "expired_quantity", "expired_batches",
+                    "stock_units", "on_hand", "units_sold_30d", "purchased_90d", "days_cover", "days_left",
+                    "revenue_30d", "gross_profit_30d", "sales_change_pct",
+                )
+                row_limit = 60 if "price comparison" in label.casefold() else 20
+                columns = [k for k in label_keys + metric_keys if any(row.get(k) is not None for row in breakdown[:row_limit])]
+                if columns:
+                    headers = ["Group" if k == "group" else k.replace("_", " ").title() for k in columns]
+                    table_lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+                    for row in breakdown[:row_limit]:
+                        cells = []
+                        for column in columns:
+                            value = row.get(column)
+                            if value is None:
+                                cells.append("")
+                            elif column in {"amount", "revenue", "net_payable", "discount_amount", "tax_amount", "cost", "mrp", "average_purchase_price", "revenue_30d", "gross_profit_30d"}:
+                                cells.append(self._format_analytics_number(value, "PKR"))
+                            elif column in {"margin_pct", "average_margin_pct", "discount_pct", "tax_pct", "average_discount_pct", "sales_change_pct"}:
+                                cells.append(self._format_analytics_number(value, "percent"))
+                            elif column in {"quantity", "units", "total_quantity", "bonus_units", "expired_quantity", "stock_units", "on_hand", "units_sold_30d", "purchased_90d"}:
+                                cells.append(self._format_analytics_number(value, "units"))
+                            elif column in {"days_cover", "days_left"}:
+                                cells.append(self._format_analytics_number(value, "days"))
+                            elif column in {"records", "invoices", "rows", "count", "distinct_suppliers", "distinct_products", "bonus_records", "expired_batches"}:
+                                cells.append(self._format_analytics_number(value, "count"))
+                            else:
+                                cells.append(str(value).replace("|", "\\|"))
+                        table_lines.append("| " + " | ".join(cells) + " |")
+                    parts.append("\n\n" + "\n".join(table_lines))
 
         if not parts:
             unavailable = [item.get("reason") for item in computed_values.values() if item.get("reason")]
             reason = unavailable[0] if unavailable else "no usable metric was returned"
             prefix = "Hisaab dastiyab nahi: " if lang == "roman_urdu" else ("حساب دستیاب نہیں: " if lang == "urdu_script" else "The requested metric is unavailable: ")
             return prefix + reason + self._date_window_text(filters)
-        if lang == "roman_urdu":
-            heading = "Natayij"
-        elif lang == "urdu_script":
-            heading = "نتائج"
-        else:
-            heading = "Analytics results"
-        return f"**{heading}**\n\n" + "\n".join(f"- {part}" for part in parts) + self._date_window_text(filters)
+        return "\n".join(parts) + self._date_window_text(filters)
 
     def _get_records_for_analytics(
         self, request: ChatRequest, filters: Dict[str, Any]
@@ -727,6 +815,40 @@ class RAGChat:
                 pass
 
         dfs = []
+        # When the user selects a database group in the composer, the UI expands
+        # it into every child table ID. Load that snapshot in one Chroma read so
+        # whole-POS analytics neither repeats N full-index queries nor risks
+        # accidentally using only a subset of its tables.
+        if target_files and all(getattr(item, "group_name", None) for item in target_files):
+            group_names = {str(item.group_name) for item in target_files}
+            if len(group_names) == 1:
+                group_name = next(iter(group_names))
+                try:
+                    group_records = [
+                        item for item in file_registry.list_files()
+                        if item.group_name and item.group_name.casefold() == group_name.casefold()
+                        and item.status == "active"
+                    ]
+                    selected_ids = {item.file_id for item in target_files}
+                    group_ids = {item.file_id for item in group_records}
+                    if group_ids and selected_ids == group_ids:
+                        from app.api.analytics import _load_canonical, KPIRequest
+                        combined_df, _ = _load_canonical(
+                            KPIRequest(file_path=f"db://{group_name}", domain=request.domain)
+                        )
+                        if combined_df is not None and not combined_df.empty:
+                            if "source_row" not in combined_df.columns:
+                                combined_df["source_row"] = combined_df.index + 1
+                            return combined_df, []
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    # Never fall back to a per-table subset when a whole-database
+                    # scope was selected; report the load failure instead.
+                    raise RuntimeError(
+                        f"Could not load the complete selected database '{group_name}'; "
+                        "whole-database analytics was stopped to avoid a partial result."
+                    ) from exc
         if target_files:
             for tf in target_files:
                 try:
@@ -770,10 +892,11 @@ class RAGChat:
         start_time = time.time()
         
         question = self._normalize_question(request.question)
+        intent_question = normalize_roman_urdu_intent(question)
         lang = self._detect_query_language(question)
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
-        if self._is_data_source_inquiry(question):
+        if self._is_data_source_inquiry(intent_question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
                 source_files=request.source_files,
@@ -801,10 +924,10 @@ class RAGChat:
 
         last_turn = session_manager.get_last_assistant_turn(request.session_id)
         last_route = last_turn.get("route") if last_turn else None
-        route = classify_route(question, last_route=last_route)
-        filters = extract_filters(question, request.domain)
+        route = classify_route(intent_question, last_route=last_route)
+        filters = extract_filters(intent_question, request.domain)
         if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
-            token in question.casefold()
+            token in intent_question.casefold()
             for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
         ):
             filters["as_of"] = date.today().isoformat()
@@ -831,7 +954,7 @@ class RAGChat:
             else:
                 # Compute deterministically via the Module 6.6 KPI engine.
                 computed_values, source_rows = self.analytics_router.compute(
-                    question, filters, records, request.domain
+                    intent_question, filters, records, request.domain
                 )
             if computed_values:
                 matched = self._analytics_citations(records, source_rows, request.domain)
@@ -841,7 +964,7 @@ class RAGChat:
             # Dynamic retrieval depth: widen when date or category filters are active
             retrieval_k = 25 if filters else settings.retrieval_top_k
             chunks = self.kb.search(
-                question,
+                intent_question,
                 top_k=retrieval_k,
                 filters=filters,
                 domain=request.domain,
@@ -878,7 +1001,7 @@ class RAGChat:
             )
 
         # Build prompt messages
-        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
+        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang, question=question)
         history = session_manager.get_history(request.session_id)
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -947,10 +1070,11 @@ class RAGChat:
         """End-to-end streaming RAG pipeline."""
         start_time = time.time()
         question = self._normalize_question(request.question)
+        intent_question = normalize_roman_urdu_intent(question)
         lang = self._detect_query_language(question)
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
-        if self._is_data_source_inquiry(question):
+        if self._is_data_source_inquiry(intent_question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
                 source_files=request.source_files,
@@ -977,10 +1101,10 @@ class RAGChat:
 
         last_turn = session_manager.get_last_assistant_turn(request.session_id)
         last_route = last_turn.get("route") if last_turn else None
-        route = classify_route(question, last_route=last_route)
-        filters = extract_filters(question, request.domain)
+        route = classify_route(intent_question, last_route=last_route)
+        filters = extract_filters(intent_question, request.domain)
         if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
-            token in question.casefold()
+            token in intent_question.casefold()
             for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
         ):
             filters["as_of"] = date.today().isoformat()
@@ -1004,7 +1128,7 @@ class RAGChat:
                 }, []
             else:
                 computed_values, source_rows = self.analytics_router.compute(
-                    question, filters, records, request.domain
+                    intent_question, filters, records, request.domain
                 )
             if computed_values:
                 matched = self._analytics_citations(records, source_rows, request.domain)
@@ -1013,7 +1137,7 @@ class RAGChat:
         elif route == RouteType.RAG:
             retrieval_k = 25 if filters else settings.retrieval_top_k
             chunks = self.kb.search(
-                question,
+                intent_question,
                 top_k=retrieval_k,
                 filters=filters,
                 domain=request.domain,
@@ -1049,7 +1173,7 @@ class RAGChat:
             )
             return
 
-        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang)
+        system_prompt = self._get_system_prompt(request.domain, route, selected_sources=request.file_ids, lang=lang, question=question)
         history = session_manager.get_history(request.session_id)
         
         messages = [{"role": "system", "content": system_prompt}]

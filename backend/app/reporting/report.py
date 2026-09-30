@@ -366,7 +366,7 @@ def gather_report_data(
                     "near_expiry_total", "expired_stock_value", "expiring_value_30d",
                     "supplier_payable_total",
                     "supplier_payable_by_supplier", "dead_stock_value", "low_stock_reorder_predictions",
-                    "top_declining_products",
+                    "top_declining_products", "gross_margin_by_category", "payment_method_mix",
                 )
                 computed_kpis = dict(current_kpis)
                 for key in snapshot_keys:
@@ -761,41 +761,6 @@ def _render_weekly_html_document(
         comparison_html += f'<div class="chart-box"><img class="chart-img" src="{c_compare}" alt="Current versus previous period comparison" /><div class="chart-caption">Each measure is scaled independently for a fair period-to-period comparison.</div></div>'
 
     # 1. Cash / Card Mix
-    if report_data.branch_performance:
-        branch_rows = "".join(
-            f'<tr><td>{escape(str(row.get("branch", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td>'
-            f'<td>{int(row.get("invoices", 0) or 0):,}</td><td>PKR {float(row.get("avg_bill", 0) or 0):,.0f}</td></tr>'
-            for row in report_data.branch_performance
-        )
-        branch_chart = f'<div class="chart-box"><img class="chart-img" src="{c_branch}" alt="Revenue by branch" /></div>' if c_branch else ""
-        sections_html.append(f'<div class="page"><div class="section-title">Branch performance</div><p>Compare sales and average transaction size across locations in the selected period.</p>{branch_chart}<table><thead><tr><th>Branch</th><th>Sales</th><th>Transactions</th><th>Average bill</th></tr></thead><tbody>{branch_rows}</tbody></table></div>')
-
-    if report_data.top_products:
-        product_rows = "".join(
-            f'<tr><td>{escape(str(row.get("name", "")))}</td><td>PKR {float(row.get("amount", 0) or 0):,.0f}</td></tr>'
-            for row in report_data.top_products[:15]
-        )
-        product_chart = f'<div class="chart-box"><img class="chart-img" src="{c_top}" alt="Top products by sales" /></div>' if c_top else ""
-        sections_html.append(f'<div class="page"><div class="section-title">Products driving sales</div><p>Highest-selling items by recorded revenue for this dataset and period.</p>{product_chart}<table><thead><tr><th>Product</th><th>Sales</th></tr></thead><tbody>{product_rows}</tbody></table></div>')
-
-    if report_data.daily_traffic:
-        rows = "".join(f'<tr><td>{escape(str(row.get("day", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td></tr>' for row in report_data.daily_traffic)
-        day_chart = f'<div class="chart-box"><img class="chart-img" src="{c_day}" alt="Sales by day" /></div>' if c_day else ""
-        sections_html.append(f'<div class="page"><div class="section-title">Sales by day</div><p>Use the observed weekday pattern to plan staffing and replenishment.</p>{day_chart}<table><thead><tr><th>Day</th><th>Sales</th></tr></thead><tbody>{rows}</tbody></table></div>')
-
-    if report_data.hourly_traffic:
-        rows = "".join(f'<tr><td>{int(row.get("hour", 0)):02d}:00</td><td>{int(row.get("count", 0)):,}</td></tr>' for row in report_data.hourly_traffic)
-        hour_chart = f'<div class="chart-box"><img class="chart-img" src="{c_hour}" alt="Customer activity by hour" /></div>' if c_hour else ""
-        sections_html.append(f'<div class="page"><div class="section-title">Customer activity by hour</div><p>Observed transaction counts by recorded checkout hour.</p>{hour_chart}<table><thead><tr><th>Hour</th><th>Transactions</th></tr></thead><tbody>{rows}</tbody></table></div>')
-
-    if report_data.cashier_performance:
-        rows = "".join(f'<tr><td>{escape(str(row.get("cashier", "")))}</td><td>PKR {float(row.get("revenue", 0) or 0):,.0f}</td><td>{int(row.get("invoices", 0) or 0):,}</td></tr>' for row in report_data.cashier_performance)
-        sections_html.append(f'<div class="page"><div class="section-title">Cashier activity</div><p>Recorded throughput by cashier; use this alongside shift hours before comparing productivity.</p><table><thead><tr><th>Cashier</th><th>Sales</th><th>Transactions</th></tr></thead><tbody>{rows}</tbody></table></div>')
-
-    if report_data.top_debtors:
-        rows = "".join(f'<tr><td>{escape(str(row.get("customer", "")))}</td><td>PKR {float(row.get("balance", 0) or 0):,.0f}</td></tr>' for row in report_data.top_debtors)
-        sections_html.append(f'<div class="page"><div class="section-title">Outstanding customer balances</div><p>Prioritize reconciled balances and follow up according to agreed credit terms.</p><table><thead><tr><th>Customer</th><th>Balance</th></tr></thead><tbody>{rows}</tbody></table></div>')
-
     if "cash_card_mix" in report_data.sections:
         pay_rows = []
         for pm in report_data.payment_mix:
@@ -963,7 +928,7 @@ def _render_weekly_html_document(
         note = report_data.category_trend_note or "Use the observed sales movement above to align purchasing and staffing with demand in this source."
         sections_html.append(f"""
         <div class="page">
-          <div class="section-title">Sales history &amp; demand trend</div>
+          <div class="section-title">8. Seasonal Patterns &amp; Forward Trend</div>
           <div class="section-sub">Recorded monthly sales for purchasing and staffing context</div>
           {chart_html}
           <div class="callout callout-green">
@@ -978,14 +943,14 @@ def _render_weekly_html_document(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{report_title}</title>
+  <title>{report_title}</title>
   <style>{_HTML_CSS}</style>
 </head>
 <body>
   <!-- PAGE 1: COVER -->
   <div class="page cover-page">
     <div class="cover-title">{escape(report_data.business_name)}</div>
-    <div class="cover-subtitle">{report_title}</div>
+    <div class="cover-subtitle">Weekly Performance Report</div>
     <div class="cover-branches">{branches_str}</div>
     <div class="cover-period">Reporting Period: {em.reporting_period}</div>
     <div class="cover-meta">
@@ -997,7 +962,7 @@ def _render_weekly_html_document(
 
   <!-- PAGE 2: EXECUTIVE SUMMARY & STAT GRID -->
   <div class="page">
-    <div class="section-title">Owner insights &amp; actions</div>
+    <div class="section-title">Executive Summary</div>
     {warn_banner}
     {comparison_html}
     {owner_insights_html or '<p>No owner recommendations could be computed from the available source fields. Add dated sales, product costs, stock levels, and branch identifiers to enable richer analysis.</p>'}

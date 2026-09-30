@@ -159,7 +159,7 @@ def report_progress(generation_id: str):
 
 
 @router.get("/list")
-def list_reports():
+def list_reports(domain: Optional[str] = None):
     """List all available generated reports on disk, grouped by report session."""
     reports_dir = Path(settings.reports_dir).resolve()
     if not reports_dir.exists():
@@ -193,6 +193,10 @@ def list_reports():
                 except Exception:
                     meta_data = {}
 
+            report_domain = meta_data.get("domain") or "pharmacy"
+            if domain and report_domain.lower() != domain.strip().lower():
+                continue
+
             grouped[stem] = {
                 "id": stem,
                 "stem": stem,
@@ -201,7 +205,7 @@ def list_reports():
                 "filename_base": stem,
                 "business_name": meta_data.get("business_name") or "Analytics Report",
                 "source_file": meta_data.get("source_file") or "Uploaded Dataset",
-                "domain": meta_data.get("domain") or "pharmacy",
+                "domain": report_domain,
                 "report_type": meta_data.get("report_type") or "standard",
                 "verification_passed": meta_data.get("verification_passed", True),
                 "verified_count": meta_data.get("verified_count", 5),

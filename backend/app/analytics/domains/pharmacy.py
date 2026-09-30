@@ -86,11 +86,25 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
         ),
         ("low_stock_reorder_predictions", "stockout_risk_count"),
     ),
+    # Product-performance wording should never fall through to a whole-store total.
+    (("sold together", "together sold", "ek sath", "saath saath"),
+     ("quantity_breakdown_by_product",)),
+    (("generic salt", "active ingredient"), ("quantity_breakdown_by_product",)),
+    (("brand-wise", "brand",), ("revenue_breakdown_by_product",)),
+    (("slow-moving", "slow moving", "not sold", "never sold", "bilkul nahi sold", "dead stock"),
+     ("top_declining_products", "quantity_breakdown_by_product")),
+    (("fast-moving", "fast moving", "fast-selling", "best-selling", "top-selling", "most sold"),
+     ("quantity_breakdown_by_product", "revenue_breakdown_by_product")),
+    (("revenue by product", "sales by product", "sales contribution", "contribution products",
+      "which medicine sold", "which medicines sold", "top 10 medicines", "top products"),
+     ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
+    (("quantity by product", "units by product", "quantity sold by", "units sold by", "by quantity"),
+     ("quantity_breakdown_by_product",)),
     # 2. Demand forecasting
     (
         (
             "demand", "how much should i order", "how much to order", "reorder",
-            "kitna mangwana", "kitna order", "kitni dawai", "dawai ki demand",
+            "kitna mangwana", "kitna order", "kitni dawai mangwani", "kitni dawai order", "dawai ki demand",
             "stock kitna chahiye",
         ),
         ("product_demand_forecast", "demand_forecast"),
@@ -1578,8 +1592,14 @@ def register(engine, domain: str = "pharmacy") -> None:
     so reloading a domain never raises.
     """
     from app.analytics.engine import KPISpec
+    from app.analytics.domains.pharmacy_purchases import pharmacy_purchase_analysis
 
     specs = [
+        KPISpec(
+            "pharmacy_purchase_analysis", "Pharmacy Purchase Analysis", UNIT_COUNT,
+            "Deterministic counts, grouped summaries, and purchase ledger calculations from pharmacy invoice rows.",
+            pharmacy_purchase_analysis, domain=domain, tags=("purchase", "dataset", "analysis"),
+        ),
         KPISpec(
             "near_expiry_total", "Near-Expiry Stock Value", UNIT_CURRENCY,
             "Value of stock expiring within the widest configured bucket, excluding "

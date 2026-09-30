@@ -278,7 +278,10 @@ def suggest_mapping(
                     best_fuzzy_score = score
                     best_fuzzy_field = cf
 
-            if best_fuzzy_score >= 0.75 and best_fuzzy_field:
+            # Keep fuzzy mapping for genuine typos, but require a strong
+            # similarity. A permissive 0.75 threshold incorrectly maps unrelated
+            # fields such as Province -> unit_price and Total_Tax -> total_qty.
+            if best_fuzzy_score >= 0.86 and best_fuzzy_field:
                 best_field = best_fuzzy_field
                 best_conf = round(best_fuzzy_score, 4)
                 reason = f"Fuzzy match (ratio={best_fuzzy_score:.2f})"

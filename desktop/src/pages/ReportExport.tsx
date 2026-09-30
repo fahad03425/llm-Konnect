@@ -84,11 +84,11 @@ export default function ReportExport() {
         document.title = 'Verified Report Generator — LLM-KONNECT';
         fetchAvailableFiles();
         fetchDiskReports();
-    }, [activePath]);
+    }, [activePath, user.domain]);
 
     const fetchDiskReports = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/report/list`);
+            const res = await fetch(`${API_BASE}/api/report/list?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 const diskReports: any[] = data.reports || [];
@@ -118,7 +118,7 @@ export default function ReportExport() {
 
     const fetchAvailableFiles = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/files`);
+            const res = await fetch(`${API_BASE}/api/files?domain=${encodeURIComponent(user.domain)}`);
             if (res.ok) {
                 const data = await res.json();
                 const rawFiles: any[] = data.files || [];

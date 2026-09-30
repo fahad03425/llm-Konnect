@@ -8,6 +8,7 @@ import pytest
 import pandas as pd
 
 from app.connectors.csv_excel import CSVConnector
+from app.connectors.json import JSONConnector
 from app.schema.mapper import map_headers, suggest_mapping
 from app.schema.normalize import apply_mapping
 from app.schema.validate import validate
@@ -21,6 +22,46 @@ _INV_CSV = os.path.join(
 )
 
 pack = PharmacyDomainPack()
+
+
+def test_nested_pharmacy_json_fields_map_into_analytics_schema():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "samples", "sample_pharmacy.json")
+    raw = JSONConnector(path).fetch()
+    mapping = map_headers(list(raw.columns), pack)
+    canonical = apply_mapping(raw, mapping, domain="pharmacy", keep_extras=True)
+
+    assert len(canonical) == 1
+    assert canonical.loc[0, "product_id"] == "Arinac Forte"
+    assert canonical.loc[0, "generic_name"] == "Ibuprofen + Pseudoephedrine"
+    assert canonical.loc[0, "batch_no"] == "B-99"
+    assert pd.notna(canonical.loc[0, "expiry_date"])
+    assert canonical.loc[0, "quantity"] == 50
+    assert canonical.loc[0, "mrp"] == 150
+    assert canonical.loc[0, "cost"] == 120
+
+
+def test_pos_header_aliases_keep_distinct_business_fields():
+    raw = pd.DataFrame([{
+        "Bill_Time": "10:15", "Branch_Name": "Main", "Cashier_Name": "A",
+        "Client_Type": "Cash", "Customer_Mobile": "0300", "Product_Name": "Drug A",
+        "Amount": 100, "Total_Amount": 110, "Paid_Amount": 90,
+        "Discount_Percentage": 20, "Invoice_GST_Percentage": 17,
+    }])
+    mapping = map_headers(list(raw.columns), pack)
+    canonical = apply_mapping(raw, mapping, domain="pharmacy", keep_extras=True)
+
+    assert mapping["Bill_Time"] == "time_of_day"
+    assert mapping["Branch_Name"] == "branch"
+    assert mapping["Cashier_Name"] == "cashier_name"
+    assert mapping["Client_Type"] == "client_type"
+    assert mapping["Customer_Mobile"] == "mobile_number"
+    assert mapping["Product_Name"] == "product_id"
+    assert mapping["Total_Amount"] == "invoice_total"
+    assert mapping["Paid_Amount"] == "paid_amount"
+    assert canonical.loc[0, "amount"] == 100
+    assert canonical.loc[0, "invoice_total"] == 110
+    assert canonical.loc[0, "paid_amount"] == 90
+    assert canonical.loc[0, "invoice_tax_pct"] == 17
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

@@ -71,9 +71,11 @@ const UploadedFiles: React.FC = () => {
     const { user, activeDomainMeta } = useUser();
     const { setActivePath, step: wizardStep, fileName: wizardFileName, filePath: wizardFilePath, resetConnectSession } = useConnectSession();
 
+    const domainKey = user?.domain || 'pharmacy';
+
     const [filesData, setFilesData] = useState<FilesResponse>(() => {
         try {
-            const cached = sessionStorage.getItem('llm_konnect_files_cache');
+            const cached = sessionStorage.getItem(`llm_konnect_files_cache_${domainKey}`);
             if (cached) return JSON.parse(cached);
         } catch (_) {}
         return {
@@ -86,7 +88,7 @@ const UploadedFiles: React.FC = () => {
     });
     const [loading, setLoading] = useState<boolean>(() => {
         try {
-            return !sessionStorage.getItem('llm_konnect_files_cache');
+            return !sessionStorage.getItem(`llm_konnect_files_cache_${domainKey}`);
         } catch (_) {
             return true;
         }
@@ -114,15 +116,16 @@ const UploadedFiles: React.FC = () => {
 
     const fetchFiles = useCallback(async (isSilent: boolean = false) => {
         try {
-            if (!isSilent && !sessionStorage.getItem('llm_konnect_files_cache')) {
+            const curDomain = user?.domain || 'pharmacy';
+            if (!isSilent && !sessionStorage.getItem(`llm_konnect_files_cache_${curDomain}`)) {
                 setLoading(true);
             }
-            const res = await fetch('/api/files');
+            const res = await fetch(`/api/files?domain=${encodeURIComponent(curDomain)}`);
             if (!res.ok) throw new Error('Failed to fetch files');
             const data: FilesResponse = await res.json();
             setFilesData(data);
             try {
-                sessionStorage.setItem('llm_konnect_files_cache', JSON.stringify(data));
+                sessionStorage.setItem(`llm_konnect_files_cache_${curDomain}`, JSON.stringify(data));
             } catch (_) {}
         } catch (err: any) {
             if (!isSilent) {
@@ -131,11 +134,11 @@ const UploadedFiles: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [user?.domain]);
 
     useEffect(() => {
         fetchFiles(false);
-    }, [fetchFiles]);
+    }, [fetchFiles, user?.domain]);
 
     // Active polling: auto-poll every 1.2 seconds if any file is currently processing
     useEffect(() => {

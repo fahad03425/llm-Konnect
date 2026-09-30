@@ -180,16 +180,14 @@ class TestProductMedicineInsights:
         assert len(rigix_rows) > 0
         assert any(str(r.get("invoice_id")) == "400004" for r in rigix_rows)
 
-    def test_bonus_quantity_given(self, canonical_records):
+    def test_bonus_quantity_given(self, router, canonical_records):
         q = "Were there any bonus quantities given for Rigix or Tegral Cream?"
-        assert classify_route(q) == RouteType.RAG
-        
-        bonus_rows = [
-            r for r in canonical_records 
-            if ("Rigix" in str(r.get("product_id", "")) or "Tegral" in str(r.get("product_id", "")))
-            and float(r.get("_extra.Bonus_Quantity", 0) or 0) > 0
-        ]
-        assert len(bonus_rows) > 0
+        assert classify_route(q) == RouteType.ANALYTICS
+        computed, sources = router.compute(q, {}, canonical_records, domain="pharmacy")
+        result = computed["pharmacy_line_item_filter"]
+        assert result["status"] == "ok"
+        assert result["value"] > 0
+        assert any("Rigix" in row["product"] or "Tegral" in row["product"] for row in result["breakdown"])
 
     def test_unit_price_cardivas(self, canonical_records):
         q = "What is the unit price of Cardivas 10mg Tablet?"
@@ -199,16 +197,14 @@ class TestProductMedicineInsights:
         assert len(matches) > 0
         assert float(matches[0]["unit_price"]) > 0
 
-    def test_products_with_discount(self, canonical_records):
+    def test_products_with_discount(self, router, canonical_records):
         q = "Which products received a 20% discount?"
-        assert classify_route(q) == RouteType.RAG
-        
-        discount_rows = [
-            r for r in canonical_records 
-            if float(r.get("_extra.Discount_Percentage", 0) or 0) == 20
-        ]
-        assert len(discount_rows) > 0
-        assert any("Tegral" in str(r.get("product_id", "")) for r in discount_rows)
+        assert classify_route(q) == RouteType.ANALYTICS
+        computed, sources = router.compute(q, {}, canonical_records, domain="pharmacy")
+        result = computed["pharmacy_line_item_filter"]
+        assert result["status"] == "ok"
+        assert result["value"] > 0
+        assert any("Tegral" in row["product"] for row in result["breakdown"])
 
     def test_godown_locations(self, canonical_records):
         q = "List the godown locations used for storing products like Cardivas and Rigix."
@@ -253,20 +249,14 @@ class TestBranchCashierBreakdown:
         q = "What transactions were handled by cashier Tahir or Zubair?"
         assert classify_route(q) == RouteType.RAG
         
-        cashier_rows = [
-            r for r in canonical_records 
-            if str(r.get("_extra.Cashier_Name", "")) in ("Tahir", "Zubair")
-        ]
+        cashier_rows = [r for r in canonical_records if str(r.get("cashier_name", "")) in ("Tahir", "Zubair")]
         assert len(cashier_rows) > 0
 
     def test_client_type_credit_vs_cash(self, canonical_records):
         q = "Are there any credit client transactions versus cash transactions?"
         assert classify_route(q) == RouteType.RAG
         
-        client_types = {
-            r.get("_extra.Client_Type") for r in canonical_records 
-            if pd.notna(r.get("_extra.Client_Type"))
-        }
+        client_types = {r.get("client_type") for r in canonical_records if pd.notna(r.get("client_type"))}
         assert "Cash" in client_types or "Credit" in client_types
 
     def test_delivery_rider_orders(self, canonical_records):
@@ -300,15 +290,14 @@ class TestBilingualQueries:
         assert "total_revenue" in computed
         assert computed["total_revenue"]["status"] == "ok"
 
-    def test_roman_urdu_bonus_quantity(self, canonical_records):
+    def test_roman_urdu_bonus_quantity(self, router, canonical_records):
         q = "Kya Rigix tablets par koi bonus quantity di gayi thi?"
-        assert classify_route(q) == RouteType.RAG
-        
-        rigix_bonus = [
-            r for r in canonical_records 
-            if "Rigix" in str(r.get("product_id", "")) and float(r.get("_extra.Bonus_Quantity", 0) or 0) > 0
-        ]
-        assert len(rigix_bonus) > 0
+        assert classify_route(q) == RouteType.ANALYTICS
+        computed, sources = router.compute(q, {}, canonical_records, domain="pharmacy")
+        result = computed["pharmacy_line_item_filter"]
+        assert result["status"] == "ok"
+        assert result["value"] > 0
+        assert any("Rigix" in row["product"] for row in result["breakdown"])
 
     def test_urdu_script_bill_details(self, canonical_records):
         q = "بل نمبر 400002 کی تفصیلات بتائیں"

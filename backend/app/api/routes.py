@@ -439,6 +439,46 @@ class SQLDiscoverRequest(BaseModel):
     domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     sample_n: int = 5
 
+class TallyTestRequest(BaseModel):
+    url: str
+    timeout: int = 5
+
+class ShopifyTestRequest(BaseModel):
+    shop_name: str
+    access_token: str
+    resource: str = "orders"
+    api_version: str = "2025-01"
+
+@router.post("/tally/test")
+def test_tally_source(req: TallyTestRequest):
+    try:
+        from app.connectors.tally import TallyConnector
+        connector = TallyConnector(req.url, timeout=req.timeout)
+        df = connector.preview(n=5)
+        return {
+            "status": "success",
+            "message": "Connected to Tally successfully",
+            "total_preview_rows": len(df),
+            "columns": list(df.columns) if not df.empty else [],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/shopify/test")
+def test_shopify_source(req: ShopifyTestRequest):
+    try:
+        from app.connectors.shopify import ShopifyConnector
+        connector = ShopifyConnector(shop_name=req.shop_name, access_token=req.access_token, api_version=req.api_version)
+        df = connector.preview(resource=req.resource, n=5)
+        return {
+            "status": "success",
+            "message": "Connected to Shopify successfully",
+            "total_preview_rows": len(df),
+            "columns": list(df.columns) if not df.empty else [],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @router.post("/sql/discover")
 def discover_sql_database(req: SQLDiscoverRequest):
     """Auto-discover all tables and schema mappings in a connected SQL database."""

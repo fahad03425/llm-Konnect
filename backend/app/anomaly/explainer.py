@@ -70,12 +70,33 @@ def generate_template_explanation(record: AnomalyRecord) -> str:
             f"substantially exceeding standard store discount policy. Confirm manager authorization."
         )
 
-    elif record.anomaly_type == AnomalyType.NEGATIVE_OR_ZERO_PRICE:
-        val = record.observed_value
-        prod = m.get("product_id", "product")
+    elif record.anomaly_type == AnomalyType.MARGIN_EROSION:
+        prod = m.get("product_name", "Item")
+        unit_price = m.get("unit_price", 0.0)
+        unit_cost = m.get("unit_cost", 0.0)
+        loss = m.get("loss_per_unit", 0.0)
+        loss_pct = m.get("loss_pct", 0.0)
         return (
-            f"Item '{prod}' on invoice '{inv}' was recorded with a price of PKR {val:.2f} on a standard sale row. "
-            f"Review catalog pricing to prevent accidental free dispensing or missing cost entries."
+            f"Product '{prod}' was sold at ${unit_price:,.2f} below its unit cost of ${unit_cost:,.2f} "
+            f"(margin loss: ${loss:,.2f} / -{loss_pct:.1f}%). Check for coupon stacking or inaccurate supplier cost."
+        )
+
+    elif record.anomaly_type == AnomalyType.REFUND_SURGE:
+        prod = m.get("product_name", "Product")
+        refund_rate = m.get("refund_rate_pct", 0.0)
+        total_ref = m.get("total_refund", 0.0)
+        return (
+            f"Product '{prod}' experienced a severe refund surge of {refund_rate:.1f}% "
+            f"(${total_ref:,.2f} in total refunds). Investigate recent customer return reasons and batch quality."
+        )
+
+    elif record.anomaly_type == AnomalyType.REVIEW_RATING_DROP:
+        prod = m.get("product", "Product")
+        avg_r = m.get("average_rating", 0.0)
+        cnt = m.get("review_count", 0)
+        return (
+            f"Product '{prod}' has a critically low customer rating of {avg_r:.2f}★ across {cnt} reviews. "
+            f"Inspect customer feedback comments for recurring complaints or product defects."
         )
 
     return (

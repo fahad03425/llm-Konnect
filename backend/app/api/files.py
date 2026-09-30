@@ -274,8 +274,10 @@ def list_all_files():
                 elif os.path.exists(os.path.join(samples_dir, reg.filename)):
                     real_path = os.path.join(samples_dir, reg.filename)
                 else:
-                    # File does not exist on disk — do not list ghost files
-                    continue
+                    if reg.status not in ("processing", "failed", "active"):
+                        # File does not exist on disk — do not list untracked ghost files
+                        continue
+                    real_path = reg.file_path
 
             seen_paths.add(norm)
             exists = os.path.exists(real_path) if not is_virtual_db else True

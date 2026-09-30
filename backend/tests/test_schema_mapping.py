@@ -91,7 +91,7 @@ class TestSynonymMapping:
     def test_new_synonym_entries(self, pharm):
         """Newly added synonyms for supplier, category, discount, etc."""
         cases = [
-            ("Supplier Name", "supplier_id"),
+            ("Supplier Name", "supplier_name"),
             ("Vendor", "supplier_id"),
             ("Particulars", "description"),
             ("Narration", "description"),
