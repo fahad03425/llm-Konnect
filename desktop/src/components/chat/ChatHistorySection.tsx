@@ -10,15 +10,8 @@ import {
     AlertTriangle
 } from 'lucide-react';
 
-export interface ChatSessionMeta {
-    id: string;
-    title: string;
-    domain: string;
-    created_at: string;
-    updated_at: string;
-    message_count: number;
-    last_message: string;
-}
+import type { ChatSessionMeta } from '../../context/ChatContext';
+export type { ChatSessionMeta };
 
 interface ChatHistorySectionProps {
     sessions: ChatSessionMeta[];
@@ -63,7 +56,7 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
         }
     };
 
-    const getDomainBadge = (dom: string) => {
+    const getDomainBadge = (dom?: string) => {
         switch (dom?.toLowerCase()) {
             case 'pharmacy':
                 return { label: 'Pharmacy & Health', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };

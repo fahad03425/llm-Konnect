@@ -308,6 +308,23 @@ def suggest_mapping(
             reason=reason,
         )
 
+    # Product-pricing catalog exports use "Discount" for a percentage label
+    # (for example "10% Off"), while POS ledgers commonly use it for a money
+    # amount. The paired before/after price columns disambiguate this schema.
+    normalized_headers = {_normalize_header_string(str(c)) for c in columns}
+    has_price_before = bool({"price before", "price_before"} & normalized_headers)
+    has_price_after = bool({"price after", "price_after"} & normalized_headers)
+    is_pricing_catalog = has_price_before and has_price_after
+    if is_pricing_catalog and domain_pack and getattr(domain_pack, "name", "") == "pharmacy":
+        for source_column in columns:
+            if _normalize_header_string(str(source_column)) == "discount":
+                suggestions_map[str(source_column)] = MappingSuggestion(
+                    source_column=str(source_column),
+                    canonical_field="discount_pct",
+                    confidence=1.0,
+                    reason="Catalog schema: Discount is a percent paired with before/after prices",
+                )
+
     # --- Conflict resolution ---
     if resolve_conflicts:
         _resolve_conflicts(suggestions_map)

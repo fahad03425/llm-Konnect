@@ -30,8 +30,11 @@ def is_pos_snapshot(df: pd.DataFrame) -> bool:
 def _metric(df, key, name, value, unit, formula, mask, filters, breakdown=None,
             breakdown_columns=None, reason=None, assumptions=None):
     if reason:
+        reason_mask = pd.Series(mask, index=df.index, dtype=bool).reindex(df.index, fill_value=False)
         return unavailable(key, name, unit, formula, reason,
-                           build_provenance(df, pd.Series(False, index=df.index), filters, [], assumptions or []))
+                           build_provenance(df, reason_mask, filters,
+                                            [c for c in df.columns if c in {"date", "invoice_id", "product_id", "batch_no", "amount", "quantity", "cost", "status"}],
+                                            assumptions or []))
     mask = pd.Series(mask, index=df.index, dtype=bool).reindex(df.index, fill_value=False)
     provenance = build_provenance(df, mask, filters,
                                   [c for c in df.columns if c in {
@@ -68,6 +71,10 @@ def _period(df: pd.DataFrame, filters: KPIFilters) -> pd.DataFrame:
         end = pd.to_datetime(filters.date_to, errors="coerce")
         if pd.notna(end):
             mask &= dates < end.normalize() + pd.Timedelta(days=1)
+    if filters.month is not None:
+        mask &= dates.dt.month == int(filters.month)
+    if filters.year is not None:
+        mask &= dates.dt.year == int(filters.year)
     return df.loc[mask]
 
 
@@ -104,7 +111,7 @@ def _find_product(question: str, df: pd.DataFrame) -> Tuple[Optional[str], Optio
             return exact_match, None
         return matches[0], None
 
-    if re.search(r"(particular|specific)\s+(?:medicine|medicines|product|products|drug|item)", q):
+    if re.search(r"\b(particular|specific)\s+(?:medicine|medicines|product|products|drug|item)\b", q):
         return None, "Please include the medicine or product name so I can filter its records."
     return None, None
 
@@ -119,7 +126,7 @@ def _find_supplier(question: str, df: pd.DataFrame) -> Tuple[Optional[str], Opti
     matches = []
     for name in candidates:
         norm = re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
-        if len(norm) >= 3 and re.search(rf"{re.escape(norm)}", q):
+        if len(norm) >= 3 and re.search(rf"\b{re.escape(norm)}\b", q):
             matches.append(name)
     if matches:
         return matches[0], None
@@ -145,7 +152,14 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         sales = sales.loc[~cancelled]
         sales_dates = sales["_date"]
     sales = sales[sales["_date"].notna()]
-    date_filtered = _period(sales, filters)
+    if not any((filters.date_from, filters.date_to, filters.month, filters.year)) and not sales.empty:
+        # An unqualified "sales"/"sales report" question means the most recent
+        # complete calendar month represented by this source, not every year of
+        # accumulated POS history.
+        latest = sales["_date"].max()
+        date_filtered = sales.loc[(sales["_date"].dt.year == latest.year) & (sales["_date"].dt.month == latest.month)]
+    else:
+        date_filtered = _period(sales, filters)
 
     purchases = _subset(df, r"purchase.*detail|purchase.*item")
     purchases = purchases.copy()
@@ -162,6 +176,9 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
 
     batch_stock = _subset(df, r"batch")
     batch_stock = batch_stock.copy()
+    if "table_name" in batch_stock:
+        archived = batch_stock["table_name"].astype(str).str.contains(r"archive|histor(?:y|ical)|old", case=False, regex=True)
+        batch_stock = batch_stock.loc[~archived].copy()
     batch_stock["_qty"] = pd.to_numeric(batch_stock.get("quantity"), errors="coerce")
     batch_stock["_cost"] = pd.to_numeric(batch_stock.get("cost"), errors="coerce")
     batch_stock["_mrp"] = pd.to_numeric(batch_stock.get("mrp"), errors="coerce")
@@ -189,7 +206,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
 
     stock_mask = pd.Series(df.index.isin(stock.index), index=df.index)
     all_sales_mask = df.index.isin(sales.index)
-    filtered_sales = _period(sales, filters)
+    filtered_sales = date_filtered
     mask = df.index.isin(filtered_sales.index)
     amount = filtered_sales["_amount"].fillna(0)
     qty = filtered_sales["_qty"].fillna(0)
@@ -210,7 +227,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         prod_stock = stock[stock["_product"].str.casefold() == product.casefold()]
         prod_batch = batch_stock[batch_stock["_product"].str.casefold() == product.casefold()]
 
-        if re.search(r"(batch|batches|expire|expiry|miyad|meyad)", q):
+        if re.search(r"\b(batch|batches|expire|expiry|miyad|meyad)\b", q):
             b_rows = prod_batch.sort_values("_expiry") if not prod_batch.empty else prod_stock.sort_values("_expiry")
             if not b_rows.empty:
                 rows = [{"product": product, "batch_no": str(r.get("batch_no")), "expiry_date": r["_expiry"].strftime("%Y-%m-%d") if pd.notna(r["_expiry"]) else "N/A", "quantity": float(r["_qty"])} for _, r in b_rows.iterrows()]
@@ -218,7 +235,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
                 unit = "date" if "expire" in q or "expiry" in q else UNIT_COUNT
                 return _metric(df, "pharmacy_pos_analysis", f"Batches for {product}", val, unit, "batches for the matched product", stock_mask, filters, rows, ["product", "batch_no", "expiry_date", "quantity"])
 
-        if re.search(r"(supplier|suppliers|vendor|vendors)", q):
+        if re.search(r"\b(supplier|suppliers|vendor|vendors)\b", q):
             p_sup = prod_purchases.loc[prod_purchases.get("supplier_name").notna()] if not prod_purchases.empty and "supplier_name" in prod_purchases else pd.DataFrame()
             if not p_sup.empty:
                 latest_p = p_sup.sort_values("_date", ascending=False).head(1)
@@ -226,7 +243,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
                 rows = [{"product": product, "supplier_name": str(row.get("supplier_name")), "last_purchase_date": row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else "N/A", "amount": float(row["_amount"]) if pd.notna(row["_amount"]) else 0}]
                 return _metric(df, "pharmacy_pos_analysis", f"Supplier for {product}", str(row.get("supplier_name")), "supplier", "latest purchase supplier for the product", pd.Series(df.index.isin(latest_p.index), index=df.index), filters, rows, ["product", "supplier_name", "last_purchase_date", "amount"])
 
-        if re.search(r"(last time|last purchase|last buy|rate|price|cost|qeemat|khareedi|khareeda|mangwai)", q) and not re.search(r"(sale|sales|sold|revenue|bikri|bika|biki|bikin)", q):
+        if re.search(r"\b(last time|last purchase|last buy|rate|price|cost|qeemat|khareedi|khareeda|mangwai)\b", q) and not re.search(r"\b(sale|sales|sold|revenue|bikri|bika|biki|bikin)\b", q):
             if not prod_purchases.empty:
                 latest_p = prod_purchases.sort_values("_date", ascending=False).head(1)
                 row = latest_p.iloc[0]
@@ -236,7 +253,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
                 unit = UNIT_CURRENCY if "price" in q or "rate" in q or "cost" in q or "qeemat" in q or "how much" in q else "date"
                 return _metric(df, "pharmacy_pos_analysis", f"Latest purchase for {product}", val, unit, "latest purchase line for the product", pd.Series(df.index.isin(latest_p.index), index=df.index), filters, rows, ["product", "date", "quantity", "unit_price", "amount", "supplier"])
 
-        if re.search(r"(stock|quantity|units|kitni|kitna|kitne|pari|parri|bachi|available|remaining|chalega|chalay ga)", q) and not re.search(r"(sale|sales|sold|revenue|bikri|farokht|kamai|bika|biki|bikin)", q):
+        if re.search(r"\b(stock|quantity|units|kitni|kitna|kitne|pari|parri|bachi|available|remaining|chalega|chalay ga)\b", q) and not re.search(r"\b(sale|sales|sold|revenue|bikri|farokht|kamai|bika|biki|bikin)\b", q):
             stock_qty = float(prod_stock["_qty"].sum()) if not prod_stock.empty else 0.0
             if "chalega" in q or "days" in q or "din" in q:
                 recent_sales_qty = float(prod_sales.loc[prod_sales["_date"] >= (sales["_date"].max() - pd.Timedelta(days=29)), "_qty"].sum()) if not prod_sales.empty else 0.0
@@ -247,11 +264,11 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
             rows = [{"product": product, "stock_units": stock_qty}]
             return _metric(df, "pharmacy_pos_analysis", f"Current stock of {product}", stock_qty, UNIT_COUNT, "sum of on-hand units for the matched product", stock_mask, filters, rows, ["product", "stock_units"])
 
-        if re.search(r"(sales?|sold|revenue|kamai|aamdani|farokht|bikri|bika|biki|bikin|sell)", q):
+        if re.search(r"\b(sales?|sold|revenue|kamai|aamdani|farokht|bikri|bika|biki|bikin|sell)\b", q):
             target_sales = prod_filtered_sales if not prod_filtered_sales.empty else prod_sales
             sales_qty = float(target_sales["_qty"].sum()) if not target_sales.empty else 0.0
             sales_rev = float(target_sales["_amount"].sum()) if not target_sales.empty else 0.0
-            is_rev = bool(re.search(r"(revenue|kamai|aamdani|paisa|value|amount)", q))
+            is_rev = bool(re.search(r"\b(revenue|kamai|aamdani|paisa|value|amount)\b", q))
             val = round(sales_rev, 2) if is_rev else sales_qty
             unit = UNIT_CURRENCY if is_rev else UNIT_COUNT
             rows = [{"product": product, "units_sold": sales_qty, "revenue": round(sales_rev, 2)}]
@@ -261,13 +278,40 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         purchases = purchases[purchases.get("supplier_name", pd.Series(index=purchases.index, dtype=str)).fillna("").astype(str).str.casefold() == supplier.casefold()]
         purchase_headers = purchase_headers[purchase_headers.get("supplier_name", pd.Series(index=purchase_headers.index, dtype=str)).fillna("").astype(str).str.casefold() == supplier.casefold()]
 
+    if re.search(r"\b(lead[- ]time|delivery time|how long .*deliver|days? .*deliver|usually take to deliver)\b", q):
+        receipt_col = next((name for name in ("received_date", "date_received", "delivery_date", "date_delivered") if name in purchases.columns), None)
+        supplier_rows = purchases if supplier else purchases.iloc[0:0]
+        if receipt_col is None or supplier_rows.empty:
+            return _metric(
+                df, "pharmacy_pos_analysis", "Supplier delivery lead time", None, "days",
+                "mean calendar days from purchase order to receipt", df.index.isin(supplier_rows.index), filters,
+                reason="Supplier lead time cannot be calculated because matched order and receipt dates are not recorded.",
+            )
+        order_dates = pd.to_datetime(supplier_rows.get("order_date", supplier_rows.get("date")), errors="coerce")
+        receipt_dates = pd.to_datetime(supplier_rows[receipt_col], errors="coerce")
+        days = (receipt_dates - order_dates).dt.days.dropna()
+        if days.empty:
+            return _metric(
+                df, "pharmacy_pos_analysis", "Supplier delivery lead time", None, "days",
+                "mean calendar days from purchase order to receipt", df.index.isin(supplier_rows.index), filters,
+                reason="Supplier lead time cannot be calculated because matched order and receipt dates are missing or invalid.",
+            )
+        rows = supplier_rows.assign(_lead_days=days).dropna(subset=["_lead_days"])
+        value = float(rows["_lead_days"].mean())
+        return _metric(
+            df, "pharmacy_pos_analysis", "Supplier delivery lead time", round(value, 1), "days",
+            "mean calendar days from purchase order to receipt", df.index.isin(rows.index), filters,
+            [{"supplier": supplier or "all suppliers", "mean_days": round(value, 1), "orders": len(rows)}],
+            ["supplier", "mean_days", "orders"],
+        )
+
     # Owner advice and decision support
     advice_request = bool(re.search(
-        r"(how can|what should|what changes|which .* should|recommend|promot|restock|stop purchasing|"
+        r"\b(how can|what should|what changes|which .* should|recommend|promot|restock|stop purchasing|"
         r"slow[- ]moving|overstock|not keeping enough|high[- ]demand|biggest problems|what do about|"
-        r"barha|barhana|tareeqa|tawajjo|masla|masail|faisla|iqdamat|dastiyabi|behtar|performance|haal|surat-e-haal|loss|nuksan|khatam|phansa|surat|halat|karobar|profitability|order karna|mangwaon|mangwani|foran restock|kami ki wajah)", q
+        r"barha|barhana|tareeqa|tawajjo|masla|masail|faisla|iqdamat|dastiyabi|behtar|performance|haal|surat-e-haal|loss|nuksan|khatam|phansa|surat|halat|karobar|profitability|order karna|mangwaon|mangwani|foran restock|kami ki wajah)\b", q
     ))
-    if advice_request and not re.search(r"(total stock|kul stock|fewer than|stock mein kitne pais|stock ki qeemat|stock value|konsi medicines stock mein|highest|lowest)", q):
+    if advice_request and not re.search(r"\b(total stock|kul stock|fewer than|stock mein kitne pais|stock ki qeemat|stock value|konsi medicines stock mein|highest|lowest)\b", q):
         reference = sales["_date"].max().normalize() if sales["_date"].notna().any() else pd.Timestamp.today().normalize()
         recent_start = reference - pd.Timedelta(days=29)
         prior_start = reference - pd.Timedelta(days=59)
@@ -298,7 +342,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
                        ["action", "product", "revenue_30d", "units_sold_30d", "stock_units"])
 
     # Average Daily Sales
-    if re.search(r"(average daily sale|average daily sales|ausatan|daily average|rozana ausatan|average sale)", q):
+    if re.search(r"\b(average daily sale|average daily sales|ausatan|daily average|rozana ausatan|average sale)\b", q):
         last = sales["_date"].max().normalize()
         first = last.replace(day=1)
         days = max(1, (last - first).days + 1)
@@ -333,30 +377,30 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
                        "daily sales revenue", mask, filters, rows, ["date", "revenue"])
 
     # Invoices and Bills
-    if re.search(r"(bill|bills|invoice|invoices|parchi)", q):
-        if re.search(r"(how many|count|kitne|bane|banay)", q):
+    if re.search(r"\b(bill|bills|invoice|invoices|parchi)\b", q):
+        if re.search(r"\b(how many|count|kitne|bane|banay)\b", q):
             count = int(invoice_col.dropna().astype(str).nunique())
             return _metric(df, "pharmacy_pos_analysis", "Sales invoices count", count, UNIT_COUNT, "distinct invoice count", mask, filters, [{"invoice_count": count}], ["invoice_count"])
-        if re.search(r"(highest|largest|bara|sab se bara|max)", q):
+        if re.search(r"\b(highest|largest|bara|sab se bara|max)\b", q):
             grouped = filtered_sales.groupby("invoice_id", as_index=False)["_amount"].sum().sort_values("_amount", ascending=False)
             val = round(float(grouped.iloc[0]["_amount"]), 2) if not grouped.empty else 0.0
             rows = [{"invoice_id": str(grouped.iloc[0]["invoice_id"]), "amount": val}] if not grouped.empty else []
             return _metric(df, "pharmacy_pos_analysis", "Highest-value sales invoice", val, UNIT_CURRENCY, "largest invoice amount", mask, filters, rows, ["invoice_id", "amount"])
-        if re.search(r"(lowest|smallest|choti|sab se choti|min)", q):
+        if re.search(r"\b(lowest|smallest|choti|sab se choti|min)\b", q):
             grouped = filtered_sales.groupby("invoice_id", as_index=False)["_amount"].sum().sort_values("_amount", ascending=True)
             val = round(float(grouped.iloc[0]["_amount"]), 2) if not grouped.empty else 0.0
             rows = [{"invoice_id": str(grouped.iloc[0]["invoice_id"]), "amount": val}] if not grouped.empty else []
             return _metric(df, "pharmacy_pos_analysis", "Lowest-value sales invoice", val, UNIT_CURRENCY, "smallest invoice amount", mask, filters, rows, ["invoice_id", "amount"])
 
     # Highest / Lowest Sales Day & Hour
-    if re.search(r"(highest.*day|lowest.*day|sab se zyada.*din|sab se kam.*din|achi sale.*din|kis din)", q):
+    if re.search(r"\b(highest.*day|lowest.*day|sab se zyada.*din|sab se kam.*din|achi sale.*din|kis din)\b", q):
         daily = filtered_sales.groupby(filtered_sales["_date"].dt.strftime("%Y-%m-%d"))["_amount"].sum().sort_values(ascending="kam" not in q and "lowest" not in q)
         top = daily.head(1)
         rows = [{"date": d, "amount": round(float(v), 2)} for d, v in top.items()]
         val = rows[0]["amount"] if rows else 0
         return _metric(df, "pharmacy_pos_analysis", "Daily sales peak/trough", val, UNIT_CURRENCY, "daily sales grouped by day", mask, filters, rows, ["date", "amount"])
 
-    if re.search(r"(hour|time|kab|kis waqt)", q):
+    if re.search(r"\b(hour|time|kab|kis waqt)\b", q):
         times = filtered_sales["time_of_day"] if "time_of_day" in filtered_sales else filtered_sales["date"]
         parsed = pd.to_datetime(times.astype(str), errors="coerce")
         grouped = pd.DataFrame({"hour": parsed.dt.hour, "amount": filtered_sales["_amount"]}).dropna().groupby("hour")["amount"].sum().sort_values(ascending=False).head(1)
@@ -365,9 +409,9 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         return _metric(df, "pharmacy_pos_analysis", "Highest-sales hour", val, UNIT_CURRENCY, "sales amount grouped by hour", mask, filters, rows, ["hour", "amount"])
 
     # Expiry Handlers (expired, near expiry, 30/60/90 days, multiple batches, FEFO)
-    if re.search(r"(expire|expiry|expired|expiring|qareeb-ul-expiry|near expiry|khatre|meyad|miyad)", q):
+    if re.search(r"\b(expire|expiry|expired|expiring|qareeb-ul-expiry|near expiry|khatre|meyad|miyad)\b", q):
         exp_source = batch_stock if not batch_stock.empty else stock
-        if re.search(r"(already expired|ho chuki|ho gai|expired stock|expired medicine|expired medicines)", q):
+        if re.search(r"\b(already expired|ho chuki|ho gai|expired stock|expired medicine|expired medicines)\b", q):
             exp_items = exp_source.loc[exp_source["_expiry"] < today_dt].copy()
             rows = [{"product": str(r["_product"]), "batch_no": str(r.get("batch_no", "N/A")), "expiry_date": r["_expiry"].strftime("%Y-%m-%d") if pd.notna(r["_expiry"]) else "N/A", "quantity": float(r["_qty"])} for _, r in exp_items.head(20).iterrows()]
             val = len(rows)
@@ -385,7 +429,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         return _metric(df, "pharmacy_pos_analysis", f"Medicines expiring in {h_days} days", val, UNIT_COUNT, f"batches expiring within {h_days} days", stock_mask, filters, rows, ["product", "batch_no", "expiry_date", "quantity"])
 
     # Batch specific questions
-    if re.search(r"(multiple batches|pehle expire|earliest expire|sab se pehle|pehle sell|kis batch)", q):
+    if re.search(r"\b(multiple batches|pehle expire|earliest expire|sab se pehle|pehle sell|kis batch)\b", q):
         exp_source = batch_stock if not batch_stock.empty else stock
         if "multiple" in q:
             grouped = exp_source.groupby("_product")["batch_no"].nunique()
@@ -399,7 +443,7 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
             return _metric(df, "pharmacy_pos_analysis", "Earliest expiring batch (FEFO)", str(r.get("batch_no", "")), "batch", "earliest expiring batch to sell first", stock_mask, filters, rows, ["product", "batch_no", "expiry_date", "quantity"])
 
     # Top / Fast / Slow / Demand Products
-    if re.search(r"(top|best-selling|fast|slow|chal rahi|demand|paisa aya|revenue|bikne wali|bik rahi|konsi dawa|bilkul nahi bik)", q) and not re.search(r"(profit|margin|stock|purchases)", q):
+    if re.search(r"\b(top|best-selling|fast|slow|chal rahi|demand|paisa aya|revenue|bikne wali|bik rahi|konsi dawa|bilkul nahi bik)\b", q) and not re.search(r"\b(profit|margin|stock|purchases)\b", q):
         grouped = filtered_sales.groupby("_product", dropna=True)["_qty"].sum().sort_values(ascending="slow" not in q and "kam" not in q and "nahi" not in q)
         rev_grouped = filtered_sales.groupby("_product", dropna=True)["_amount"].sum().sort_values(ascending=False)
         limit = 10 if "10" in q else 5
@@ -408,36 +452,36 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         return _metric(df, "pharmacy_pos_analysis", "Top / fast / slow moving medicines", val, UNIT_COUNT, "product sales ranked by quantity and revenue", mask, filters, rows, ["product", "units_sold", "revenue"])
 
     # Stock & Inventory Handlers
-    if re.search(r"(total stock|kul stock|total kitna stock|stock kitna|total medicine units|total stock quantity)", q):
+    if re.search(r"\b(total stock|kul stock|total kitna stock|stock kitna|total medicine units|total stock quantity)\b", q):
         total_units = float(stock["_qty"].sum())
         return _metric(df, "pharmacy_pos_analysis", "Total current stock", total_units, UNIT_COUNT, "sum of on-hand units in stock", stock_mask, filters, [{"total_stock_units": total_units}], ["total_stock_units"])
 
-    if re.search(r"(stock value|stock ki qeemat|stock price|stock mein kitne pais|paisa phansa|dead stock|capital tied up|inventory value|selling value|stock.*price|price.*stock)", q):
+    if re.search(r"\b(stock value|stock ki qeemat|stock price|stock mein kitne pais|paisa phansa|dead stock|capital tied up|inventory value|selling value|stock.*price|price.*stock)\b", q):
         cost_val = float((stock["_qty"] * stock["_cost"]).sum())
         grouped = stock.groupby("_product").agg(quantity=("_qty", "sum"), cost=("_cost", "mean")).dropna()
         grouped["stock_value"] = grouped["quantity"] * grouped["cost"]
         rows = [{"product": p, "stock_units": float(r["quantity"]), "estimated_value": round(float(r["stock_value"]), 2)} for p, r in grouped.sort_values("stock_value", ascending=False).head(10).iterrows()]
         return _metric(df, "pharmacy_pos_analysis", "Stock value / Capital tied up", round(cost_val, 2), UNIT_CURRENCY, "sum of on-hand quantity multiplied by unit cost", stock_mask, filters, rows, ["product", "stock_units", "estimated_value"])
 
-    if re.search(r"(fewer than 10|fewer than 5|10 se kam|5 se kam|low stock|stock kam|out of stock|khatam ho gai)", q):
+    if re.search(r"\b(fewer than 10|fewer than 5|10 se kam|5 se kam|low stock|stock kam|out of stock|khatam ho gai)\b", q):
         threshold = 5 if "5" in q else 10
         low_s = stock.groupby("_product").agg(quantity=("_qty", "sum")).reset_index()
         low_s = low_s[low_s["quantity"] < threshold].sort_values("quantity")
         rows = [{"product": str(r["_product"]), "stock_units": float(r["quantity"])} for _, r in low_s.head(20).iterrows()]
         return _metric(df, "pharmacy_pos_analysis", f"Medicines with fewer than {threshold} units in stock", len(rows), UNIT_COUNT, f"products with on-hand quantity below {threshold}", stock_mask, filters, rows, ["product", "stock_units"])
 
-    if re.search(r"(overstock|overstocked|zaroorat se zyada|zyada quantity|zyada stock|highest stock|most most units|sab se zyada quantity|sab se zyada stock)", q):
+    if re.search(r"\b(overstock|overstocked|zaroorat se zyada|zyada quantity|zyada stock|highest stock|most most units|sab se zyada quantity|sab se zyada stock)\b", q):
         top_s = stock.groupby("_product").agg(quantity=("_qty", "sum")).reset_index().sort_values("quantity", ascending=False)
         rows = [{"product": str(r["_product"]), "stock_units": float(r["quantity"])} for _, r in top_s.head(10).iterrows()]
         val = rows[0]["stock_units"] if rows else 0.0
         return _metric(df, "pharmacy_pos_analysis", "Medicines with highest stock quantity", val, UNIT_COUNT, "products ranked by on-hand quantity", stock_mask, filters, rows, ["product", "stock_units"])
 
-    if re.search(r"(how many medicines|total kitni medicines|total medicines|kitni dawaiyan|different products|currently available|stock mein hain|stock in hain)", q) and not re.search(r"(sold|sale|sales)", q):
+    if re.search(r"\b(how many medicines|total kitni medicines|total medicines|kitni dawaiyan|different products|currently available|stock mein hain|stock in hain)\b", q) and not re.search(r"\b(sold|sale|sales)\b", q):
         distinct_meds = int(stock.loc[stock["_qty"] > 0, "_product"].nunique())
         rows = [{"product": str(p), "stock_units": float(q_val)} for p, q_val in stock.groupby("_product")["_qty"].sum().head(20).items()]
         return _metric(df, "pharmacy_pos_analysis", "Products currently in stock", distinct_meds, UNIT_COUNT, "distinct products with positive on-hand quantity", stock_mask, filters, rows, ["product", "stock_units"])
 
-    if re.search(r"(chalega|chalay ga|kitne din ke liye kafi|days of cover)", q):
+    if re.search(r"\b(chalega|chalay ga|kitne din ke liye kafi|days of cover)\b", q):
         total_units = float(stock["_qty"].sum())
         total_recent_sales = float(sales.loc[sales["_date"] >= (today_dt - pd.Timedelta(days=29)), "_qty"].sum())
         daily_vel = total_recent_sales / 30.0 if total_recent_sales > 0 else 1.0
@@ -445,28 +489,36 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         return _metric(df, "pharmacy_pos_analysis", "Overall stock cover (days)", days_left, "days", "total on-hand stock divided by daily sales velocity", stock_mask, filters, [{"total_stock_units": total_units, "days_cover": days_left}], ["total_stock_units", "days_cover"])
 
     # Purchasing & Supplier Handlers
-    if re.search(r"(purchase|purchases|purchasing|purchased|khareed|khareeda|khareedi|supplier|suppliers|vendor|vendors|maal)", q) and not re.search(r"(sale|sales|sold|revenue|bikri)", q):
+    if re.search(r"\b(purchase|purchases|purchasing|purchased|khareed|khareeda|khareedi|supplier|suppliers|vendor|vendors|maal)\b", q) and not re.search(r"\b(sale|sales|sold|revenue|bikri)\b", q):
         target_p = period_purchases if not period_purchases.empty else purchases
         target_h = period_headers if not period_headers.empty else purchase_headers
 
-        if re.search(r"(highest|top|most|sab se zyada|bara)", q) and re.search(r"(supplier|suppliers|vendor)", q):
+        if re.search(r"\b(stock|inventory|units|quantity|qty|maal)\b", q):
+            purchased_units = float(target_p["_qty"].sum()) if not target_p.empty else 0.0
+            rows = [{"product": str(r.get("_product", "")), "units_purchased": float(r.get("_qty", 0))}
+                    for _, r in target_p.head(20).iterrows()]
+            return _metric(df, "pharmacy_pos_analysis", "Units purchased", purchased_units, UNIT_COUNT,
+                           "sum of recorded purchase line quantities in period", pd.Series(df.index.isin(target_p.index), index=df.index),
+                           filters, rows, ["product", "units_purchased"])
+
+        if re.search(r"\b(highest|top|most|sab se zyada|bara)\b", q) and re.search(r"\b(supplier|suppliers|vendor)\b", q):
             sup_g = target_p.groupby("supplier_name", dropna=True)["_amount"].sum().sort_values(ascending=False)
             rows = [{"supplier_name": str(s), "purchase_amount": round(float(v), 2)} for s, v in sup_g.head(5).items()]
             val = rows[0]["purchase_amount"] if rows else 0.0
             return _metric(df, "pharmacy_pos_analysis", "Top supplier by purchase amount", val, UNIT_CURRENCY, "purchases grouped by supplier", pd.Series(df.index.isin(target_p.index), index=df.index), filters, rows, ["supplier_name", "purchase_amount"])
 
-        if re.search(r"(supplier wise|har supplier|kis supplier se)", q):
+        if re.search(r"\b(supplier wise|har supplier|kis supplier se)\b", q):
             sup_g = target_p.groupby("supplier_name", dropna=True)["_amount"].sum().sort_values(ascending=False)
             rows = [{"supplier_name": str(s), "purchase_amount": round(float(v), 2)} for s, v in sup_g.items()]
             return _metric(df, "pharmacy_pos_analysis", "Purchases by supplier", round(float(sup_g.sum()), 2), UNIT_CURRENCY, "supplier purchases breakdown", pd.Series(df.index.isin(target_p.index), index=df.index), filters, rows, ["supplier_name", "purchase_amount"])
 
-        if re.search(r"(sab se zyada konsi medicine|top medicine khareedi|most purchased)", q):
+        if re.search(r"\b(sab se zyada konsi medicine|top medicine khareedi|most purchased)\b", q):
             p_med = target_p.groupby("_product", dropna=True)["_qty"].sum().sort_values(ascending=False)
             rows = [{"product": str(p), "units_purchased": float(v)} for p, v in p_med.head(5).items()]
             val = rows[0]["units_purchased"] if rows else 0.0
             return _metric(df, "pharmacy_pos_analysis", "Most purchased medicine", val, UNIT_COUNT, "purchased units grouped by product", pd.Series(df.index.isin(target_p.index), index=df.index), filters, rows, ["product", "units_purchased"])
 
-        if re.search(r"(rate barh|price.*increase|mehngi|cost.*increase|cost.*kam|rate.*izafa)", q):
+        if re.search(r"\b(rate barh|price.*increase|mehngi|cost.*increase|cost.*kam|rate.*izafa)\b", q):
             p_cost = purchases.sort_values("_date").groupby("_product").agg(first_cost=("_cost", "first"), last_cost=("_cost", "last")).reset_index()
             p_cost["diff"] = p_cost["last_cost"] - p_cost["first_cost"]
             inc = p_cost.sort_values("diff", ascending=False).head(5)
@@ -477,7 +529,13 @@ def analyze_pos_question(df: pd.DataFrame, question: str, filters: KPIFilters) -
         return _metric(df, "pharmacy_pos_analysis", "Total purchases", round(total_p_amt, 2), UNIT_CURRENCY, "sum of purchase transactions in period", pd.Series(df.index.isin(target_p.index), index=df.index), filters, [{"total_purchases": round(total_p_amt, 2)}], ["total_purchases"])
 
     # Profit & Margins
-    if re.search(r"(profit|munafa|margin|faida)", q):
+    if re.search(r"\b(profit|munafa|margin|faida)\b", q):
+        if not filtered_sales.empty and ("_cost" not in filtered_sales or filtered_sales["_cost"].isna().any()):
+            return _metric(
+                df, "pharmacy_pos_analysis", "Gross profit and product margins", None, UNIT_CURRENCY,
+                "sales revenue minus recorded cost of goods sold", mask, filters,
+                reason="Profit cannot be calculated reliably because purchase cost is missing for one or more matching sales rows.",
+            )
         total_rev = float(filtered_sales["_amount"].sum())
         total_c = float((filtered_sales["_qty"] * filtered_sales["_cost"]).sum())
         profit = total_rev - total_c

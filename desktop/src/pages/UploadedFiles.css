@@ -1038,3 +1038,314 @@
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
+
+/* ============================================================
+   CUSTOM DATABASE GROUPS STYLES
+   ============================================================ */
+
+.db-section-heading-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.85rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.btn-create-db-group {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(13, 115, 119, 0.15) 100%);
+    color: var(--brand-green);
+    border: 1px solid var(--brand-green-border);
+    border-radius: 20px;
+    padding: 0.4rem 0.95rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.btn-create-db-group:hover {
+    background: var(--brand-green);
+    color: #ffffff;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+}
+
+/* Custom DB Groups Container */
+.custom-db-groups-container {
+    background: linear-gradient(145deg, rgba(16, 185, 129, 0.04) 0%, rgba(30, 58, 95, 0.03) 100%);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: 16px;
+    padding: 1.15rem;
+    margin-bottom: 1.25rem;
+}
+
+.custom-db-groups-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: var(--brand-green);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.85rem;
+}
+
+.custom-db-groups-count {
+    background: var(--brand-green-container);
+    color: var(--brand-green);
+    border: 1px solid var(--brand-green-border);
+    border-radius: 10px;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.custom-db-groups-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+
+.custom-db-group-card {
+    background: var(--surface-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    transition: all 0.2s ease;
+}
+
+.custom-db-group-card:hover {
+    border-color: var(--brand-green);
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.08);
+}
+
+.custom-db-group-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.custom-db-group-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+}
+
+.custom-db-group-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    background: var(--brand-green-container);
+    color: var(--brand-green);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.custom-db-group-name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+}
+
+.custom-db-group-sub {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.custom-db-group-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.btn-group-edit {
+    background: var(--surface-container);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 18px;
+    padding: 0.32rem 0.8rem;
+    font-weight: 500;
+    font-size: 0.78rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-group-edit:hover {
+    background: var(--hover-bg);
+    border-color: var(--text-tertiary);
+}
+
+.custom-db-members-list {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.85rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border-color);
+    flex-wrap: wrap;
+}
+
+.custom-db-members-label {
+    font-size: 0.74rem;
+    color: var(--text-tertiary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.custom-db-member-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--surface-container);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.member-badge-meta {
+    font-size: 0.72rem;
+    color: var(--text-tertiary);
+}
+
+/* Group Creation & Edit Modal */
+.group-modal-card {
+    max-width: 540px !important;
+    width: 90% !important;
+}
+
+.modal-field-label {
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.4rem;
+}
+
+.modal-text-input {
+    width: 100%;
+    background: var(--surface-container);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.65rem 0.85rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.15s ease;
+    box-sizing: border-box;
+}
+
+.modal-text-input:focus {
+    border-color: var(--brand-green);
+    box-shadow: 0 0 0 2px var(--brand-green-container);
+}
+
+.modal-form-error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.85rem;
+}
+
+.db-selection-checkbox-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.5rem;
+    background: var(--surface-container);
+}
+
+.db-checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    background: var(--surface-bg);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.db-checkbox-item:hover {
+    background: var(--hover-bg);
+    border-color: var(--text-tertiary);
+}
+
+.db-checkbox-item.selected {
+    border-color: var(--brand-green);
+    background: var(--brand-green-container);
+}
+
+.db-custom-checkbox {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--brand-green);
+    cursor: pointer;
+}
+
+.db-checkbox-info {
+    flex: 1;
+}
+
+.db-checkbox-title {
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.db-checkbox-meta {
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    margin-top: 0.1rem;
+}
+
+.btn-save-group {
+    background: var(--brand-green);
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 0.55rem 1.25rem;
+    font-weight: 600;
+    font-size: 0.84rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-save-group:hover {
+    background: var(--brand-green-hover);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+}
+

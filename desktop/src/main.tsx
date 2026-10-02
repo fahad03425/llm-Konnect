@@ -5,12 +5,12 @@ import Shell from './Shell'
 import Dashboard from './pages/Dashboard'
 import ConnectSource from './pages/ConnectSource'
 import Chatbot from './pages/Chatbot'
-import ReportExport from './pages/ReportExport'
 import WeeklyReport from './pages/WeeklyReport'
 import UploadedFiles from './pages/UploadedFiles'
 import { FileProvider } from './context/FileContext'
 import { UserProvider } from './context/UserContext'
 import { ReportProvider } from './context/ReportContext'
+import { ChatProvider } from './context/ChatContext'
 import './index.css'
 
 class GlobalErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -113,20 +113,21 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <GlobalErrorBoundary>
       <UserProvider>
         <FileProvider>
-          <ReportProvider>
-            <BrowserRouter>
-              <Routes>
-                <Route path="/" element={<Shell />}>
-                  <Route index element={<Dashboard />} />
-                  <Route path="connect" element={<ConnectSource />} />
-                  <Route path="files" element={<UploadedFiles />} />
-                  <Route path="chat" element={<Chatbot />} />
-                  <Route path="reports" element={<ReportExport />} />
-                  <Route path="weekly-report" element={<WeeklyReport />} />
-                </Route>
-              </Routes>
-            </BrowserRouter>
-          </ReportProvider>
+          <ChatProvider>
+            <ReportProvider>
+              <BrowserRouter>
+                <Routes>
+                  <Route path="/" element={<Shell />}>
+                    <Route index element={<Dashboard />} />
+                    <Route path="connect" element={<ConnectSource />} />
+                    <Route path="files" element={<UploadedFiles />} />
+                    <Route path="chat" element={<Chatbot />} />
+                    <Route path="weekly-report" element={<WeeklyReport />} />
+                  </Route>
+                </Routes>
+              </BrowserRouter>
+            </ReportProvider>
+          </ChatProvider>
         </FileProvider>
       </UserProvider>
     </GlobalErrorBoundary>

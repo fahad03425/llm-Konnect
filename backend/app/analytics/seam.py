@@ -72,6 +72,8 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     (("average", "avg", "mean", "ausat"), ("average_transaction_value", "transaction_count")),
     (("how many rows", "row count", "total rows", "number of rows", "dataset size", "total records", "how many records", "rows in this", "rows are in", "how many items are in this data", "transaction rows", "credit rows", "cash rows"),
      ("row_count", "transaction_count")),
+    (("registered customers", "how many customers", "unique customers", "total customers", "customer count", "number of customers", "kitne customer", "kitnay customer"),
+     ("customer_count",)),
     (("how many", "count", "number of", "kitne"), ("transaction_count",)),
     (("per month", "monthly", "by month", "each month"), ("revenue_by_month",)),
     (("by category", "per category"), ("revenue_breakdown_by_category",)),

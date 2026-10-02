@@ -154,8 +154,9 @@ def apply_filters(
                 f"is absent; that filter was NOT applied"
             )
             continue
-        col = df[column].astype(str).str.strip().str.casefold()
-        mask &= col == str(wanted).strip().casefold()
+        col = df[column].fillna("").astype(str).str.strip().str.casefold()
+        w_str = str(wanted).strip().casefold()
+        mask &= (col == w_str) | (col.str.contains(w_str, regex=False)) | (col.map(lambda c: bool(c and isinstance(c, str) and (w_str in c or c in w_str))))
 
     if filters.payment_label is not None:
         # Some exports encode payment type in a transaction-type field, while

@@ -10,6 +10,9 @@ openpyxl
 chardet
 SQLAlchemy>=2.0
 pyodbc>=5.1
+# SQLAlchemy database drivers; default URL adapters use these pure/bundled drivers.
+psycopg[binary]>=3.2
+PyMySQL>=1.1
 
 # Analytics
 scikit-learn

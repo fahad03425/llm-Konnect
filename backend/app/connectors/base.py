@@ -48,7 +48,7 @@ def detect_connector(path: str) -> Connector:
     elif ext in ('.json', '.jsonl'):
         from app.connectors.json import JSONConnector
         return JSONConnector(path)
-    elif ext in ('.sqlite', '.db', '.sqlite3'):
+    elif ext in ('.sqlite', '.db', '.sqlite3', '.stardb'):
         from app.connectors.tally import LocalDBConnector
         return LocalDBConnector(path, db_type="sqlite")
     elif ext == '.mdf':

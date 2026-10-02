@@ -42,7 +42,7 @@ class IngestDatabaseRequest(BaseModel):
     db_type: str = "sqlite"
     domain: str = Field(default_factory=get_default_domain, description="Business domain context")
     tables: Optional[List[str]] = None
-    strategy: str = "merge"
+    strategy: str = "row"
     merge_key: Optional[str] = None
     table_mappings: Optional[Dict[str, Dict[str, str]]] = None
 
@@ -533,7 +533,13 @@ def list_database_connections():
     """List all registered database connections and their auto-sync status."""
     try:
         conns = file_registry.list_db_connections()
-        return {"connections": [c.model_dump() for c in conns]}
+        public_connections = []
+        for connection in conns:
+            item = connection.model_dump()
+            item["connection_string"] = "[stored securely]"
+            item["has_saved_connection"] = bool(connection.connection_string)
+            public_connections.append(item)
+        return {"connections": public_connections}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

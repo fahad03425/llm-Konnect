@@ -131,6 +131,48 @@ def test_canonical_database_resolves_unambiguous_product_code_for_stock_rows():
     assert pd.isna(stock.loc["SKU-X", "product_id"])
 
 
+def test_canonical_database_skips_non_unique_header_join_to_prevent_fanout():
+    raw = pd.DataFrame([
+        {"table_name": "tbl_SalesDetails", "transaction_id": "TX-1", "product_id": "Drug A",
+         "quantity": 2, "amount": 200, "source_row": 11},
+        {"table_name": "tbl_SalesDetails", "transaction_id": "TX-2", "product_id": "Drug B",
+         "quantity": 1, "amount": 50, "source_row": 12},
+        # Bad export has duplicate transaction header keys. A regular merge
+        # would double TX-1 sales and make revenue/provenance wrong.
+        {"table_name": "tbl_SalesHeader", "transaction_id": "TX-1", "date": "2026-09-30",
+         "customer_id": "C-1", "source_row": 101},
+        {"table_name": "tbl_SalesHeader", "transaction_id": "TX-1", "date": "2026-09-30",
+         "customer_id": "C-1", "source_row": 102},
+        {"table_name": "tbl_SalesHeader", "transaction_id": "TX-2", "date": "2026-09-30",
+         "customer_id": "C-2", "source_row": 103},
+    ])
+
+    canonical = _build_canonical_database(raw)
+    sales = canonical[canonical["txn_type"] == "sale"]
+    assert len(sales) == 2
+    assert sales["amount"].sum() == 250
+    assert sales["source_row"].tolist() == [11, 12]
+    assert sales["_join_warning"].str.contains("no unique shared transaction key").all()
+
+
+def test_canonical_header_join_keeps_invoice_totals_at_header_grain():
+    raw = pd.DataFrame([
+        {"table_name": "tbl_PurchaseDetails", "source_row": 10, "transaction_id": "PO-1",
+         "product_id": "Drug A", "quantity": 1, "amount": 100},
+        {"table_name": "tbl_PurchaseDetails", "source_row": 11, "transaction_id": "PO-1",
+         "product_id": "Drug B", "quantity": 2, "amount": 50},
+        {"table_name": "tbl_PurchaseHeader", "source_row": 90, "transaction_id": "PO-1",
+         "date": "2026-09-29", "supplier_name": "Acme Pharma", "net_payable": 250},
+    ])
+    canonical = _build_canonical_database(raw)
+    details = canonical[canonical["table_name"] == "tbl_PurchaseDetails"]
+    assert len(details) == 2
+    assert details["amount"].sum() == 150
+    assert details["net_payable"].sum() == 250
+    assert details["net_payable"].notna().sum() == 1
+    assert details["date"].dropna().unique().tolist() == ["2026-09-29"]
+
+
 def test_whole_database_analytics_refuses_a_registry_index_gap(monkeypatch):
     records = [
         SimpleNamespace(file_id="indexed", group_name="IncompletePOS", status="active",
@@ -216,6 +258,9 @@ def _pos_frame():
         {"table_name": "tbl_SalesDetails", "txn_type": "sale", "date": "2026-09-27",
          "invoice_id": "S-2", "product_id": "Brufen 400mg", "quantity": 3,
          "amount": 300.0, "unit_price": 100.0, "cost": 50.0, "generic_name": "ibuprofen"},
+        {"table_name": "tbl_SalesDetails", "txn_type": "sale", "date": "2026-08-20",
+         "invoice_id": "S-3", "product_id": "Brufen 400mg", "quantity": 4,
+         "amount": 400.0, "unit_price": 100.0, "cost": 50.0, "generic_name": "ibuprofen"},
         {"table_name": "tbl_PurchaseDetails", "txn_type": "purchase_detail", "date": "2026-09-28",
          "transaction_id": "P-1", "invoice_id": "P-1", "product_id": "Brufen 400mg", "quantity": 20, "amount": 1_000.0,
          "supplier_name": "Acme Pharma"},
@@ -246,6 +291,11 @@ def test_pos_metrics_use_their_native_row_grain():
     assert _answer("What were my total purchases this month?", KPIFilters(date_from="2026-09-01", date_to="2026-09-30")).value == 1100.0
     assert _answer("How much stock did I purchase?", KPIFilters(date_from="2026-09-01", date_to="2026-09-30")).value == 20.0
     assert _answer("How many total medicine units do I currently have?").value == 10.0
+
+
+def test_pos_sales_honor_calendar_month_and_year_filters():
+    assert _answer("What were September 2026 sales?", KPIFilters(month=9, year=2026)).value == 550.0
+    assert _answer("What were August 2026 sales?", KPIFilters(month=8, year=2026)).value == 400.0
 
 
 def test_exact_bill_lookup_does_not_fall_through_to_highest_invoice_metric():

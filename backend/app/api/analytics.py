@@ -127,13 +127,110 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     def _has_valid_col(t_df: Optional[pd.DataFrame], col_name: str) -> bool:
         return t_df is not None and col_name in t_df.columns and t_df[col_name].notna().any()
 
+    def _safe_detail_header_join(detail: pd.DataFrame, header: pd.DataFrame, candidates: List[str], header_fields: List[str]):
+        join_key = next((
+            key for key in candidates
+            if _has_valid_col(detail, key)
+            and _has_valid_col(header, key)
+            and not header.loc[header[key].notna(), key].duplicated().any()
+        ), None)
+        if not join_key:
+            preserved = detail.copy()
+            preserved["_join_warning"] = "Header join skipped: no unique shared transaction key"
+            return preserved, None
+        selected_fields = [
+            field for field in header_fields
+            if field == join_key or field not in detail.columns
+        ]
+        selected_fields = list(dict.fromkeys([join_key, *selected_fields]))
+        joined = detail.merge(header[selected_fields], on=join_key, how="left", validate="many_to_one")
+        header_amount_fields = {
+            "net_payable", "invoice_total", "invoice_tax", "invoice_discount",
+            "invoice_tax_pct", "invoice_discount_pct", "discount", "paid_amount",
+            "customer_balance", "previous_balance", "supplier_payable_amount",
+            "total_qty", "total_items", "total_bonus",
+        }
+        for field in header_amount_fields.intersection(set(selected_fields) - {join_key}):
+            joined.loc[joined[join_key].duplicated(), field] = pd.NA
+        return joined, join_key
+
+    # Build master reference lookups across all tables
+    prod_map: Dict[str, str] = {}
+    for name, t_df in tables.items():
+        if _has_valid_col(t_df, "product_id") and _has_valid_col(t_df, "product_code"):
+            for _, r in t_df.iterrows():
+                p_name = str(r.get("product_id", "")).strip()
+                p_code = str(r.get("product_code", "")).strip()
+                r_id = str(r.get("row_id", "")).strip()
+                if p_name and p_name.lower() not in ("nan", "none", ""):
+                    if r_id: prod_map[r_id] = p_name
+                    if p_code: prod_map[p_code.lower()] = p_name
+
+    vendor_map: Dict[str, str] = {}
+    for name, t_df in tables.items():
+        if _has_valid_col(t_df, "supplier_id") and _has_valid_col(t_df, "product_id") and not _has_valid_col(t_df, "batch_no") and not _has_valid_col(t_df, "amount"):
+            for _, r in t_df.iterrows():
+                v_name = str(r.get("product_id", "")).strip()
+                s_id = str(r.get("supplier_id", "")).strip()
+                r_id = str(r.get("row_id", "")).strip()
+                if v_name and v_name.lower() not in ("nan", "none", ""):
+                    if s_id: vendor_map[s_id] = v_name
+                    if r_id: vendor_map[r_id] = v_name
+
+    cat_map: Dict[str, str] = {}
+    for name, t_df in tables.items():
+        if _has_valid_col(t_df, "category") and _has_valid_col(t_df, "product_id"):
+            for _, r in t_df.iterrows():
+                p_name = str(r.get("product_id", "")).strip()
+                c_name = str(r.get("category", "")).strip()
+                if p_name and c_name and c_name.lower() not in ("nan", "none", ""):
+                    cat_map[p_name.lower()] = c_name
+
     # Identify transaction and inventory tables using broad schema patterns
     sales_detail, sd_name = find_table(r"sales.*detail|order.*detail|order.*item|invoice.*detail|line.*item|bill.*detail|pos.*detail|sales_item")
     sales_header, sh_name = find_table(r"sales.*header|order.*header|invoice.*header|bill.*header|pos.*header|sale_header|order_header|order_main|sales_main")
     sales_gen, sg_name = find_table(r"^sales?$|^orders?$|^transactions?$|^bills?$|^invoices?$|^pos$")
 
     stock_tbl, st_name = find_table(r"batch|inventory|stock|warehouse")
-    prod_tbl, pr_name = find_table(r"product|item|article|sku|catalog")
+
+    # Structural fallback for opaque/generic table names (e.g. tbl_1..25)
+    if sales_detail is None and sales_gen is None:
+        for name, t_df in tables.items():
+            if (_has_valid_col(t_df, "sales_subtotal") or (_has_valid_col(t_df, "quantity") and (_has_valid_col(t_df, "unit_price") or _has_valid_col(t_df, "mrp") or _has_valid_col(t_df, "cost")))) and (_has_valid_col(t_df, "transaction_id") or _has_valid_col(t_df, "invoice_id") or _has_valid_col(t_df, "order_id")):
+                sales_detail, sd_name = t_df.copy(), name
+                break
+
+    if sales_header is None and sales_gen is None:
+        best_sh = None
+        best_overlap = -1
+        for name, t_df in tables.items():
+            if name == sd_name:
+                continue
+            if (_has_valid_col(t_df, "date") or _has_valid_col(t_df, "created_at")) and (
+                _has_valid_col(t_df, "invoice_total") or _has_valid_col(t_df, "amount") or _has_valid_col(t_df, "customer_id") or _has_valid_col(t_df, "payment_method")
+            ):
+                overlap = 0
+                if sales_detail is not None:
+                    for s_col in ["transaction_id", "invoice_id", "order_id"]:
+                        if _has_valid_col(sales_detail, s_col):
+                            s_vals = set(sales_detail[s_col].astype(str).dropna())
+                            for h_col in [s_col, "row_id", "id"]:
+                                if _has_valid_col(t_df, h_col):
+                                    h_vals = set(t_df[h_col].astype(str).dropna())
+                                    overlap = max(overlap, len(s_vals & h_vals))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_sh = (t_df.copy(), name)
+        if best_sh is not None:
+            sales_header, sh_name = best_sh
+
+    if stock_tbl is None:
+        for name, t_df in tables.items():
+            if name in (sd_name, sh_name):
+                continue
+            if _has_valid_col(t_df, "expiry_date") or _has_valid_col(t_df, "batch_no") or (_has_valid_col(t_df, "reorder_level") and _has_valid_col(t_df, "quantity")):
+                stock_tbl, st_name = t_df.copy(), name
+                break
 
     parts = []
 
@@ -144,16 +241,27 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
             c for c in ["invoice_id", "order_id", "sale_id", "bill_id", "bill_no", "transaction_id", "header_id", "receipt_id"]
             if _has_valid_col(sales_detail, c) and _has_valid_col(sales_header, c)
         ]
+        if not join_keys:
+            if _has_valid_col(sales_detail, "transaction_id") and _has_valid_col(sales_header, "row_id"):
+                sales_header["transaction_id"] = sales_header["row_id"].astype(str)
+                sales_detail["transaction_id"] = sales_detail["transaction_id"].astype(str)
+                join_keys = ["transaction_id"]
+            elif _has_valid_col(sales_detail, "invoice_id") and _has_valid_col(sales_header, "row_id"):
+                sales_header["invoice_id"] = sales_header["row_id"].astype(str)
+                sales_detail["invoice_id"] = sales_detail["invoice_id"].astype(str)
+                join_keys = ["invoice_id"]
+
         if join_keys:
-            join_key = join_keys[0]
             header_cols = [
-                c for c in ["date", "month", "year", "customer_id", "doctor_name", "discount", "client_id", "user_id", "buyer_id", "payment_method", "payment_type", "sales_type", "user_name"]
+                c for c in ["date", "month", "year", "customer_id", "doctor_name", "discount", "client_id", "user_id", "buyer_id", "payment_method", "payment_type", "sales_type", "user_name", "status"]
                 if _has_valid_col(sales_header, c)
             ]
             clean_sd = sales_detail.drop(
                 columns=[c for c in header_cols if c in sales_detail.columns and not sales_detail[c].notna().any()]
             )
-            sales = clean_sd.merge(sales_header[[join_key] + header_cols], on=join_key, how="left")
+            sales, join_key = _safe_detail_header_join(
+                clean_sd, sales_header, join_keys, header_cols
+            )
             sales["txn_type"] = "sale"
         else:
             sales = sales_detail.copy()
@@ -168,85 +276,18 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
         sales = sales_gen.copy()
         sales["txn_type"] = "sale"
 
-    # Dynamic Product Cost Linking (if sales does not have cost or cost is all-null)
     if sales is not None:
-        has_valid_cost = _has_valid_col(sales, "cost") and (pd.to_numeric(sales["cost"], errors="coerce") > 0).any()
-        if not has_valid_cost:
-            cost_ratio_map: Dict[str, float] = {}
-            direct_cost_map: Dict[str, float] = {}
-            observed_ratios: List[float] = []
+        if "amount" not in sales.columns or sales["amount"].isna().all() or (pd.to_numeric(sales["amount"], errors="coerce") == 0).all():
+            if "sales_subtotal" in sales.columns and sales["sales_subtotal"].notna().any():
+                sales["amount"] = pd.to_numeric(sales["sales_subtotal"], errors="coerce")
+            elif "unit_price" in sales.columns and "quantity" in sales.columns:
+                sales["amount"] = pd.to_numeric(sales["unit_price"], errors="coerce") * pd.to_numeric(sales["quantity"], errors="coerce")
+            elif "mrp" in sales.columns and "quantity" in sales.columns:
+                sales["amount"] = pd.to_numeric(sales["mrp"], errors="coerce") * pd.to_numeric(sales["quantity"], errors="coerce")
 
-            cost_cols = [
-                "cost", "cost_price", "purchase_price", "buying_price",
-                "unit_cost", "standard_cost", "buy_rate",
-                "trade_price", "tp", "pp", "p_price", "wholesale_price",
-                "landed_cost"
-            ]
-            id_cols = [
-                "product_id", "product_sku", "product_code", "generic_name",
-                "item_id", "item_code", "sku", "barcode"
-            ]
-            mrp_cols = [
-                "mrp", "retail_price", "selling_price", "unit_price",
-                "sale_price", "list_price"
-            ]
-
-            # Discover any table in the DB that has both an ID column and a cost column
-            for t_name, c_tbl in tables.items():
-                if t_name in (sd_name, sh_name, sg_name):
-                    continue
-                found_id = next((c for c in id_cols if _has_valid_col(c_tbl, c)), None)
-                found_cost = next((c for c in cost_cols if _has_valid_col(c_tbl, c)), None)
-                found_mrp = next((c for c in mrp_cols if _has_valid_col(c_tbl, c)), None)
-
-                if found_id and found_cost:
-                    for key_val, group in c_tbl.groupby(found_id):
-                        c_series = pd.to_numeric(group[found_cost], errors="coerce").dropna()
-                        if c_series.empty:
-                            continue
-                        cost_val = float(c_series.iloc[0])
-                        key_str = str(key_val).strip().lower()
-
-                        if found_mrp:
-                            m_series = pd.to_numeric(group[found_mrp], errors="coerce").dropna()
-                            if not m_series.empty and float(m_series.iloc[0]) > 0:
-                                ratio = cost_val / float(m_series.iloc[0])
-                                cost_ratio_map[key_str] = ratio
-                                observed_ratios.append(ratio)
-                        else:
-                            direct_cost_map[key_str] = cost_val
-
-            avg_ratio = (sum(observed_ratios) / len(observed_ratios)) if observed_ratios else None
-
-            sales_id_cols = [
-                c for c in id_cols
-                if c in sales.columns
-            ]
-
-            def _resolve_line_cost(row):
-                # Try ratio-based lookup first (handles pack cost vs loose selling units)
-                for sc in sales_id_cols:
-                    val = str(row.get(sc, "")).strip().lower()
-                    if val and val in cost_ratio_map:
-                        ratio = cost_ratio_map[val]
-                        unit_p = pd.to_numeric(row.get("unit_price", 0), errors="coerce")
-                        if pd.notna(unit_p) and unit_p > 0:
-                            return round(float(unit_p) * ratio, 2)
-
-                if avg_ratio is not None:
-                    unit_p = pd.to_numeric(row.get("unit_price", 0), errors="coerce")
-                    if pd.notna(unit_p) and unit_p > 0:
-                        return round(float(unit_p) * avg_ratio, 2)
-
-                # Try direct cost lookup
-                for sc in sales_id_cols:
-                    val = str(row.get(sc, "")).strip().lower()
-                    if val and val in direct_cost_map:
-                        return direct_cost_map[val]
-
-                return None
-
-            sales["cost"] = sales.apply(_resolve_line_cost, axis=1)
+        if "category" not in sales.columns or not sales["category"].notna().any():
+            if "product_id" in sales.columns:
+                sales["category"] = sales["product_id"].map(lambda x: cat_map.get(str(x).lower(), "General"))
 
         parts.append(sales)
 
@@ -256,38 +297,60 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
     purchase_gen, pg_name = find_table(r"^(tbl_)?(purchases?|expenses?|supplier_bills?|bills_payable)$", exclude=used_sales_names)
     purch_detail, pdet_name = find_table(r"purchase.*detail|purchase.*item|expense.*detail|vendor.*detail", exclude=used_sales_names)
 
+    # Generic purchase header fallback: table with supplier_id and amount/paid_amount/sales_subtotal (e.g. tbl_14)
+    if purchase_header is None and purchase_gen is None:
+        for name, t_df in tables.items():
+            if name in used_sales_names or name == st_name:
+                continue
+            if _has_valid_col(t_df, "supplier_id") and (_has_valid_col(t_df, "paid_amount") or (_has_valid_col(t_df, "amount") and not _has_valid_col(t_df, "customer_id"))):
+                purchase_header, ph_name = t_df.copy(), name
+                break
+
+    # If purchase header exists, try joining date table (e.g. tbl_17) if date missing
+    if purchase_header is not None and not _has_valid_col(purchase_header, "date"):
+        for name, t_df in tables.items():
+            if name in used_sales_names or name in (ph_name, st_name):
+                continue
+            if _has_valid_col(t_df, "date") and _has_valid_col(t_df, "row_id") and len(t_df) == len(purchase_header):
+                purchase_header = purchase_header.merge(t_df[["row_id", "date"]], on="row_id", how="left")
+                break
+
     if purch_detail is not None and purchase_header is not None:
         join_keys = [
             c for c in ["transaction_id", "purchase_id", "bill_id", "invoice_id", "header_id", "order_id"]
             if _has_valid_col(purch_detail, c) and _has_valid_col(purchase_header, c)
         ]
         if join_keys:
-            join_key = join_keys[0]
             header_cols = [
-                c for c in ["date", "month", "year", "supplier_name", "supplier_id", "vendor_name", "invoice_id", "bill_no", "payment_method", "net_payable"]
+                c for c in ["date", "month", "year", "supplier_name", "supplier_id", "vendor_name", "invoice_id", "bill_no", "payment_method", "net_payable", "paid_amount"]
                 if _has_valid_col(purchase_header, c)
             ]
             clean_pd = purch_detail.drop(
                 columns=[c for c in header_cols if c in purch_detail.columns and not purch_detail[c].notna().any()]
             )
-            purchases = clean_pd.merge(purchase_header[[join_key] + header_cols], on=join_key, how="left")
-            purchases["txn_type"] = "purchase_detail"
+            purchases, join_key = _safe_detail_header_join(
+                clean_pd, purchase_header, join_keys, header_cols
+            )
+            purchases["txn_type"] = "expense"
         else:
             purchases = purch_detail.copy()
-            purchases["txn_type"] = "purchase_detail"
+            purchases["txn_type"] = "expense"
         if "cost" in purchases.columns and "quantity" in purchases.columns:
             if "amount" not in purchases.columns or (pd.to_numeric(purchases["amount"], errors="coerce") == 0).all():
                 purchases["amount"] = pd.to_numeric(purchases["cost"], errors="coerce") * pd.to_numeric(purchases["quantity"], errors="coerce")
+        parts.append(purchases)
+    elif purchase_header is not None:
+        purchases = purchase_header.copy()
+        if "supplier_id" in purchases.columns and "vendor_name" not in purchases.columns:
+            purchases["vendor_name"] = purchases["supplier_id"].astype(str).map(lambda x: vendor_map.get(x, "Unknown"))
+            purchases["supplier_name"] = purchases["vendor_name"]
+        purchases["txn_type"] = "expense"
         parts.append(purchases)
     elif purch_detail is not None:
         purchases = purch_detail.copy()
         if "cost" in purchases.columns and "quantity" in purchases.columns:
             if "amount" not in purchases.columns or (pd.to_numeric(purchases["amount"], errors="coerce") == 0).all():
                 purchases["amount"] = pd.to_numeric(purchases["cost"], errors="coerce") * pd.to_numeric(purchases["quantity"], errors="coerce")
-        purchases["txn_type"] = "purchase_detail"
-        parts.append(purchases)
-    elif purchase_header is not None:
-        purchases = purchase_header.copy()
         purchases["txn_type"] = "expense"
         parts.append(purchases)
     elif purchase_gen is not None:
@@ -305,37 +368,30 @@ def _build_canonical_database(df: pd.DataFrame) -> pd.DataFrame:
             break
 
     if stock is not None:
+        if "product_id" in stock.columns:
+            stock["product_id"] = stock["product_id"].astype(str).map(lambda x: prod_map.get(x, x))
+        if "category" not in stock.columns or not stock["category"].notna().any():
+            if "product_id" in stock.columns:
+                stock["category"] = stock["product_id"].map(lambda x: cat_map.get(str(x).lower(), "General"))
+        if "vendor_name" not in stock.columns and "supplier_id" in stock.columns:
+            stock["vendor_name"] = stock["supplier_id"].astype(str).map(lambda x: vendor_map.get(x, "Unknown"))
+            stock["supplier_name"] = stock["vendor_name"]
         parts.append(stock)
     elif stock_tbl is not None:
         stock = stock_tbl.copy()
+        if "product_id" in stock.columns:
+            stock["product_id"] = stock["product_id"].astype(str).map(lambda x: prod_map.get(x, x))
+        if "category" not in stock.columns or not stock["category"].notna().any():
+            if "product_id" in stock.columns:
+                stock["category"] = stock["product_id"].map(lambda x: cat_map.get(str(x).lower(), "General"))
+        if "vendor_name" not in stock.columns and "supplier_id" in stock.columns:
+            stock["vendor_name"] = stock["supplier_id"].astype(str).map(lambda x: vendor_map.get(x, "Unknown"))
+            stock["supplier_name"] = stock["vendor_name"]
         stock["txn_type"] = "inventory"
         parts.append(stock)
 
     if parts:
         combined = pd.concat(parts, ignore_index=True)
-        # Cross-table unambiguous product_code -> product_id resolution
-        if "product_code" in combined.columns and "product_id" in combined.columns:
-            valid_pairs = combined[combined["product_code"].notna() & combined["product_id"].notna()]
-            if not valid_pairs.empty:
-                code_to_ids: Dict[str, set] = {}
-                for _, row in valid_pairs.iterrows():
-                    c_val = str(row["product_code"]).strip().lower()
-                    p_val = str(row["product_id"]).strip()
-                    if c_val and p_val and p_val.lower() != "none" and p_val.lower() != "nan":
-                        code_to_ids.setdefault(c_val, set()).add(p_val)
-                
-                unambiguous_map = {c: next(iter(p_set)) for c, p_set in code_to_ids.items() if len(p_set) == 1}
-                if unambiguous_map:
-                    def _fill_pid(row):
-                        pid = row.get("product_id")
-                        if pd.isna(pid) or not str(pid).strip() or str(pid).lower() in ("none", "nan"):
-                            c_val = str(row.get("product_code", "")).strip().lower()
-                            if c_val in unambiguous_map:
-                                return unambiguous_map[c_val]
-                        return pid
-                    
-                    combined["product_id"] = combined.apply(_fill_pid, axis=1)
-
         return combined
 
     return df
@@ -353,7 +409,8 @@ def _load_canonical(req: KPIRequest, include_raw: bool = False):
 
     # Handle Whole Database Selection (e.g. db://PharmacyPOS)
     if req.file_path.startswith("db://"):
-        db_name = req.file_path.replace("db://", "").strip()
+        raw_target = req.file_path.replace("db://", "").strip()
+        db_name = raw_target
         cache_key = f"db:{db_name}:{req.domain}"
         if cache_key in _df_cache:
             return _loaded(_df_cache[cache_key]["canonical"], _df_cache[cache_key]["mapping"])
@@ -361,11 +418,26 @@ def _load_canonical(req: KPIRequest, include_raw: bool = False):
             import pandas as pd
             kb_inst = KnowledgeBase()
             col = kb_inst._get_chroma()
-            res = col.get(where={"group_name": db_name}, include=["metadatas"])
+            if raw_target.lower() in ("all", "all_databases", "all_pos_databases", "*"):
+                res = col.get(where={"source_type": "database"}, include=["metadatas"])
+                if not res or not res.get("metadatas") or len(res["metadatas"]) == 0:
+                    res = col.get(include=["metadatas"])
+            elif "," in raw_target:
+                db_names = [d.strip() for d in raw_target.split(",") if d.strip()]
+                all_metas = []
+                for db_n in db_names:
+                    sub_res = col.get(where={"group_name": db_n}, include=["metadatas"])
+                    if not sub_res or not sub_res.get("metadatas") or len(sub_res["metadatas"]) == 0:
+                        sub_res = col.get(where={"database_name": db_n}, include=["metadatas"])
+                    if sub_res and sub_res.get("metadatas"):
+                        all_metas.extend(sub_res["metadatas"])
+                res = {"metadatas": all_metas}
+            else:
+                res = col.get(where={"group_name": db_name}, include=["metadatas"])
             if not res or not res.get("metadatas") or len(res["metadatas"]) == 0:
                 res = col.get(where={"database_name": db_name}, include=["metadatas"])
             if not res or not res.get("metadatas") or len(res["metadatas"]) == 0:
-                raise HTTPException(status_code=404, detail=f"Database '{db_name}' records not found in KnowledgeBase")
+                raise HTTPException(status_code=404, detail=f"Database '{raw_target}' records not found in KnowledgeBase")
             
             # Check for registry index gaps
             active_tables = [
@@ -470,6 +542,37 @@ def _load_canonical(req: KPIRequest, include_raw: bool = False):
     else:
         mapping = req.mapping
     canonical = apply_mapping(raw, mapping, domain=req.domain, keep_extras=True)
+
+    # Preserve common spreadsheet fields that the general pharmacy mapper
+    # cannot represent as one-to-one canonical columns. These rules are based
+    # on explicit headers and table shape, never on question wording.
+    if req.domain == "pharmacy":
+        extra_cols = {str(col).casefold(): col for col in canonical.columns if str(col).startswith("_extra.")}
+        product_name_col = extra_cols.get("_extra.product_name")
+        raw_names = {str(col).strip().casefold().replace(" ", "_") for col in raw.columns}
+        if product_name_col and "product_id" in canonical.columns and "product_id" in raw_names:
+            # Keep the stock keeping ID distinct from the readable medicine name.
+            if "product_code" not in canonical.columns:
+                canonical["product_code"] = canonical["product_id"]
+            canonical["product_id"] = canonical[product_name_col]
+        for extra_name, canonical_name in (
+            ("_extra.unit_cost", "cost"),
+            ("_extra.warehouse", "warehouse"),
+            ("_extra.payment_status", "status"),
+            ("_extra.purchase_date", "date"),
+        ):
+            source_col = extra_cols.get(extra_name)
+            if source_col and (canonical_name not in canonical.columns or canonical[canonical_name].isna().all()):
+                canonical[canonical_name] = canonical[source_col]
+        if "warehouse" in canonical.columns and "branch" not in canonical.columns:
+            canonical["branch"] = canonical["warehouse"]
+        if "txn_type" not in canonical.columns:
+            if any(name in raw_names for name in ("purchase_id", "purchase_date")):
+                canonical["txn_type"] = "purchase"
+            elif any(name in raw_names for name in ("sale_id", "sales_id")):
+                canonical["txn_type"] = "sale"
+            elif "stock" in raw_names and any(name in raw_names for name in ("reorder_level", "expiry_date")):
+                canonical["txn_type"] = "inventory"
     
     if cache_key:
         if len(_df_cache) > 10:

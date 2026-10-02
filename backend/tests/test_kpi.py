@@ -101,6 +101,13 @@ def test_returned_status_is_not_counted_as_sale():
     assert engine.compute("total_refunds", df).value == 25.0
 
 
+def test_null_transaction_types_are_treated_as_unknown_without_crashing():
+    result = classify_transactions(pd.DataFrame({"txn_type": [None, float("nan"), "sale"]}))
+    assert result.sale.tolist() == [False, False, True]
+    assert result.expense.tolist() == [False, False, False]
+    assert result.refund.tolist() == [False, False, False]
+
+
 def test_total_expenses_exact(known_frame):
     """Both 'expense' and 'purchase' labels count as expenses."""
     result = engine.compute("total_expenses", known_frame)

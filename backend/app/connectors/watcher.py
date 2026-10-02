@@ -82,15 +82,15 @@ class DirectoryWatcherConnector(Connector):
         # If user passed a specific file path directly
         if os.path.isfile(self.watch_dir):
             ext = os.path.splitext(self.watch_dir)[1].lower()
-            if ext in ('.csv', '.xlsx', '.xls', '.json', '.mdf'):
+            if ext in ('.csv', '.xlsx', '.xls', '.json', '.mdf', '.stardb', '.db', '.sqlite', '.sqlite3'):
                 return [self.watch_dir.replace("\\", "/")]
-            raise ValueError(f"File '{os.path.basename(self.watch_dir)}' is not a supported data format (.csv, .xlsx, .json, .mdf).")
+            raise ValueError(f"File '{os.path.basename(self.watch_dir)}' is not a supported data format (.csv, .xlsx, .json, .mdf, .stardb, .db, .sqlite).")
 
         pattern = os.path.join(self.watch_dir, self.file_pattern)
         files = [
             f.replace("\\", "/")
             for f in glob.glob(pattern)
-            if os.path.isfile(f) and f.lower().endswith(('.csv', '.xlsx', '.xls', '.json', '.mdf'))
+            if os.path.isfile(f) and f.lower().endswith(('.csv', '.xlsx', '.xls', '.json', '.mdf', '.stardb', '.db', '.sqlite', '.sqlite3'))
         ]
         # Sort by modification time (latest first)
         files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
@@ -99,14 +99,23 @@ class DirectoryWatcherConnector(Connector):
     def detect_sql_database(self) -> Optional[Dict[str, Any]]:
         """
         Detects if the monitored target is an MS SQL Server database file (.mdf)
-        or if the target directory contains .mdf files.
+        or an SQLite database (.stardb, .db, .sqlite, .sqlite3),
+        or if the target directory contains database files.
         """
         if not os.path.exists(self.watch_dir):
             return None
 
-        mdf_path = None
-        if os.path.isfile(self.watch_dir) and self.watch_dir.lower().endswith(".mdf"):
-            mdf_path = self.watch_dir
+        db_path = None
+        db_type = "mssql"
+
+        if os.path.isfile(self.watch_dir):
+            lower = self.watch_dir.lower()
+            if lower.endswith(".mdf"):
+                db_path = self.watch_dir
+                db_type = "mssql"
+            elif lower.endswith((".stardb", ".db", ".sqlite", ".sqlite3")):
+                db_path = self.watch_dir
+                db_type = "sqlite"
         elif os.path.isdir(self.watch_dir):
             mdfs = glob.glob(os.path.join(self.watch_dir, "*.mdf"))
             user_mdfs = [
@@ -116,42 +125,54 @@ class DirectoryWatcherConnector(Connector):
             ]
             if user_mdfs:
                 user_mdfs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-                mdf_path = user_mdfs[0]
+                db_path = user_mdfs[0]
+                db_type = "mssql"
             elif mdfs:
                 mdfs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-                mdf_path = mdfs[0]
+                db_path = mdfs[0]
+                db_type = "mssql"
+            else:
+                sqlite_files = []
+                for pat in ("*.stardb", "*.db", "*.sqlite", "*.sqlite3"):
+                    sqlite_files.extend(glob.glob(os.path.join(self.watch_dir, pat)))
+                if sqlite_files:
+                    sqlite_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                    db_path = sqlite_files[0]
+                    db_type = "sqlite"
 
-        if not mdf_path:
+        if not db_path:
             return None
+
+        server_label = r".\SQLEXPRESS" if db_type == "mssql" else "SQLite (Local File)"
 
         try:
             from app.connectors.sql import SQLConnector
-            connector = SQLConnector(mdf_path, db_type="mssql")
+            connector = SQLConnector(db_path, db_type=db_type)
             db_name = connector.extract_db_name()
             tables = connector.list_tables()
             return {
                 "database_name": db_name,
-                "file_name": os.path.basename(mdf_path),
-                "file_path": mdf_path.replace("\\", "/"),
-                "server": r".\SQLEXPRESS",
+                "file_name": os.path.basename(db_path),
+                "file_path": db_path.replace("\\", "/"),
+                "server": server_label,
                 "is_attached": True,
                 "table_count": len(tables),
                 "tables": tables,
-                "connection_string": mdf_path.replace("\\", "/")
+                "connection_string": db_path.replace("\\", "/")
             }
         except Exception as e:
-            base = os.path.basename(mdf_path)
+            base = os.path.basename(db_path)
             db_name, _ = os.path.splitext(base)
             return {
                 "database_name": db_name,
                 "file_name": base,
-                "file_path": mdf_path.replace("\\", "/"),
-                "server": r".\SQLEXPRESS",
+                "file_path": db_path.replace("\\", "/"),
+                "server": server_label,
                 "is_attached": False,
                 "table_count": 0,
                 "tables": [],
                 "error": str(e),
-                "connection_string": mdf_path.replace("\\", "/")
+                "connection_string": db_path.replace("\\", "/")
             }
 
     def fetch(self, file_path: Optional[str] = None, **kwargs):

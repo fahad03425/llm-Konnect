@@ -8,6 +8,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.core.config import get_default_domain
+from app.security.crypto import encrypt_string, decrypt_string
 
 class FileRecord(BaseModel):
     file_id: str
@@ -504,6 +505,9 @@ class FileRegistry:
     ) -> DBConnectionRecord:
         eff_domain = domain or get_default_domain()
         now_ts = datetime.now().isoformat()
+        # The registry is a local SQLite file; encrypt database credentials at
+        # rest using the same vault key as other local sensitive data.
+        stored_connection_string = encrypt_string(decrypt_string(connection_string))
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO db_connections (
@@ -520,7 +524,7 @@ class FileRegistry:
                     last_status = excluded.last_status,
                     table_count = CASE WHEN excluded.table_count > 0 THEN excluded.table_count ELSE table_count END,
                     row_count = CASE WHEN excluded.row_count > 0 THEN excluded.row_count ELSE row_count END
-            """, (database_name, connection_string, db_type, eff_domain, strategy, auto_sync, sync_interval_sec, now_ts, last_status, table_count, row_count))
+            """, (database_name, stored_connection_string, db_type, eff_domain, strategy, auto_sync, sync_interval_sec, now_ts, last_status, table_count, row_count))
             conn.commit()
         return self.get_db_connection(database_name)
 
@@ -532,7 +536,16 @@ class FileRegistry:
             )
             row = cursor.fetchone()
             if row:
-                return DBConnectionRecord(**dict(row))
+                record = dict(row)
+                stored = record.get("connection_string", "")
+                record["connection_string"] = decrypt_string(stored)
+                if stored and not stored.startswith("enc:"):
+                    conn.execute(
+                        "UPDATE db_connections SET connection_string = ? WHERE LOWER(database_name) = LOWER(?)",
+                        (encrypt_string(stored), database_name),
+                    )
+                    conn.commit()
+                return DBConnectionRecord(**record)
         return None
 
     def list_db_connections(self, auto_sync_only: bool = False) -> List[DBConnectionRecord]:
@@ -541,7 +554,19 @@ class FileRegistry:
             if auto_sync_only:
                 query += " WHERE auto_sync = 1 AND last_status = 'active'"
             cursor = conn.execute(query)
-            return [DBConnectionRecord(**dict(r)) for r in cursor.fetchall()]
+            records = []
+            for row in cursor.fetchall():
+                record = dict(row)
+                stored = record.get("connection_string", "")
+                record["connection_string"] = decrypt_string(stored)
+                if stored and not stored.startswith("enc:"):
+                    conn.execute(
+                        "UPDATE db_connections SET connection_string = ? WHERE database_name = ?",
+                        (encrypt_string(stored), record["database_name"]),
+                    )
+                records.append(DBConnectionRecord(**record))
+            conn.commit()
+            return records
 
     def update_db_sync_status(
         self,

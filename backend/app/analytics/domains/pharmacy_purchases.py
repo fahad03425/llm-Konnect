@@ -88,6 +88,7 @@ def pharmacy_purchase_analysis(
         (r"selling fastest|sales? velocity|fastest[- ]selling", "Customer sales history is not present in this purchase dataset, so sales velocity cannot be calculated."),
         (r"\breorder\b|should i order|should we order", "A reliable reorder decision needs current stock and customer consumption or sales velocity; this file contains historical purchases only."),
         (r"\breliable\b|reliability|delivers? (?:medicines? )?fastest|delivery (?:time|performance|speed)", "Supplier reliability or delivery speed cannot be determined because delivery dates, service levels, and quality outcomes are not recorded."),
+        (r"lead[- ]time|how long .{0,40}take to deliver|how many days .{0,40}deliver|usually take to deliver", "Supplier lead time cannot be calculated because matched order and receipt dates are not recorded."),
         (r"currently in stock|current stock|stock on hand|how many .* in stock", "Historical purchased quantities are not current inventory. Stock sales, adjustments, and an as-of inventory balance are required."),
         (r"\bprofit\b|\bnet earnings\b", "Actual profit cannot be calculated from this purchase ledger alone; it lacks completed customer sales and operating expenses."),
         (r"forecast|predict|next month.*demand|demand.*next month", "This file records purchases, not customer demand or sales. A demand forecast from it would be misleading."),

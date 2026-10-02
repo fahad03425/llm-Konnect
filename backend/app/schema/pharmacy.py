@@ -21,12 +21,14 @@ class PharmacyDomainPack(DomainPack):
             "opening_stock_qty", "closing_stock_qty", "status", "transaction_id",
             "time_of_day", "is_cancelled", "stock_qty",
             "supplier_name", "product_code", "net_payable", "tax_amount",
+            "warehouse",
             "discount_amount", "tax_pct", "margin_pct", "discount_pct",
             "total_qty", "total_bonus", "total_items", "total_pack",
             "invoice_total", "paid_amount", "customer_balance", "previous_balance",
             "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
             "line_discount_amount", "line_tax_amount", "invoice_discount",
             "invoice_tax", "carriage_charges", "other_charges"
+            , "original_price", "discounted_price", "availability"
         ]
 
     @property
@@ -39,11 +41,13 @@ class PharmacyDomainPack(DomainPack):
             "opening_stock_qty", "closing_stock_qty", "category", "reorder_level",
             "time_of_day", "status", "is_cancelled", "tax", "tax_amount",
             "branch", "cashier_name", "client_type", "customer_alias",
+            "warehouse",
             "discount_amount", "discount_pct", "margin_pct", "line_discount_amount",
             "line_tax_amount", "invoice_discount", "invoice_tax", "total_qty",
             "invoice_total", "paid_amount", "customer_balance", "previous_balance",
             "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
-            "bonus_quantity", "pack_size", "rack_location", "stock_qty"
+            "bonus_quantity", "pack_size", "rack_location", "stock_qty",
+            "original_price", "discounted_price", "discount_pct", "availability"
         ]
 
     @property
@@ -62,6 +66,7 @@ class PharmacyDomainPack(DomainPack):
             "branch", "cashier_name", "client_type",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
             "opening_stock_qty", "closing_stock_qty"
+            , "warehouse", "original_price", "discounted_price", "availability"
         ]
 
     @property
@@ -125,6 +130,8 @@ class PharmacyDomainPack(DomainPack):
             ("reorder_level", "Reorder level", ""),
             ("pack_size", "Pack size", ""),
             ("unit_price", "Unit price", "Rs "),
+            ("original_price", "Original price", "Rs "),
+            ("discounted_price", "Discounted price", "Rs "),
             ("sale_price", "Sale price", "Rs "),
             ("amount", "Total amount", "Rs "),
             ("net_payable", "Net payable", "Rs "),
@@ -133,6 +140,8 @@ class PharmacyDomainPack(DomainPack):
             ("margin_pct", "Margin", "%"),
             ("discount_amount", "Discount amount", "Rs "),
             ("discount", "Discount", "Rs "),
+            ("discount_pct", "Discount", ""),
+            ("availability", "Availability", ""),
             ("cost", "Cost price", "Rs "),
             ("cost_price", "Cost price", "Rs "),
             ("mrp", "MRP", "Rs "),
@@ -158,7 +167,8 @@ class PharmacyDomainPack(DomainPack):
                 handled_keys.add(key)
                 if key == "txn_type":
                     val = val.capitalize()
-                parts.append(f"{label}: {prefix}{val}")
+                rendered = f"{val}%" if key.endswith("_pct") else f"{prefix}{val}"
+                parts.append(f"{label}: {rendered}")
 
         # Also capture any remaining unhandled extra attributes
         ignored_keys = {"source_connector", "source_row", "id"}
@@ -363,6 +373,15 @@ class PharmacyDomainPack(DomainPack):
                 "price", "rate", "unit price", "rate pkr",
                 "selling rate", "per unit",
             ],
+            "original_price": [
+                "original price", "price before", "price_before", "list price", "regular price",
+                "price before discount", "mrp before discount",
+            ],
+            "discounted_price": [
+                "discounted price", "price after", "price_after", "price after discount",
+                "current discounted price", "offer price", "sale price after discount",
+            ],
+            "availability": ["availability", "available status", "stock availability", "product availability"],
             "amount": [
                 "amount", "line amount", "product amount", "line total",
                 "total", "net amount", "value", "net value",
@@ -370,6 +389,7 @@ class PharmacyDomainPack(DomainPack):
             "cost": [
                 "trade price", "tp", "purchase price", "cost price",
                 "pp", "cost", "landed cost", "p price", "p. price", "pprice", "pricing cost price",
+                "unit cost", "purchase unit cost", "buying unit cost",
             ],
             "date": [
                 "date", "txn date", "invoice date", "transaction date",
@@ -378,6 +398,7 @@ class PharmacyDomainPack(DomainPack):
                 "date & time", "bill date", "bill_date", "billdate",
                 "bill datetime", "bill_datetime",
                 "sale date", "sales date", "sales_date", "order date", "order_date",
+                "purchase date", "purchase_date", "purchased date",
                 "created at", "created_at", "timestamp", "receipt date", "receipt_date",
             ],
             "invoice_id": [
@@ -404,7 +425,8 @@ class PharmacyDomainPack(DomainPack):
                 "type", "txn type", "transaction type", "voucher type",
                 "entry type",
             ],
-            "status": ["status", "transaction status", "order status", "sale status"],
+            "status": ["status", "transaction status", "order status", "sale status", "payment status", "payment_status"],
+            "warehouse": ["warehouse", "warehouse name", "stock location", "storage location", "depot"],
         }
 
     def validate_dataframe(self, df: pd.DataFrame) -> List[Problem]:
@@ -634,7 +656,7 @@ class PharmacyDomainPack(DomainPack):
                     Problem(
                         severity="info",
                         code="UNREGISTERED_HINT",
-                        message="DRAP registration number is absent for item",
+                        message="No DRAP registration number is recorded for this item in the source data; this does not establish registration status",
                         field="drap_reg_no",
                         row_refs=row_refs,
                         sample=row_refs[:5]
@@ -645,7 +667,7 @@ class PharmacyDomainPack(DomainPack):
                 Problem(
                     severity="info",
                     code="UNREGISTERED_HINT",
-                    message="DRAP registration number field is absent",
+                    message="The source has no DRAP registration-number field; registration status cannot be determined from this data",
                     field="drap_reg_no",
                     row_refs=[],
                     sample=[]

@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 from app.core.config import get_default_domain
 from app.schema.domain import get_domain_pack
 from app.language.roman_urdu import normalize_roman_urdu_intent
+from app.language.pharmacy_vocabulary import normalize_pharmacy_vocabulary, match_pharmacy_concepts
 
 # Module 6.6 supersedes the temporary in-module pandas fallback that used to live
 # here: the numeric route is now backed by the real KPI engine, which computes
@@ -80,12 +81,204 @@ def parse_date_token(token: str, default_year: int = 2026) -> Any:
 def classify_route(question: str, last_route: Optional[str] = None) -> str:
     """
     Deterministic rule-based intent classification.
+    Route to Chit-chat if it's a greeting or casual capability/identity question.
     Route to Analytics if question asks for numbers, aggregates, margins, counts.
-    Route to Chit-chat if it's a greeting.
     Default to RAG (record lookup).
     """
-    original_lower = (question or "").casefold()
-    q_lower = normalize_roman_urdu_intent(question).casefold()
+    # Normalize pharmacy shorthand before applying the distinct analytics vs
+    # record-lookup rules. Keep the original for language-sensitive patterns.
+    normalized_question = normalize_pharmacy_vocabulary(question or "")
+    original_lower = normalized_question.casefold()
+    q_lower = normalize_roman_urdu_intent(normalized_question).casefold()
+
+    analytics_language = (
+        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|discount|gst|tax|p&l|"
+        r"revenue|sales?|turnover|takings|earnings|income|purchases?|expenses?|spend|spent|costs?|"
+        r"cash flow|refunds?|returns?|units sold|quantity sold|stock sold|most|highest|lowest|top|trend|performance|"
+        r"kitna|kitni|kitne|kul|bikri|bikree|farukht|farokht|frokt|frokht|munafa|nafa|faida|nuqsan|nuksan|kharcha|aamdani|kamai|"
+        r"udhar|udhari|naqad|naqd|rokra|baqaya|rasid|raseed|parchi|hisab|hisaab|khata|khaata|wasooli|bachat|khasara|laagat|lagat|adaigi|"
+        r"ziada|zyada|zayada|sab se|sabse|kam stock|dawai ki sale|dawa ki sale)\b"
+    )
+    has_analytics_language = bool(re.search(analytics_language, q_lower) or re.search(analytics_language, original_lower))
+
+    # Chit-chat & assistant capability keywords (checked when not asking for metric data or specific entities)
+    chitchat_patterns = [
+        r"^(hello|hi|hey|salam|assalam|aoa)[\s,!.]*$",
+        r"^(hello|hi|hey|salam|assalam|aoa)\b",
+        r"\bhow are you\b",
+        r"\bhow r u\b",
+        r"\bkese ho\b",
+        r"\bkaisa hai\b",
+        r"\bwhat can you do\b",
+        r"\bwho are you\b",
+        r"\bthank(s| you)?\b",
+        r"\bshukriya\b",
+        r"\bgood (morning|afternoon|evening|night)\b",
+        r"\b(how fast|kitni taizi|kitna tez|kitni tez)\b",
+        r"\b(kaam kr skte|kaam kar sakte|kaam kr sakty)\b",
+        r"\b(kya kr skte|kya kar sakte|madad kr skte)\b",
+        r"\b(tum kon ho|tm kon ho|aap kon hain|ap kon hain|who made you)\b",
+        r"\b(aap ka|apka|tumhara|tmhara)\s+(?:kya\s+)?naam\b",
+        r"\b(what is your name|whats your name)\b",
+        r"\b(kya kaam krte|kya kaam karte)\b",
+        r"\b(english\s+me\s+(ku|kyu|kyun)|english\s+mein\s+(ku|kyu|kyun)|urdu\s+me\s+bolo|roman\s+urdu)\b",
+        r"\b(kya|tum|aap)\b.{0,60}\b(urdu|roman\s+urdu)\b.{0,60}\b(baat|bol|reply|sakte|skte|kar)\b",
+        r"\b(why\s+in\s+english|speak\s+urdu|reply\s+in\s+urdu)\b",
+        r"^(assalamualaikum|assalamu\s+alaikum|asalam\s+o\s+alaikum|wa\s+alaikum\s+(assalam|salam)|walaikum\s+salam|adaab)\b",
+        r"\b(kya\s+ha{1,2}l\s+(hai|hain)|kaise\s+(ho|hain)|kaisay\s+(ho|hain)|theek\s+(ho|hun|hain))\b",
+        r"\b(kya\s+aap\s+madad\s+kar\s+sakte|madad\s+kar\s+saktay\s+ho|madad\s+karogi)\b",
+        r"\b(aap\s+kaun\s+hain|ap\s+kaun\s+hain|tumhara\s+naam\s+kya\s+hai)\b",
+        r"\b(bahut\s+shukriya|bohat\s+shukriya|shukria|meherbani|mehrbani)\b",
+        r"\b(madad\s+kar\s+(saktay|sakte|dain|dein)|meri\s+madad\s+karo)\b",
+        r"\b(theek\s+hun|mein\s+theek\s+hun|main\s+theek\s+hun)\b",
+        r"^(greetings|hiya|howdy|what's up|whats up|good day)\b",
+        r"\b(how is it going|how's it going|nice to meet you|good to see you)\b",
+        r"\b(can you help me|i need help|are you there|are you online)\b",
+        r"\b(thanks a lot|many thanks|much appreciated|cheers)\b",
+        r"\b(what do you do|what are your capabilities|how can you help)\b",
+    ]
+    has_domain_entity = bool(re.search(r"\b(supplier|vendor|customer|cashier|product|medicine|item|invoice|bill|batch|dawai|dawa|tablet|goli|panadol|records?)\b", q_lower))
+    if not has_analytics_language and not has_domain_entity:
+        if any(re.search(p, q_lower) for p in chitchat_patterns) or any(re.search(p, original_lower) for p in chitchat_patterns):
+            return RouteType.CHITCHAT
+
+    # Prefer the operation asked for over a broad noun. Owner questions about
+    # policy, workflow, customers, staff, and medicine attributes are record or
+    # knowledge lookups even when words like "stock", "medicine", or "how" occur.
+    concepts = set(match_pharmacy_concepts(normalized_question))
+    named_stock_count = re.search(
+        r"\bhow many\s+(?:(?:units|tablets|packs|doses)\s+of\s+)?([a-z][a-z0-9-]+)", q_lower
+    )
+    generic_subjects = {"medicine", "medicines", "drugs", "products", "items", "batches", "units", "tablets", "packs"}
+    direct_product_stock = (
+        named_stock_count and named_stock_count.group(1) not in generic_subjects
+        and re.search(r"\b(left|remaining|available|on hand|in stock)\b", q_lower)
+    ) or re.search(r"\bleft of (?:plain )?(?!the\b|stock\b|medicine\b|product\b|item\b)([a-z][a-z0-9-]+)", q_lower)
+    if re.search(r"\b(total stock|combined stock)\b",q_lower):
+        return RouteType.ANALYTICS
+    if direct_product_stock:
+        if re.search(r"\b(total stock|combined stock|across|warehouse|location)\b", q_lower):
+            return RouteType.ANALYTICS
+        return RouteType.RAG
+    record_ids = re.findall(r"\b(?:sale|sales|pur|purchase|inv|inventory|rx|sku)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", q_lower)
+    if len(set(record_ids)) > 1 and re.search(r"\b(total|combined|sum|value|compare|across|stock|cost)\b", q_lower):
+        return RouteType.ANALYTICS
+    if re.search(r"\b(total|combined|sum|how many)\b.{0,35}\b(quantity|units?|purchases?|sales?)\b", q_lower) and re.search(r"\b(bought|purchased|sold|did they|did he|did she|did we|did i)\b", q_lower):
+        return RouteType.ANALYTICS
+    if re.search(r"\b(lead time|delivery time|days? to deliver|how long.*deliver|how many days.*take.*deliver)\b", q_lower):
+        return RouteType.RAG
+    if re.search(r"\b[a-z]{1,8}-\d{2,}[a-z0-9-]*\b", q_lower) and re.search(r"\b(batch|expiry|expires?|stock)\b", q_lower):
+        return RouteType.RAG
+    if len(set(record_ids)) == 1 and not re.search(r"\b(compare|versus|\bvs\b|difference|combined value|total stock across|sum of)\b", q_lower):
+        return RouteType.RAG
+    if re.search(r"\bcustomer\s+[a-z][a-z'-]+\s+[a-z][a-z'-]+\b", q_lower) and re.search(r"\b(list every|all (?:sales|purchases)|what products?|what did .* (?:buy|purchase))\b", q_lower) and not re.search(r"\b(total|sum|average|avg|how much)\b", q_lower):
+        # Full customer history is a filtered table query; vector top-k can omit
+        # transactions and must not be used to answer a complete-list request.
+        return RouteType.ANALYTICS
+    if (
+        named_stock_count and named_stock_count.group(1) not in generic_subjects
+        and re.search(r"\b(left|remaining|available|on hand|in stock)\b", q_lower)
+        and not re.search(r"\b(compare|versus|vs|highest|lowest|top|total stock|all products)\b", q_lower)
+    ):
+        return RouteType.RAG
+    if re.search(r"\b(batch number|batch no|lot number)\s+(?:of|for)\b", q_lower):
+        return RouteType.RAG
+    if re.search(r"\bwhere is\b.{0,40}\b(stored|located|kept|placed|rack)\b", q_lower) or re.search(r"\b(which|what)\s+(?:rack|shelf|warehouse)\b", q_lower):
+        return RouteType.RAG
+    if concepts:
+        if re.search(r"\b(batch|lot)\b", q_lower) and re.search(r"\b(which|what|when|expires?|expire|expir(?:y|ing))\b",q_lower) and not re.search(r"\b[A-Z]{1,8}-\d+\b",question or "",re.I):
+            return RouteType.ANALYTICS
+        if re.search(r"\b(which|list|show|all|every|how many|count|more items?)\b", q_lower) and re.search(r"\b(out of stock|below (?:(?:the|their) )?reorder|under (?:(?:the|their) )?reorder|expires? on or before|items? expire)", q_lower):
+            return RouteType.ANALYTICS
+        # Exact record identifiers point to a bounded source lookup. Do not let
+        # generic words such as "expiry", "how many", or "invoice total"
+        # redirect a batch/invoice lookup to an unrelated whole-ledger KPI.
+        exact_record_id = re.search(
+            r"\b(?:batch|lot|invoice|inv|bill|receipt|prescription|rx)\s*(?:no\.?|number|#)?\s*[:#-]?\s*[a-z0-9/-]*\d[a-z0-9/-]*\b",
+            q_lower,
+        )
+        if exact_record_id:
+            return RouteType.RAG
+
+        # A named product's direct on-hand question is a record lookup. Broad
+        # low-stock lists and comparisons still use full-dataset analytics.
+        named_stock_count = re.search(
+            r"\bhow many\s+(?:(?:units|tablets|packs|doses)\s+of\s+)?([a-z][a-z0-9-]+)", q_lower
+        )
+        generic_subjects = {"medicine", "medicines", "drugs", "products", "items", "batches", "units", "tablets", "packs"}
+        if (
+            "inventory.on_hand" in concepts and named_stock_count
+            and named_stock_count.group(1) not in generic_subjects
+            and re.search(r"\b(left|remaining|available|on hand|in stock)\b", q_lower)
+            and not re.search(r"\b(compare|versus|vs|highest|lowest|top|total stock|all products)\b", q_lower)
+        ):
+            return RouteType.RAG
+
+        metric_operator = re.search(
+            r"\b(total|sum|average|avg|how much|how many|count|most|highest|lowest|top|best|least|trend|compare|cheapest|fastest|slowest|daily|report|rising|increasing|decreasing|falling|expir(?:y|es|ing)?|expires?)\b|\b(?:more|most|higher|highest)\s+stock\b",
+            q_lower,
+        )
+        # Explicitly requested source records take precedence over a metric noun
+        # such as "sales" in "show the sales records for invoice 43821".
+        explicit_record_list = re.search(
+            r"\b(show|find|fetch|look up|lookup|search|retrieve|pull up|list|open)\b.{0,80}\b(invoice|invoices|record|records|rows?|receipts?)\b",
+            q_lower,
+        )
+        named_invoice = re.search(r"\b(invoice|bill|receipt)\s*(?:no\.?|number|#)?\s*[:#-]?\s*[a-z0-9/-]*\d", q_lower)
+        named_batch_supplier = re.search(r"\b(supplier|vendor)\b.{0,50}\b(batch|lot)\s+[a-z0-9-]+", q_lower)
+        catalog_question = re.search(r"\bwhat products? do i sell\b", q_lower)
+        if named_batch_supplier or ((explicit_record_list or named_invoice or catalog_question) and not metric_operator):
+            return RouteType.RAG
+        if re.search(r"\b(conflict|conflicting|disagree|different reports?|report\s+[a-z]\s+says?)\b", q_lower):
+            return RouteType.RAG
+
+        # Product attributes remain lookups unless the owner asks to compare or
+        # aggregate them (e.g. strength is context in a price/stock comparison).
+        if any(c.startswith("medicine.") for c in concepts) and metric_operator and (
+            concepts & {"purchasing.price", "inventory.on_hand", "inventory.low", "inventory.out", "inventory.stockout_risk"}
+            or re.search(r"\b(compare|most|highest|lowest|top|best|least|trend)\b", q_lower)
+        ):
+            return RouteType.ANALYTICS
+        if any(c.startswith("medicine.") for c in concepts) and metric_operator and concepts & {
+            "finance.sales", "finance.margin", "finance.profit", "finance.product_performance",
+            "finance.purchases", "finance.invoice_total",
+        }:
+            return RouteType.ANALYTICS
+        if any(c.startswith(("compliance.", "customer.", "operations.", "medicine.")) for c in concepts):
+            # A daily report is a computed view when its requested content is a
+            # measurable KPI; workflow and audit reports remain document lookups.
+            if not ("operations.report" in concepts and "finance.sales" in concepts and metric_operator):
+                return RouteType.RAG
+        if "inventory.batch" in concepts and not re.search(
+            r"\b(expir(?:y|es|ing)?|expires?|earliest|latest|how many|count|total|multiple|active|which|what)\b", q_lower
+        ):
+            return RouteType.RAG
+        if "inventory.damage" in concepts or "inventory.adjustment" in concepts:
+            return RouteType.RAG
+        if "inventory.return" in concepts and not re.search(r"\b(how many|how much|total|count|sum)\b", q_lower):
+            return RouteType.RAG
+        if "purchasing.shortage" in concepts or "purchasing.alternative" in concepts:
+            return RouteType.RAG
+        if "purchasing.po" in concepts and not re.search(r"\b(total|sum|how many|how much|count)\b", q_lower):
+            return RouteType.RAG
+        if "purchasing.invoice" in concepts and not re.search(r"\b(total|sum|how many|how much|count|purchases last)\b", q_lower):
+            return RouteType.RAG
+        if "purchasing.price" in concepts:
+            if re.search(r"\b(cheapest|lowest|highest|most|compare|price[s]? for|how much|rank|best price|increase|increasing|decrease|decreasing|rise|rising|falling|trend|barh|izafa|ziada)\b", q_lower):
+                return RouteType.ANALYTICS
+            return RouteType.RAG
+        if "finance.refund" in concepts and re.search(r"\b(list|show|find|which|pull up)\b", q_lower):
+            return RouteType.RAG
+        if concepts & {
+            "inventory.on_hand", "inventory.low", "inventory.out", "inventory.expiry",
+            "inventory.reorder_recommendation", "inventory.stockout_risk",
+            "inventory.return", "finance.sales", "finance.margin", "finance.profit",
+            "finance.purchases", "finance.discount", "finance.refund", "finance.tax", "finance.cash_flow",
+            "finance.product_performance", "purchasing.payment", "purchasing.lead_time",
+        }:
+            return RouteType.ANALYTICS
+        if "inventory.reorder_point" in concepts or "purchasing.price" in concepts or "purchasing.invoice" in concepts or "purchasing.po" in concepts:
+            return RouteType.RAG
 
     # A request for a course of action is not a request for a sales/profit
     # total. Route it to grounded language generation before broad POS metric
@@ -108,7 +301,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     ) and not re.search(r"\b(total|sum|average|avg|how much|how many|count|highest|lowest|largest|smallest|most|top 10|top 5|top|profit|margin|revenue|sales amount|forecast|predict|expiry|expire|expired|expiring|stock|inventory|deliver|delivery|fastest|reliable|stop purchasing|reorder|restock|frequency|frequently|occur|occurs|batch|batches)\b", q_lower):
         return RouteType.RAG
     if re.search(r"\b(which|who|what|kis)\s+(supplier|vendor|customer|cashier)\b", q_lower) and not re.search(
-        r"\b(top|most|highest|lowest|amount|value|purchase value|how much|count|total|recently|"
+        r"\b(top|most|highest|lowest|cheapest|amount|value|purchase value|how much|count|total|recently|"
         r"fastest|fast|deliver|delivery|reliable|stop|avoid|supplied|supply|last|order|milti|li thi|aya tha|se li)\b", q_lower
     ):
         return RouteType.RAG
@@ -240,43 +433,6 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     )
     if entity_lookup:
         return RouteType.RAG
-    
-    # Chit-chat & assistant capability keywords
-    chitchat_patterns = [
-        r"^(hello|hi|hey|salam|assalam|aoa)\b",
-        r"\bhow are you\b",
-        r"\bhow r u\b",
-        r"\bkese ho\b",
-        r"\bkaisa hai\b",
-        r"\bwhat can you do\b",
-        r"\bwho are you\b",
-        r"\bthank(s| you)?\b",
-        r"\bshukriya\b",
-        r"\bgood (morning|afternoon|evening|night)\b",
-        r"\b(how fast|kitni taizi|kitna tez|kitni tez)\b",
-        r"\b(kaam kr skte|kaam kar sakte|kaam kr sakty)\b",
-        r"\b(kya kr skte|kya kar sakte|madad kr skte)\b",
-        r"\b(tum kon ho|tm kon ho|aap kon hain|ap kon hain|who made you)\b",
-        r"\b(english\s+me\s+(ku|kyu|kyun)|english\s+mein\s+(ku|kyu|kyun)|urdu\s+me\s+bolo|roman\s+urdu)\b",
-        r"\b(kya|tum|aap)\b.{0,60}\b(urdu|roman\s+urdu)\b.{0,60}\b(baat|bol|reply|sakte|skte|kar)\b",
-        r"\b(why\s+in\s+english|speak\s+urdu|reply\s+in\s+urdu)\b",
-        r"^(assalamualaikum|assalamu\s+alaikum|asalam\s+o\s+alaikum|wa\s+alaikum\s+(assalam|salam)|walaikum\s+salam|adaab)\b",
-        r"\b(kya\s+ha{1,2}l\s+(hai|hain)|kaise\s+(ho|hain)|kaisay\s+(ho|hain)|theek\s+(ho|hun|hain))\b",
-        r"\b(kya\s+aap\s+madad\s+kar\s+sakte|madad\s+kar\s+saktay\s+ho|madad\s+karogi)\b",
-        r"\b(aap\s+kaun\s+hain|ap\s+kaun\s+hain|tumhara\s+naam\s+kya\s+hai)\b",
-        r"\b(bahut\s+shukriya|bohat\s+shukriya|shukria|meherbani|mehrbani)\b",
-        r"\b(madad\s+kar\s+(saktay|sakte|dain|dein)|meri\s+madad\s+karo)\b",
-        r"\b(theek\s+hun|mein\s+theek\s+hun|main\s+theek\s+hun)\b",
-        r"^(greetings|hiya|howdy|what's up|whats up|good day)\b",
-        r"\b(how is it going|how's it going|nice to meet you|good to see you)\b",
-        r"\b(can you help me|i need help|are you there|are you online)\b",
-        r"\b(thanks a lot|many thanks|much appreciated|cheers)\b",
-        r"\b(what do you do|what are your capabilities|how can you help)\b",
-    ]
-    for pattern in chitchat_patterns:
-        if (re.search(pattern, original_lower) or re.search(pattern, q_lower)) and not has_analytics_language:
-            return RouteType.CHITCHAT
-            
     # Confirmation / verification follow-ups: keep the previous analytics route
     if True:
         confirmation_patterns = [
@@ -474,7 +630,7 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
         today = date.today()
         filters["date_from"] = today.replace(day=1).isoformat()
         filters["date_to"] = today.isoformat()
-    if re.search(r"\b(last|previous|prior)\s+month\b", q_lower):
+    if re.search(r"\b(last|previous|prior)\s+(?:calendar\s+)?month\b", q_lower):
         first_this_month = date.today().replace(day=1)
         last_month_end = first_this_month - timedelta(days=1)
         filters["date_from"] = last_month_end.replace(day=1).isoformat()

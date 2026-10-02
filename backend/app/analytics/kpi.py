@@ -71,6 +71,7 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
     if has_txn_type:
         tokens = (
             df["txn_type"]
+            .fillna("")
             .astype(str)
             .str.casefold()
             .str.replace(r"[^a-z]+", " ", regex=True)
@@ -99,7 +100,7 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
     cancelled = pd.Series(False, index=df.index)
     if "status" in df.columns:
         status = (
-            df["status"].astype(str).str.casefold()
+            df["status"].fillna("").astype(str).str.casefold()
             .str.replace(r"[^a-z]+", " ", regex=True).str.strip()
         )
         status_words = status.str.split()
@@ -116,7 +117,7 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
         expense &= ~partial_return & ~cancelled
 
     if "is_cancelled" in df.columns:
-        flag = df["is_cancelled"].astype(str).str.casefold().str.strip().isin(
+        flag = df["is_cancelled"].fillna("").astype(str).str.casefold().str.strip().isin(
             {"1", "true", "yes", "y", "cancelled", "canceled", "void", "voided"}
         )
         cancelled |= flag
@@ -141,7 +142,7 @@ def classify_transactions(df: pd.DataFrame) -> TxnClassification:
         notes.append(f"{int(cancelled.sum())} cancelled/void row(s) were excluded")
     unclassified = ~(sale | expense | refund | partial_return | cancelled)
     if has_txn_type and unclassified.any():
-        labels = sorted(set(df.loc[unclassified, "txn_type"].astype(str)))[:5]
+        labels = sorted(str(x) for x in df.loc[unclassified, "txn_type"].dropna().unique())[:5]
         notes.append(
             f"{int(unclassified.sum())} row(s) have a txn_type that matched no known "
             f"sale/expense/refund term and were excluded (e.g. {labels})"
@@ -872,6 +873,23 @@ def row_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIRes
     return KPIResult(
         key="row_count", name="Row Count", value=float(len(df)),
         unit="rows", formula=formula, provenance=provenance, period=_period(df, contributing),
+    )
+
+
+def customer_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
+    """Distinct count of customers/buyers in the records."""
+    formula = "distinct count of customer identifiers"
+    cust_col = next((c for c in ["customer_id", "customer_name", "customer_code", "client_id", "buyer_id"] if c in df.columns and df[c].notna().any()), None)
+    if not cust_col:
+        return unavailable("customer_count", "Registered / Unique Customers", UNIT_COUNT, formula, "No customer identification column found")
+    
+    usable = df[cust_col].notna() & (df[cust_col].astype(str).str.strip() != "")
+    unique_count = df.loc[usable, cust_col].astype(str).str.strip().nunique() if usable.any() else 0
+    provenance = build_provenance(df, usable, filters, [cust_col], [])
+    return KPIResult(
+        key="customer_count", name="Registered / Unique Customers",
+        value=float(unique_count), unit=UNIT_COUNT, formula=formula,
+        provenance=provenance, period=_period(df, usable) if usable.any() else None
     )
 
 

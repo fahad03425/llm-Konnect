@@ -1,0 +1,14 @@
+{
+  "name": "sample_inventory_retrieval_v1",
+  "source": "data/samples/challenging_pharma_inventory.csv",
+  "cases": [
+    {"q":"What is the stock on hand for Panadol 500mg?","product":"Panadol 500mg Tab (30s)"},
+    {"q":"Find batch B2201","product":"Panadol 500mg Tab (30s)"},
+    {"q":"What generic ingredient is in Glucophage?","product":"Glucophage 500mg Tab (30s)"},
+    {"q":"Where is Brufen 400mg stored?","product":"Brufen 400mg Tab (20s)"},
+    {"q":"Show me the supplier and batch for Nexium 40mg","product":"Nexium 40mg Cap (14s)"},
+    {"q":"Which item has batch G8801?","product":"Lantus SoloStar 3ml"},
+    {"q":"What is the reorder threshold for Crestor 10mg?","product":"Crestor 10mg Tab (28s)"},
+    {"q":"Find paracetamol stock and rack location","product":"Panadol 500mg Tab (30s)"}
+  ]
+}

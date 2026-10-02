@@ -221,6 +221,17 @@ function ConnectSourceContent() {
         void fetchLocalSqlInstances();
     }, []);
 
+    // ── Guard domain-specific source types ─────────────────────────
+    useEffect(() => {
+        if (domain === 'pharmacy' && sourceType === 'shopify') {
+            resetConnectSession('file');
+        } else if (domain === 'ecommerce' && sourceType === 'tally') {
+            resetConnectSession('file');
+        } else if ((domain === 'home_finance' || domain === 'finance') && sourceType === 'shopify') {
+            resetConnectSession('file');
+        }
+    }, [domain, sourceType]);
+
     const fetchKBStats = async () => {
         try {
             const res = await fetch('/api/kb/stats');
@@ -417,7 +428,7 @@ function ConnectSourceContent() {
                     db_type: dbType,
                     domain: domain,
                     tables: selectedTables,
-                    strategy: 'merge'
+                    strategy: 'row'
                 })
             });
             if (!res.ok) throw new Error(await res.text());
@@ -516,7 +527,7 @@ function ConnectSourceContent() {
                     db_type: dbType,
                     domain: domain,
                     tables: [tName],
-                    strategy: 'merge'
+                    strategy: 'row'
                 })
             });
             if (!res.ok) throw new Error(await res.text());
@@ -575,7 +586,7 @@ function ConnectSourceContent() {
             if (files.length === 0 && !data.detected_sql_db) {
                 setUploadSt({
                     loading: false,
-                    error: `No compatible data files (.csv, .xlsx, .json, .mdf) found at: "${watchDir}". Please verify the folder or file path.`
+                    error: `No compatible data files (.csv, .xlsx, .json, .mdf, .stardb, .db, .sqlite) found at: "${watchDir}". Please verify the folder or file path.`
                 });
             } else {
                 setUploadSt(idle());
@@ -588,7 +599,7 @@ function ConnectSourceContent() {
     const handleConnectDetectedSql = async (targetConn?: string) => {
         const connToUse = targetConn || detectedSqlDb?.file_path || detectedSqlDb?.connection_string || watchDir;
         setSourceType('sql');
-        setDbType('mssql');
+        setDbType(connToUse.toLowerCase().endsWith('.stardb') || connToUse.toLowerCase().endsWith('.db') || connToUse.toLowerCase().endsWith('.sqlite') || connToUse.toLowerCase().endsWith('.sqlite3') || (detectedSqlDb?.server || '').toLowerCase().includes('sqlite') ? 'sqlite' : 'mssql');
         setConnString(connToUse);
         setIsDiscovering(true);
         setUploadSt({ loading: true, error: null });
@@ -598,7 +609,7 @@ function ConnectSourceContent() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     connection_string: connToUse,
-                    db_type: 'mssql',
+                    db_type: (connToUse.toLowerCase().endsWith('.stardb') || connToUse.toLowerCase().endsWith('.db') || connToUse.toLowerCase().endsWith('.sqlite') || connToUse.toLowerCase().endsWith('.sqlite3') || (detectedSqlDb?.server || '').toLowerCase().includes('sqlite')) ? 'sqlite' : 'mssql',
                     domain: domain,
                     sample_n: 5
                 })
@@ -879,7 +890,7 @@ function ConnectSourceContent() {
     // ==============================================================
     //  STEP 6 — INGEST
     // ==============================================================
-    const [strategy, setStrategy] = useState<'merge' | 'row'>('merge');
+    const [strategy, setStrategy] = useState<'merge' | 'row'>('row');
 
     const doIngest = async (targetFp?: string, targetMap?: Record<string, string>, targetSheet?: string | null, targetStrategy?: 'merge' | 'row') => {
         const currentFp = targetFp || filePath;
@@ -1124,26 +1135,30 @@ function ConnectSourceContent() {
                         >
                             <Folder size={14} /> Folder Auto-Sync Watcher
                         </button>
-                        <button
-                            type="button"
-                            className={`source-tab-btn ${sourceType === 'tally' ? 'active' : ''}`}
-                            onClick={() => {
-                                if (step > 0 && sourceType !== 'tally') resetConnectSession('tally');
-                                else setSourceType('tally');
-                            }}
-                        >
-                            <RefreshCw size={14} /> Tally Prime / ERP 9 (Live XML)
-                        </button>
-                        <button
-                            type="button"
-                            className={`source-tab-btn ${sourceType === 'shopify' ? 'active' : ''}`}
-                            onClick={() => {
-                                if (step > 0 && sourceType !== 'shopify') resetConnectSession('shopify');
-                                else setSourceType('shopify');
-                            }}
-                        >
-                            <ShoppingBag size={14} /> Shopify Store Connection
-                        </button>
+                        {(domain === 'pharmacy' || domain === 'finance') && (
+                            <button
+                                type="button"
+                                className={`source-tab-btn ${sourceType === 'tally' ? 'active' : ''}`}
+                                onClick={() => {
+                                    if (step > 0 && sourceType !== 'tally') resetConnectSession('tally');
+                                    else setSourceType('tally');
+                                }}
+                            >
+                                <RefreshCw size={14} /> Tally Prime / ERP 9 (Live XML)
+                            </button>
+                        )}
+                        {domain === 'ecommerce' && (
+                            <button
+                                type="button"
+                                className={`source-tab-btn ${sourceType === 'shopify' ? 'active' : ''}`}
+                                onClick={() => {
+                                    if (step > 0 && sourceType !== 'shopify') resetConnectSession('shopify');
+                                    else setSourceType('shopify');
+                                }}
+                            >
+                                <ShoppingBag size={14} /> Shopify Store Connection
+                            </button>
+                        )}
                     </div>
 
                     <div className="wizard-card-title"><Upload size={16} /> Step 1 — Connect Source</div>
@@ -1279,7 +1294,7 @@ function ConnectSourceContent() {
                                             setDbType('postgresql');
                                         } else if (lower.startsWith('mysql') || lower.startsWith('mariadb')) {
                                             setDbType('mysql');
-                                        } else if (lower.startsWith('sqlite') || lower.endsWith('.db') || lower.endsWith('.sqlite')) {
+                                        } else if (lower.startsWith('sqlite') || lower.endsWith('.db') || lower.endsWith('.sqlite') || lower.endsWith('.sqlite3') || lower.endsWith('.stardb')) {
                                             setDbType('sqlite');
                                         }
                                     }}
@@ -1546,7 +1561,7 @@ function ConnectSourceContent() {
                                 <input
                                     type="text"
                                     className="sql-form-input"
-                                    placeholder="my-pharmacy-store (from my-pharmacy-store.myshopify.com)"
+                                    placeholder="my-store (from my-store.myshopify.com)"
                                     value={shopifyStore}
                                     onChange={e => setShopifyStore(e.target.value)}
                                 />
@@ -1631,7 +1646,7 @@ function ConnectSourceContent() {
                                 <input
                                     type="text"
                                     className="sql-form-input"
-                                    placeholder="C:/POS_Exports/ or C:/.../PharmacyPOS.mdf"
+                                    placeholder="C:/POS_Exports/, C:/.../PharmacyPOS.mdf, or C:/.../sales.stardb"
                                     value={watchDir}
                                     onChange={e => setWatchDir(e.target.value)}
                                 />
@@ -1666,7 +1681,7 @@ function ConnectSourceContent() {
                                         </div>
                                         <div>
                                             <div className="sql-detected-title">
-                                                Microsoft SQL Server Database Detected: <span className="highlight">{detectedSqlDb.database_name}</span>
+                                                {detectedSqlDb.server.includes('SQLite') ? 'SQLite / StarDB Database Detected:' : 'Microsoft SQL Server Database Detected:'} <span className="highlight">{detectedSqlDb.database_name}</span>
                                             </div>
                                             <div className="sql-detected-meta">
                                                 <span>Instance: <code>{detectedSqlDb.server}</code></span>
@@ -1710,7 +1725,7 @@ function ConnectSourceContent() {
                                             className="btn-secondary"
                                             onClick={() => {
                                                 setSourceType('sql');
-                                                setDbType('mssql');
+                                                setDbType((detectedSqlDb.file_path || '').toLowerCase().endsWith('.stardb') || (detectedSqlDb.file_path || '').toLowerCase().endsWith('.db') || (detectedSqlDb.file_path || '').toLowerCase().endsWith('.sqlite') || (detectedSqlDb.server || '').toLowerCase().includes('sqlite') ? 'sqlite' : 'mssql');
                                                 setConnString(detectedSqlDb.file_path);
                                             }}
                                         >
@@ -2047,7 +2062,7 @@ function ConnectSourceContent() {
                                 ) : (
                                     <>
                                         <div className="verdict-badge warn">
-                                            <AlertTriangle size={16} /> Data validated with minor warnings — ready to ingest
+                                            <AlertTriangle size={16} /> Data validated with missing-field warnings — ready to ingest
                                         </div>
                                         {validateResult.problems && validateResult.problems.length > 0 && (
                                             <ul className="problems-list" style={{ marginTop: '0.75rem', marginBottom: '0.75rem', maxHeight: '130px', overflowY: 'auto' }}>
@@ -2064,6 +2079,9 @@ function ConnectSourceContent() {
                                                 )}
                                             </ul>
                                         )}
+                                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', lineHeight: '1.4' }}>
+                                            Available rows can still be ingested. The assistant can answer only from fields present in this source and should say when a requested field is missing.
+                                        </div>
                                     </>
                                 )}
 
@@ -2084,11 +2102,11 @@ function ConnectSourceContent() {
                                             }}
                                         >
                                             <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'merge' ? 'var(--brand-green-text)' : 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                                <span>⚡ Merge / Grouping</span>
+                                                <span>⚡ Merge / Grouping (advanced)</span>
                                                 <span style={{ fontSize: '0.7rem', background: 'var(--brand-green)', color: '#FFF', padding: '2px 6px', borderRadius: '10px', fontWeight: 700 }}>5x–10x FASTER</span>
                                             </div>
                                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', lineHeight: '1.3' }}>
-                                                Groups rows by invoice/bill number into rich transaction chunks. Superior context &amp; fastest vectorization.
+                                                Groups adjacent rows that share a usable invoice/bill key. Faster for line-item invoices; row-level lookups can be less precise.
                                             </div>
                                         </div>
 
@@ -2104,10 +2122,10 @@ function ConnectSourceContent() {
                                             }}
                                         >
                                             <div style={{ fontWeight: 600, fontSize: '0.88rem', color: strategy === 'row' ? 'var(--brand-green-text)' : 'var(--text-primary)' }}>
-                                                📄 Row-by-Row
+                                                📄 Row-by-Row (recommended)
                                             </div>
                                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', lineHeight: '1.3' }}>
-                                                Embeds each row individually. Useful for independent catalog or item inventories.
+                                                Keeps each record and its identifiers separate for accurate lookups, filters, and citations. Recommended for pharmacy databases and mixed tables.
                                             </div>
                                         </div>
                                     </div>

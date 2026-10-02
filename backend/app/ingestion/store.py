@@ -300,7 +300,19 @@ class KnowledgeBase:
                 progress_callback(pct_done, f"Ingesting chunks: {current_idx} / {total_records} ({pct_done:.0f}%)...")
             ids.clear(); texts.clear(); metadatas.clear()
 
-        if strategy == "merge":
+        merge_key_field = merge_key
+        if not merge_key_field and records:
+            first_record_keys = {str(k).lower().strip(): k for k in records[0].keys()}
+            for candidate in ["invoice_id", "invoice_no", "invoiceno", "bill_no", "bill_id", "billno", "order_id", "orderno", "voucher_no", "receipt_no", "transaction_id", "doc_no", "id"]:
+                if candidate in first_record_keys:
+                    merge_key_field = first_record_keys[candidate]
+                    break
+        has_usable_merge_key = bool(
+            merge_key_field
+            and any(row.get(merge_key_field) is not None and str(row.get(merge_key_field)).strip() for row in records)
+        )
+
+        if strategy == "merge" and has_usable_merge_key:
             # --- Greedy token-constrained merge strategy ---
             try:
                 import tiktoken
@@ -309,15 +321,7 @@ class KnowledgeBase:
             except ImportError:
                 count_tokens = lambda t: len(t.split())
 
-            key_field = merge_key
-            if not key_field and records:
-                first_record_keys = {str(k).lower().strip(): k for k in records[0].keys()}
-                for candidate in ["invoice_id", "invoice_no", "invoiceno", "bill_no", "bill_id", "billno", "order_id", "orderno", "voucher_no", "receipt_no", "transaction_id", "doc_no", "id"]:
-                    if candidate in first_record_keys:
-                        key_field = first_record_keys[candidate]
-                        break
-            if not key_field:
-                key_field = "invoice_id"
+            key_field = merge_key_field
 
             chunk_limit = settings.chunk_size
 
@@ -365,6 +369,22 @@ class KnowledgeBase:
                 row_tokens = count_tokens(row_text)
                 group_key = row.get(key_field) if key_field else None
                 source_row_val = int(row.get("source_row", i + 1))
+
+                # A row without a grouping ID is an independent record. Never
+                # absorb it into a neighboring invoice chunk or combine a run
+                # of unrelated null-key rows into one ambiguous document.
+                if group_key is None or not str(group_key).strip():
+                    _emit_merged_chunk()
+                    current_group_key = object()
+                    current_token_count = 0
+                    current_texts.append(row_text)
+                    current_source_rows.append(source_row_val)
+                    current_group_rows.append(row)
+                    current_record_indices.append(i)
+                    _emit_merged_chunk()
+                    if len(ids) >= upsert_batch_size:
+                        _flush(i + 1)
+                    continue
 
                 # If group key changes (e.g. new invoice) or chunk token limit reached, emit
                 if (
@@ -794,10 +814,48 @@ class KnowledgeBase:
                         clauses.append({k: v})
             
         if file_ids and len(file_ids) > 0:
-            if len(file_ids) == 1:
-                clauses.append({"file_id": file_ids[0]})
+            expanded_fids = set()
+            matched_groups = set()
+            try:
+                from app.ingestion.registry import file_registry
+                all_registered = file_registry.list_files()
+                for fid in file_ids:
+                    fid_clean = str(fid).strip()
+                    fid_lower = fid_clean.lower()
+                    expanded_fids.add(fid_clean)
+                    for rec in all_registered:
+                        rec_fid = getattr(rec, "file_id", "")
+                        rec_fname = str(getattr(rec, "filename", "") or "").lower()
+                        rec_gname = str(getattr(rec, "group_name", "") or "")
+                        rec_dname = str(getattr(rec, "database_name", "") or "")
+                        if (
+                            rec_fid == fid_clean
+                            or fid_lower == rec_gname.lower()
+                            or fid_lower == rec_dname.lower()
+                            or fid_lower in rec_fname
+                            or rec_fid.lower().startswith(f"db_{fid_lower}_")
+                            or rec_fid.lower().startswith(f"{fid_lower}_")
+                        ):
+                            expanded_fids.add(rec_fid)
+                            if rec_gname:
+                                matched_groups.add(rec_gname)
+                            if rec_dname:
+                                matched_groups.add(rec_dname)
+            except Exception:
+                expanded_fids = set(file_ids)
+
+            if matched_groups:
+                g_list = list(matched_groups)
+                if len(g_list) == 1:
+                    clauses.append({"group_name": g_list[0]})
+                else:
+                    clauses.append({"group_name": {"$in": g_list}})
             else:
-                clauses.append({"file_id": {"$in": file_ids}})
+                fids_list = list(expanded_fids) if expanded_fids else file_ids
+                if len(fids_list) == 1:
+                    clauses.append({"file_id": fids_list[0]})
+                else:
+                    clauses.append({"file_id": {"$in": fids_list}})
         elif source_files and len(source_files) > 0:
             sf_or = []
             for sf in source_files:
@@ -819,21 +877,30 @@ class KnowledgeBase:
         else:
             where_clause = {"$and": clauses}
 
-        # If date range is active, expand query window to retrieve all candidates
+        # Expand candidate retrieval for date windows and concrete identifiers.
+        # Embeddings often rank a semantically similar neighboring batch above an
+        # exact batch/invoice code, so retrieve a wider set before reranking.
         has_date_range = bool(filters and ("date_from" in filters or "date_to" in filters))
-        query_k = min(count, max(top_k * 4, 30)) if has_date_range else top_k
+        import re
+        identifier_tokens = re.findall(
+            r"(?<!\w)([A-Z]{1,8}[-/]?[A-Z0-9-]*\d[A-Z0-9-]*|\d{4,})(?!\w)",
+            query,
+            flags=re.IGNORECASE,
+        )
+        has_identifier = bool(identifier_tokens)
+        query_k = min(count, max(top_k * 4, 30)) if (has_date_range or has_identifier) else top_k
         
         # Multi-source balanced retrieval: when multiple file_ids are requested,
         # retrieve balanced candidates per file_id so one source does not starve the others
         results = None
         if file_ids and len(file_ids) > 1:
-            per_source_k = max(3, query_k // len(file_ids))
+            per_source_k = max(4, query_k // len(file_ids))
             all_docs = []
             all_metas = []
             all_distances = []
-            other_clauses = [c for c in clauses if "file_id" not in c] if clauses else []
+            other_clauses = [c for c in clauses if "file_id" not in c and "group_name" not in c] if clauses else []
             for fid in file_ids:
-                source_clause = {"file_id": fid}
+                source_clause = {"group_name": fid} if fid in ("inventory", "sales", "PharmacyPOS") else {"file_id": fid}
                 sub_where = {"$and": [source_clause] + other_clauses} if other_clauses else source_clause
                 try:
                     sub_res = collection.query(
@@ -935,6 +1002,52 @@ class KnowledgeBase:
                         ))
             except Exception as e:
                 pass
+
+        # A vector query can miss a record whose identifier is new or rare.
+        # Resolve exact record codes directly against indexed metadata as well;
+        # this is generic across invoice, sale, purchase, product, SKU, and
+        # batch identifiers, and retains the selected-source scope.
+        if identifier_tokens:
+            exact_where_clauses = [c for c in clauses if isinstance(c, dict)]
+            seen_exact = {f"{c.metadata.get('source_file')}_{c.source_row}" for c in retrieved}
+            for token in identifier_tokens:
+                for field in ("invoice_id", "transaction_id", "product_code", "sku", "product_id", "batch_no"):
+                    condition = {field: token}
+                    direct_clauses = exact_where_clauses + [condition]
+                    direct_where = direct_clauses[0] if len(direct_clauses) == 1 else {"$and": direct_clauses}
+                    try:
+                        exact = collection.get(where=direct_where, include=["documents", "metadatas"])
+                    except Exception:
+                        continue
+                    for doc, meta in zip(exact.get("documents") or [], exact.get("metadatas") or []):
+                        source_row = meta.get("source_row")
+                        chunk_key = f"{meta.get('source_file')}_{source_row}"
+                        if chunk_key in seen_exact:
+                            continue
+                        seen_exact.add(chunk_key)
+                        clean_text = decrypt_string(doc)
+                        if self.passage_prefix and clean_text.startswith(self.passage_prefix):
+                            clean_text = clean_text[len(self.passage_prefix):]
+                        retrieved.append(RetrievedChunk(text=clean_text, metadata=meta, score=1.0,
+                                                        source_row=int(source_row) if source_row is not None else None))
+
+        if identifier_tokens and retrieved:
+            id_fields = ("batch_no", "invoice_id", "transaction_id", "product_code", "sku", "product_id")
+            wanted = {re.sub(r"[^a-z0-9]", "", token.casefold()) for token in identifier_tokens}
+
+            def _identifier_match(chunk: RetrievedChunk) -> bool:
+                for field in id_fields:
+                    value = chunk.metadata.get(field)
+                    if value is None:
+                        continue
+                    normalized = re.sub(r"[^a-z0-9]", "", str(value).casefold())
+                    if normalized in wanted:
+                        return True
+                return False
+
+            # Exact record identifiers outrank semantic similarity. Keep the
+            # vector score as a tiebreaker among exact matches and other chunks.
+            retrieved.sort(key=lambda chunk: (_identifier_match(chunk), chunk.score), reverse=True)
 
         return retrieved[:top_k]
 
