@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 import app.schema  # ensures all domain packs (pharmacy, etc.) register on startup
-from app.api import routes, kb, chat, analytics, report, files, anomaly, security
+from app.api import routes, kb, chat, analytics, report, files, anomaly, security, models
 from app.ingestion.store import KnowledgeBase
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -55,6 +55,7 @@ app.include_router(report.router)
 app.include_router(files.router)
 app.include_router(anomaly.router)
 app.include_router(security.router)
+app.include_router(models.router)
 
 @app.get("/")
 def read_root():

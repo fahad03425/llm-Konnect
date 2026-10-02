@@ -3,14 +3,24 @@ import { Link } from 'react-router-dom';
 import {
     DollarSign, TrendingUp, BarChart2, Receipt, CreditCard, AlertTriangle,
     Database, Activity, Minus, ShoppingBag, Briefcase, ArrowRight, Calendar,
-    RefreshCw, ChevronDown, Check, FileSpreadsheet, Table2
+    RefreshCw, ChevronDown, Check, FileSpreadsheet, Table2, Boxes
 } from 'lucide-react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { useFilePath, getDataVersion } from '../context/FileContext';
 import { useUser } from '../context/UserContext';
+import { getCustomDbGroups, type CustomDbGroup } from '../utils/dbGroups';
 import './Dashboard.css';
+
+interface DatasetOption {
+    name: string;
+    path: string;
+    kind: 'whole_db' | 'table' | 'file';
+    dbName?: string;
+    isCustomGroup?: boolean;
+    customGroupName?: string;
+}
 
 // ----------------------------------------------------------------------
 // Types based on the User Specifications
@@ -143,8 +153,8 @@ export default function Dashboard() {
 
 
     const [errorKpis, setErrorKpis] = useState<string | null>(null);
-    const [dbDatasets, setDbDatasets] = useState<Array<{ name: string; path: string; kind: 'whole_db' | 'table'; dbName?: string }>>([]);
-    const [fileDatasets, setFileDatasets] = useState<Array<{ name: string; path: string; kind: 'file' }>>([]);
+    const [dbDatasets, setDbDatasets] = useState<DatasetOption[]>([]);
+    const [fileDatasets, setFileDatasets] = useState<DatasetOption[]>([]);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -177,12 +187,33 @@ export default function Dashboard() {
         fetch(`/api/files?domain=${encodeURIComponent(user.domain)}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
-                if (!isMounted || !data?.files) return;
+                if (!isMounted) return;
 
-                const rawDbFiles = data.files.filter((f: any) => f.source_type === 'database' || (f.file_path && f.file_path.startsWith('sql://')));
+                const domainFiles = (data?.files || []).filter((f: any) => {
+                    const fDom = (f.domain || '').toLowerCase().trim();
+                    return !fDom || fDom === user.domain.toLowerCase().trim();
+                });
+
+                const rawDbFiles = domainFiles.filter((f: any) => f.source_type === 'database' || (f.file_path && f.file_path.startsWith('sql://')));
                 
                 // Extract unique database group names for whole-database selection
                 const uniqueDbNames = Array.from(new Set(rawDbFiles.map((f: any) => f.group_name || f.database_name).filter(Boolean))) as string[];
+
+                // Custom Database Groups configured by user
+                const customGroups = getCustomDbGroups(user.domain);
+                const customGroupEntries = customGroups.map((grp: CustomDbGroup) => {
+                    const memberDbs = grp.dbNames;
+                    const dbKey = memberDbs.join(',');
+                    return {
+                        name: `${grp.name} (${memberDbs.join(' + ')})`,
+                        path: `db://${dbKey}`,
+                        kind: 'whole_db' as const,
+                        dbName: dbKey,
+                        isCustomGroup: true,
+                        customGroupName: grp.name
+                    };
+                });
+
                 const wholeDbEntries = uniqueDbNames.map((dbName: string) => ({
                     name: `${dbName} (Whole Database)`,
                     path: `db://${dbName}`,
@@ -190,16 +221,16 @@ export default function Dashboard() {
                     dbName
                 }));
 
-                const tableEntries = rawDbFiles.map((f: any) => ({
-                    name: f.filename || f.table_name,
-                    path: f.file_path,
-                    kind: 'table' as const,
-                    dbName: f.group_name || f.database_name || ''
-                }));
+                const allDbEntry = (uniqueDbNames.length > 1 && customGroupEntries.length === 0) ? [{
+                    name: `All Connected Databases (${uniqueDbNames.length} DBs Consolidated)`,
+                    path: 'db://all',
+                    kind: 'whole_db' as const,
+                    dbName: 'all'
+                }] : [];
 
-                const dbList = [...wholeDbEntries, ...tableEntries];
+                const dbList = [...customGroupEntries, ...allDbEntry, ...wholeDbEntries];
 
-                const fileList = data.files
+                const fileList = domainFiles
                     .filter((f: any) => f.source_type !== 'database' && f.file_path && !f.file_path.startsWith('sql://') && f.file_size_bytes > 0)
                     .map((f: any) => ({
                         name: f.filename,
@@ -226,23 +257,33 @@ export default function Dashboard() {
                     }
                 } else if (allList.some((d: any) => d.path === activePath)) {
                     // Current active path is already valid for this domain; retain it
-                } else if (wholeDbEntries.length > 0) {
-                    setActivePath(wholeDbEntries[0].path);
                 } else if (allList.length > 0) {
-                    // Fallback to domain-relevant preferred file or first available
-                    const preferred = allList.find((d: any) => 
-                        user.domain === 'ecommerce' 
-                            ? (d.name.toLowerCase().includes('order') || d.name.toLowerCase().includes('ecommerce') || d.name.toLowerCase().includes('shopify'))
-                            : (d.name.toLowerCase().includes('sales') || d.name.toLowerCase().includes('pharmacy'))
-                    ) || allList[0];
-                    if (preferred && activePath !== preferred.path) {
-                        setActivePath(preferred.path);
+                    if (customGroupEntries.length > 0) {
+                        setActivePath(customGroupEntries[0].path);
+                    } else if (wholeDbEntries.length > 0) {
+                        setActivePath(wholeDbEntries[0].path);
+                    } else {
+                        // Fallback to first available file in this domain
+                        setActivePath(allList[0].path);
                     }
                 } else {
+                    // No datasets in this domain -> cleanly clear activePath and metrics
                     setActivePath('');
+                    setKpis(null);
+                    setExpiry(null);
+                    setTrend(null);
+                    setRangeTotalRevenue(null);
+                    setLoadingKpis(false);
+                    setLoadingTrend(false);
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                if (isMounted) {
+                    setDbDatasets([]);
+                    setFileDatasets([]);
+                    setActivePath('');
+                }
+            });
 
         return () => { isMounted = false; };
     }, [user.domain]);
@@ -502,7 +543,7 @@ export default function Dashboard() {
     const allDatasets = [...dbDatasets, ...fileDatasets];
     const activeItem = allDatasets.find((d) => d.path === activePath);
     const activeDisplayLabel = activeItem
-        ? activeItem.name
+        ? (activeItem.customGroupName || activeItem.name)
         : (activePath ? activePath.split('/').pop()?.replace(/^sql:\/\//, '') : 'Select Dataset');
 
     return (
@@ -523,7 +564,9 @@ export default function Dashboard() {
                                 aria-haspopup="listbox"
                                 aria-expanded={isDropdownOpen}
                             >
-                                {activeItem?.kind === 'file' ? (
+                                {activeItem?.isCustomGroup ? (
+                                    <Boxes size={15} className="google-dataset-icon" />
+                                ) : activeItem?.kind === 'file' ? (
                                     <FileSpreadsheet size={15} className="google-dataset-icon" />
                                 ) : activeItem?.kind === 'table' ? (
                                     <Table2 size={15} className="google-dataset-icon" />
@@ -545,6 +588,7 @@ export default function Dashboard() {
                                             {dbDatasets.map((ds) => {
                                                 const isSelected = activePath === ds.path;
                                                 const isTable = ds.kind === 'table';
+                                                const isCustom = ds.isCustomGroup;
                                                 return (
                                                     <button
                                                         key={ds.path}
@@ -555,12 +599,15 @@ export default function Dashboard() {
                                                         onClick={() => {
                                                             try {
                                                                 sessionStorage.setItem('llm_konnect_user_manual_dataset_choice', ds.path);
+                                                                sessionStorage.setItem(`llm_konnect_user_manual_dataset_${user.domain}`, ds.path);
                                                             } catch {}
                                                             setActivePath(ds.path);
                                                             setIsDropdownOpen(false);
                                                         }}
                                                     >
-                                                        {isTable ? (
+                                                        {isCustom ? (
+                                                            <Boxes size={14} style={{ color: 'var(--brand-green)', flexShrink: 0 }} />
+                                                        ) : isTable ? (
                                                             <Table2 size={13} style={{ opacity: 0.65, flexShrink: 0 }} />
                                                         ) : (
                                                             <Database size={14} style={{ color: 'var(--brand-green)', flexShrink: 0 }} />

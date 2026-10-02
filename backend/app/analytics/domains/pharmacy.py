@@ -83,6 +83,9 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
             "low stock", "fast moving", "fast-moving", "kam stock", "khatam hone",
             "stock khatam", "supply running low", "stockout risk", "critical supply",
             "reorder prediction", "reorder alert", "critical drugs", "cardiac drugs",
+            "reorder today", "should i reorder", "products should i reorder", "medicines should i reorder",
+            "reorder based on", "need reordering", "reorder level", "below their reorder level",
+            "associated with products that need reordering",
         ),
         ("low_stock_reorder_predictions", "stockout_risk_count"),
     ),
@@ -96,34 +99,43 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     (("fast-moving", "fast moving", "fast-selling", "best-selling", "top-selling", "most sold"),
      ("quantity_breakdown_by_product", "revenue_breakdown_by_product")),
     (("revenue by product", "sales by product", "sales contribution", "contribution products",
-      "which medicine sold", "which medicines sold", "top 10 medicines", "top products"),
+      "which medicine sold", "which medicines sold", "top 10 medicines", "top 10 products", "top products", "top products by revenue"),
      ("revenue_breakdown_by_product", "quantity_breakdown_by_product")),
-    (("quantity by product", "units by product", "quantity sold by", "units sold by", "by quantity"),
-     ("quantity_breakdown_by_product",)),
+    (("quantity by product", "units by product", "quantity sold by", "units sold by", "by quantity", "units have i sold", "total quantity of medicines", "units have been sold"),
+     ("quantity_breakdown_by_product", "units_sold")),
     # 2. Demand forecasting
     (
         (
-            "demand", "how much should i order", "how much to order", "reorder",
-            "kitna mangwana", "kitna order", "kitni dawai mangwani", "kitni dawai order", "dawai ki demand",
-            "stock kitna chahiye",
+            "demand for", "forecast demand for", "how much should i order for", "how much to order for",
+            "kitna mangwana", "kitni dawai mangwani", "dawai ki demand",
         ),
         ("product_demand_forecast", "demand_forecast"),
     ),
-    # 3. Expired vs Expiring
+    # 3. Expired vs Expiring & Liquidation
     (
         ("expired or expiring", "expired and expiring", "expired or near", "expired aur expiring"),
         ("expired_stock_value", "expired_item_count", "near_expiry_total", "near_expiry_item_count"),
     ),
     (
-        ("expired", "already expired", "dead stock", "expire ho gaya", "expire ho chuka"),
+        ("expired", "already expired", "dead stock", "expire ho gaya", "expire ho chuka", "stock that is already expired", "expired products still have stock"),
         ("expired_stock_value", "expired_item_count"),
     ),
     (
         (
             "liquidation", "liquidation suggestions", "liquidation plan", "return to distributor",
-            "bundle or discount",
+            "bundle or discount", "prioritize selling because of their expiry", "prioritize selling",
+            "expiring soon", "which vendor supplied the medicines that are expiring", "which category has the most soon-to-expire",
+            "high-value medicines are close to expiry", "close to expiry",
         ),
         ("expiring_medicines_liquidation", "near_expiry_total", "near_expiry_item_count"),
+    ),
+    (
+        ("expiring this month", "expire this month", "next 30 days", "in the next 30 days"),
+        ("expiring_value_30d", "near_expiry_total"),
+    ),
+    (
+        ("expiring in the next 90 days", "expire in the next 90 days", "next 90 days", "within six months", "expiring within six months"),
+        ("expiring_value_90d", "near_expiry_total"),
     ),
     (
         (
@@ -141,12 +153,47 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
         ),
         ("scheduled_transaction_count", "scheduled_units_sold", "scheduled_sales_value"),
     ),
+    # Profitability & Margins
+    (
+        (
+            "profit per unit", "lowest profit margin", "profit margin", "gross profit", "margins",
+            "difference between purchase and selling", "low margins", "average profit margin",
+            "highest markup", "most profitable", "cost me", "purchase cost of sold items",
+            "revenue compared with the purchase cost", "high-selling medicines have low profit margins",
+            "profitability",
+        ),
+        ("gross_margin_pct", "gross_profit", "revenue_breakdown_by_product"),
+    ),
+    # Vendors & Purchasing
+    (
+        (
+            "how many vendors", "active vendors", "vendor supplies", "outstanding balances",
+            "highest balance", "purchase orders", "purchase order", "total value of my purchase orders",
+            "largest purchase order", "latest purchase order", "not been fully paid", "owe suppliers",
+            "recently received", "vendor supplied", "ordered versus received", "vendor", "vendors", "supplier", "suppliers",
+        ),
+        ("expense_breakdown_by_supplier", "total_expenses", "supplier_payable_by_supplier", "supplier_payable_total"),
+    ),
+    # Category Product Count & Breakdowns
+    (
+        ("how many products do i have in each category", "how many products in each category", "products in each category", "products per category", "product count by category", "products by category", "count by category", "categories count", "total categories", "stock available by category", "stock by category"),
+        ("category_product_counts", "revenue_breakdown_by_category"),
+    ),
+    (
+        ("in each category", "per category", "by category", "category generates", "product category", "categories"),
+        ("revenue_breakdown_by_category", "gross_margin_by_category"),
+    ),
+    # Payment Methods (JazzCash / EasyPaisa / Cash / Card)
+    (
+        ("jazzcash", "jazz cash", "easypaisa", "easy paisa", "payment method", "mode of payment", "cash vs card", "cash and card", "paid by cash", "paid by card", "percentage of sales was paid by", "payment type", "payment mode", "payment breakdown"),
+        ("payment_method_mix", "transaction_count"),
+    ),
+    # Customer Count & Footfall
+    (
+        ("how many customers", "customers visited", "customer count", "unique customers", "distinct customers", "total customers", "kitne customer", "customer has purchased the most", "customers have outstanding", "highest customer balance", "due from sales invoices", "paid by customers"),
+        ("customer_count", "transaction_count"),
+    ),
 ]
-
-
-# ---------------------------------------------------------------------------
-# Shared preparation
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1686,6 +1733,11 @@ def register(engine, domain: str = "pharmacy") -> None:
             "Revenue and percentage share by payment method (cash vs card vs credit).",
             payment_method_mix, domain=domain, tags=("money", "sales", "breakdown"),
         ),
+        KPISpec(
+            "category_product_counts", "Products per Category", "categories",
+            "Count of distinct products and items grouped by category.",
+            category_product_counts, domain=domain, tags=("inventory", "category", "breakdown"),
+        ),
     ]
 
     for low, high in _bucket_bands():
@@ -1701,3 +1753,46 @@ def register(engine, domain: str = "pharmacy") -> None:
     for spec in specs:
         engine.register(spec, replace=True)
 
+
+def category_product_counts(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
+    """Distinct product and item counts grouped by canonical category."""
+    key, name = "category_product_counts", "Products per Category"
+    formula = "count of distinct products and items grouped by category"
+
+    cat_col = next((c for c in ("category", "category_name", "product_category", "item_category") if c in df.columns and df[c].notna().any()), None)
+    if cat_col is None:
+        return unavailable(
+            key, name, UNIT_COUNT, formula,
+            "no 'category' column present in data",
+            build_provenance(df, _no_rows(df), filters, [], []),
+        )
+
+    prod_col = next((c for c in ("product_id", "product_name", "medicine_name", "product_code", "item_id", "item_name") if c in df.columns and df[c].notna().any()), None)
+    mask = df[cat_col].notna() & (df[cat_col].astype(str).str.strip() != "")
+    columns_used = [cat_col] + ([prod_col] if prod_col else [])
+    provenance = build_provenance(df, mask, filters, columns_used, [])
+
+    if not mask.any():
+        return KPIResult(
+            key=key, name=name, value=0.0, unit=UNIT_COUNT, formula=formula,
+            provenance=provenance, breakdown=[], breakdown_columns=["category", "product_count", "item_count"],
+        )
+
+    sub = df[mask].copy()
+    grouped_rows = []
+    for cat_name, grp in sub.groupby(cat_col):
+        p_cnt = int(grp[prod_col].astype(str).str.strip().nunique()) if prod_col else int(len(grp))
+        r_cnt = int(len(grp))
+        grouped_rows.append({
+            "category": str(cat_name),
+            "product_count": p_cnt,
+            "item_count": r_cnt,
+        })
+
+    grouped_rows.sort(key=lambda r: r["product_count"], reverse=True)
+    tot_categories = float(len(grouped_rows))
+
+    return KPIResult(
+        key=key, name=name, value=tot_categories, unit="categories", formula=formula,
+        provenance=provenance, breakdown=grouped_rows, breakdown_columns=["category", "product_count", "item_count"],
+    )

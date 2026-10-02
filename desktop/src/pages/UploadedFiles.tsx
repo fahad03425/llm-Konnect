@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     Files,
@@ -17,10 +17,20 @@ import {
     AlertCircle,
     RotateCcw,
     ArrowRight,
-    X
+    X,
+    FolderPlus,
+    Edit3,
+    Boxes,
+    Check
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
 import { useConnectSession, markDataChanged } from '../context/FileContext';
+import {
+    getCustomDbGroups,
+    saveCustomDbGroup,
+    deleteCustomDbGroup,
+    type CustomDbGroup
+} from '../utils/dbGroups';
 import './UploadedFiles.css';
 
 interface FileItem {
@@ -98,9 +108,18 @@ const UploadedFiles: React.FC = () => {
     const [actionLoadingFile, setActionLoadingFile] = useState<string | null>(null);
     const [syncingDb, setSyncingDb] = useState<string | null>(null);
 
+    // Custom Database Groups state
+    const [customDbGroups, setCustomDbGroups] = useState<CustomDbGroup[]>(() => getCustomDbGroups(domainKey));
+    const [isGroupModalOpen, setIsGroupModalOpen] = useState<boolean>(false);
+    const [editingGroup, setEditingGroup] = useState<CustomDbGroup | null>(null);
+    const [groupNameInput, setGroupNameInput] = useState<string>('');
+    const [selectedDbNamesForGroup, setSelectedDbNamesForGroup] = useState<string[]>([]);
+    const [groupModalError, setGroupModalError] = useState<string | null>(null);
+
     // Modal state for delete confirmation
     const [deleteModalFile, setDeleteModalFile] = useState<FileItem | null>(null);
     const [deleteModalDatabase, setDeleteModalDatabase] = useState<string | null>(null);
+    const [deleteModalGroup, setDeleteModalGroup] = useState<CustomDbGroup | null>(null);
 
     // Toast state
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -113,6 +132,18 @@ const UploadedFiles: React.FC = () => {
         setToast({ message, type });
         setTimeout(() => setToast(null), 4000);
     };
+
+    // Load custom DB groups and listen to storage events
+    useEffect(() => {
+        setCustomDbGroups(getCustomDbGroups(domainKey));
+        const handleGroupsChanged = () => {
+            setCustomDbGroups(getCustomDbGroups(domainKey));
+        };
+        window.addEventListener('custom-db-groups-changed', handleGroupsChanged);
+        return () => {
+            window.removeEventListener('custom-db-groups-changed', handleGroupsChanged);
+        };
+    }, [domainKey]);
 
     const fetchFiles = useCallback(async (isSilent: boolean = false) => {
         try {
@@ -152,48 +183,87 @@ const UploadedFiles: React.FC = () => {
         return () => clearInterval(interval);
     }, [filesData.files, fetchFiles]);
 
-    // File Upload Handler
-    const handleFileUpload = async (fileList: FileList | null) => {
-        if (!fileList || fileList.length === 0) return;
-        const file = fileList[0];
+    // Memoized dataset partitions
+    const { processingFiles, dbGroups, standaloneFiles } = useMemo(() => {
+        const proc = filesData.files.filter(f => f.status === 'processing' || f.is_processing);
 
-        // Fast client-side duplicate filename check
-        const normName = file.name.trim().toLowerCase();
-        const existing = filesData.files.find(f => f.filename.toLowerCase() === normName);
-        if (existing) {
-            showToast(`Duplicate file: "${file.name}" already exists in your files list. Please delete it first or rename the file.`, 'error');
-            if (fileInputRef.current) fileInputRef.current.value = '';
+        const filtered = filesData.files.filter(f => {
+            const matchesSearch = f.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (f.file_path && f.file_path.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                (f.group_name && f.group_name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+            if (!matchesSearch) return false;
+            if (activeTab === 'ingested') return f.is_ingested;
+            if (activeTab === 'not_ingested') return !f.is_ingested;
+            return true;
+        });
+
+        const groups: Record<string, FileItem[]> = {};
+        const standalone: FileItem[] = [];
+
+        filtered.forEach((file) => {
+            if (file.group_name || file.source_type === 'database') {
+                const groupKey = file.group_name || 'Database Tables';
+                if (!groups[groupKey]) groups[groupKey] = [];
+                groups[groupKey].push(file);
+            } else {
+                standalone.push(file);
+            }
+        });
+
+        return {
+            processingFiles: proc,
+            filteredFiles: filtered,
+            dbGroups: groups,
+            standaloneFiles: standalone
+        };
+    }, [filesData.files, searchQuery, activeTab]);
+
+    // Upload Handler (Drag & Drop or Manual Selection)
+    const handleFileUpload = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+
+        const allowedExtensions = ['.csv', '.xlsx', '.xls', '.json', '.db', '.sqlite', '.txt'];
+        const validFiles = Array.from(files).filter(f =>
+            allowedExtensions.some(ext => f.name.toLowerCase().endsWith(ext))
+        );
+
+        if (validFiles.length === 0) {
+            showToast('Invalid file format. Please upload CSV, Excel, JSON, SQLite or TXT files.', 'error');
             return;
         }
 
         const formData = new FormData();
-        formData.append('file', file);
+        validFiles.forEach(f => formData.append('files', f));
 
         try {
-            setActionLoadingFile(file.name);
-            showToast(`Uploading ${file.name}...`, 'info');
+            showToast(`Uploading ${validFiles.length} file${validFiles.length > 1 ? 's' : ''}...`, 'info');
             const res = await fetch('/api/files/upload', {
                 method: 'POST',
                 body: formData
             });
+
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Upload failed');
+                throw new Error(errData.detail || 'Failed to upload files');
             }
-            showToast(`Uploaded ${file.name} successfully!`, 'success');
+
+            const data = await res.json();
+            showToast(data.message || `Successfully uploaded ${validFiles.length} file${validFiles.length > 1 ? 's' : ''}!`, 'success');
             markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
-            showToast(err.message || 'Failed to upload file', 'error');
-        } finally {
-            setActionLoadingFile(null);
-            if (fileInputRef.current) fileInputRef.current.value = '';
+            showToast(err.message || 'Upload error', 'error');
         }
     };
 
-    // Quick Ingest Handler with Instant Optimistic UI Update
+    // Fast Ingest Handler
     const handleQuickIngest = async (file: FileItem) => {
-        // Optimistically set file as processing with initial progress
+        if (file.is_duplicate_of) {
+            showToast(`Cannot ingest: duplicate of ${file.is_duplicate_of}`, 'info');
+            return;
+        }
+
         setFilesData(prev => ({
             ...prev,
             files: prev.files.map(f => f.file_path === file.file_path ? {
@@ -241,7 +311,6 @@ const UploadedFiles: React.FC = () => {
             setActionLoadingFile(file.filename);
             showToast(`Cancelling ingestion for ${file.filename}...`, 'info');
 
-            // Optimistically update local UI state immediately
             setFilesData(prev => ({
                 ...prev,
                 files: prev.files.map(f => f.file_path === file.file_path ? {
@@ -253,42 +322,30 @@ const UploadedFiles: React.FC = () => {
                 } : f)
             }));
 
-            // Clear session cache so stale processing state is never reloaded
             try {
                 sessionStorage.removeItem('llm_konnect_files_cache');
             } catch (_) {}
 
-            let res = await fetch('/api/files/cancel-ingest', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_path: file.file_path,
-                    file_id: file.file_id,
-                    filename: file.filename
-                })
-            });
+            const params = new URLSearchParams();
+            if (file.file_path) params.append('file_path', file.file_path);
+            if (file.file_id) params.append('file_id', file.file_id);
+            if (file.filename) params.append('filename', file.filename);
 
-            // Graceful fallback for running servers before hot-reload
-            if (res.status === 404) {
-                res = await fetch('/api/files/un-ingest', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        file_path: file.file_path,
-                        file_id: file.file_id
-                    })
-                });
-            }
+            const res = await fetch(`/api/files/cancel-ingest?${params.toString()}`, {
+                method: 'POST'
+            });
 
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Failed to cancel ingestion');
+                throw new Error(errData.detail || 'Cancel failed on server');
             }
 
-            showToast(`Ingestion stopped for ${file.filename}`, 'success');
+            const data = await res.json();
+            showToast(data.message || `Cancelled ingestion for ${file.filename}`, 'info');
+            markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {
-            showToast(err.message || 'Error stopping ingestion', 'error');
+            showToast(err.message || 'Cancel error', 'error');
             await fetchFiles(false);
         } finally {
             setActionLoadingFile(null);
@@ -444,38 +501,104 @@ const UploadedFiles: React.FC = () => {
         if (cleanExt === 'csv') return <div className="file-format-icon csv">CSV</div>;
         if (cleanExt === 'xlsx' || cleanExt === 'xls') return <div className="file-format-icon xlsx">XLSX</div>;
         if (cleanExt === 'json') return <div className="file-format-icon json">JSON</div>;
-        if (cleanExt === 'db' || cleanExt === 'sqlite') return <div className="file-format-icon db">SQL</div>;
+        if (cleanExt === 'db' || cleanExt === 'sqlite' || cleanExt === 'stardb') return <div className="file-format-icon db">SQL</div>;
         return <div className="file-format-icon other">TXT</div>;
     };
 
-    // Active Processing Files
-    const processingFiles = filesData.files.filter(f => f.status === 'processing' || f.is_processing);
+    // Custom Database Group Actions
+    const handleChatWithGroup = (group: CustomDbGroup) => {
+        navigate('/chat', {
+            state: {
+                dbNames: group.dbNames,
+                dbName: group.dbNames.join(','),
+                groupName: group.name,
+                domain: user.domain
+            }
+        });
+    };
 
-    // Filtered Files List
-    const filteredFiles = filesData.files.filter(f => {
-        const matchesSearch = f.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            (f.file_path && f.file_path.toLowerCase().includes(searchQuery.toLowerCase())) ||
-            (f.group_name && f.group_name.toLowerCase().includes(searchQuery.toLowerCase()));
-
-        if (!matchesSearch) return false;
-        if (activeTab === 'ingested') return f.is_ingested;
-        if (activeTab === 'not_ingested') return !f.is_ingested;
-        return true;
-    });
-
-    // Partition files into Database Groups and Standalone Files
-    const dbGroups: Record<string, FileItem[]> = {};
-    const standaloneFiles: FileItem[] = [];
-
-    filteredFiles.forEach((file) => {
-        if (file.group_name || file.source_type === 'database') {
-            const groupKey = file.group_name || 'Database Tables';
-            if (!dbGroups[groupKey]) dbGroups[groupKey] = [];
-            dbGroups[groupKey].push(file);
-        } else {
-            standaloneFiles.push(file);
+    const handleSyncGroup = async (group: CustomDbGroup) => {
+        try {
+            showToast(`Syncing databases for ${group.name} (${group.dbNames.join(', ')})...`, 'info');
+            for (const dbName of group.dbNames) {
+                setSyncingDb(dbName);
+                const res = await fetch(`/api/kb/sync-database/${encodeURIComponent(dbName)}`, {
+                    method: 'POST'
+                });
+                if (!res.ok) {
+                    console.warn(`Sync failed for ${dbName}`);
+                }
+            }
+            showToast(`Successfully synced group "${group.name}"!`, 'success');
+            markDataChanged();
+            await fetchFiles(false);
+        } catch (err: any) {
+            showToast(err.message || 'Group sync error', 'error');
+        } finally {
+            setSyncingDb(null);
         }
-    });
+    };
+
+    const openCreateGroupModal = () => {
+        const availableDbNames = Object.keys(dbGroups);
+        setEditingGroup(null);
+        setGroupNameInput('');
+        setSelectedDbNamesForGroup(availableDbNames.length > 0 ? [...availableDbNames] : []);
+        setGroupModalError(null);
+        setIsGroupModalOpen(true);
+    };
+
+    const openEditGroupModal = (group: CustomDbGroup) => {
+        setEditingGroup(group);
+        setGroupNameInput(group.name);
+        setSelectedDbNamesForGroup([...group.dbNames]);
+        setGroupModalError(null);
+        setIsGroupModalOpen(true);
+    };
+
+    const handleToggleDbInGroup = (dbName: string) => {
+        setSelectedDbNamesForGroup(prev =>
+            prev.includes(dbName) ? prev.filter(d => d !== dbName) : [...prev, dbName]
+        );
+    };
+
+    const handleSaveGroup = () => {
+        const trimmedName = groupNameInput.trim();
+        if (!trimmedName) {
+            setGroupModalError('Please enter a custom name for this database group.');
+            return;
+        }
+        if (selectedDbNamesForGroup.length < 2) {
+            setGroupModalError('Please select at least 2 databases to group together.');
+            return;
+        }
+
+        saveCustomDbGroup({
+            id: editingGroup?.id,
+            name: trimmedName,
+            dbNames: selectedDbNamesForGroup,
+            domain: domainKey,
+            description: `Consolidated group of ${selectedDbNamesForGroup.join(', ')}`
+        });
+
+        setCustomDbGroups(getCustomDbGroups(domainKey));
+        setIsGroupModalOpen(false);
+        setEditingGroup(null);
+        showToast(
+            editingGroup
+                ? `Updated group "${trimmedName}"!`
+                : `Created group "${trimmedName}" combining ${selectedDbNamesForGroup.join(' & ')}!`,
+            'success'
+        );
+    };
+
+    const confirmDeleteGroup = () => {
+        if (!deleteModalGroup) return;
+        deleteCustomDbGroup(deleteModalGroup.id, domainKey);
+        setCustomDbGroups(getCustomDbGroups(domainKey));
+        showToast(`Removed database group "${deleteModalGroup.name}"`, 'info');
+        setDeleteModalGroup(null);
+    };
 
     const renderFileRow = (file: FileItem) => {
         const isProcessing = file.status === 'processing' || file.is_processing || actionLoadingFile === file.filename;
@@ -851,7 +974,7 @@ const UploadedFiles: React.FC = () => {
                     type="file"
                     ref={fileInputRef}
                     style={{ display: 'none' }}
-                    accept=".csv,.xlsx,.xls,.json,.db,.sqlite,.txt"
+                    accept=".csv,.xlsx,.xls,.json,.db,.sqlite,.stardb,.txt"
                     onChange={(e) => handleFileUpload(e.target.files)}
                 />
                 <div className="upload-icon-circle">
@@ -859,7 +982,7 @@ const UploadedFiles: React.FC = () => {
                 </div>
                 <div>
                     <div className="upload-dropzone-title">Click to upload or drag and drop files here</div>
-                    <div className="upload-dropzone-subtitle">Supported: CSV, Excel (.xlsx), JSON, SQLite (.db)</div>
+                    <div className="upload-dropzone-subtitle">Supported: CSV, Excel (.xlsx), JSON, SQLite (.db, .stardb)</div>
                 </div>
             </div>
 
@@ -913,84 +1036,185 @@ const UploadedFiles: React.FC = () => {
                 </div>
             </div>
 
-            {/* ── SECTION 1: CONNECTED DATABASES (GROUPED) ── */}
+            {/* ── SECTION 1: CONNECTED DATABASES (SQL & POS) ── */}
             {Object.keys(dbGroups).length > 0 && (
                 <div className="db-groups-section">
-                    <div className="db-section-heading">
-                        <Database size={18} /> Connected POS &amp; SQL Databases
+                    <div className="db-section-heading-wrap">
+                        <div className="db-section-heading">
+                            <Database size={18} /> Connected POS &amp; SQL Databases
+                        </div>
+                        <button
+                            type="button"
+                            className="btn-create-db-group"
+                            onClick={openCreateGroupModal}
+                            title="Group 2 or 3 databases together under a custom unified name"
+                        >
+                            <FolderPlus size={14} /> Group Databases
+                        </button>
                     </div>
-                    {Object.entries(dbGroups).map(([dbName, tables]) => {
-                        const totalChunks = tables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
 
-                        return (
-                            <div key={dbName} className="db-group-card">
-                                <div className="db-group-header">
-                                    <div className="db-group-title-wrap">
-                                        <div className="db-group-icon">
-                                            <Database size={20} />
-                                        </div>
-                                        <div>
-                                            <div className="db-group-name">{dbName}</div>
-                                            <div className="db-group-meta">
-                                                <span>{tables.length} {tables.length === 1 ? 'Table' : 'Tables'}</span>
-                                                <span>•</span>
-                                                <span>{totalChunks.toLocaleString()} chunks</span>
-                                                <span>•</span>
-                                                <span className="db-autosync-pill">
-                                                    <span className="pulse-dot" style={{ width: '5px', height: '5px' }} /> Auto-Sync Active
-                                                </span>
+                    {/* Custom Database Groups Sub-Section (Consolidated) */}
+                    {customDbGroups.length > 0 && (
+                        <div className="custom-db-groups-container">
+                            <div className="custom-db-groups-header">
+                                <Boxes size={16} />
+                                <span>Custom Consolidated Database Groups</span>
+                                <span className="custom-db-groups-count">{customDbGroups.length}</span>
+                            </div>
+                            <div className="custom-db-groups-grid">
+                                {customDbGroups.map(group => {
+                                    // Aggregate chunks and tables across all member databases in this group
+                                    const memberTables = group.dbNames.flatMap(db => dbGroups[db] || []);
+                                    const totalGroupChunks = memberTables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
+
+                                    return (
+                                        <div key={group.id} className="custom-db-group-card">
+                                            <div className="custom-db-group-top">
+                                                <div className="custom-db-group-title-wrap">
+                                                    <div className="custom-db-group-icon">
+                                                        <Boxes size={22} />
+                                                    </div>
+                                                    <div>
+                                                        <div className="custom-db-group-name">{group.name}</div>
+                                                        <div className="custom-db-group-sub">
+                                                            {group.dbNames.length} Databases Consolidated • {memberTables.length} Tables • {totalGroupChunks.toLocaleString()} Chunks
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="custom-db-group-actions">
+                                                    <button
+                                                        type="button"
+                                                        className="btn-db-sync"
+                                                        onClick={() => handleSyncGroup(group)}
+                                                        title={`Pull latest updates for all databases in ${group.name}`}
+                                                    >
+                                                        <RefreshCw size={13} className={syncingDb && group.dbNames.includes(syncingDb) ? 'spin' : ''} />
+                                                        Sync All
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-db-chat"
+                                                        onClick={() => handleChatWithGroup(group)}
+                                                        title={`Chat across all databases in ${group.name}`}
+                                                    >
+                                                        <MessageSquare size={13} /> Chat Group
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-group-edit"
+                                                        onClick={() => openEditGroupModal(group)}
+                                                        title="Edit group name or member databases"
+                                                    >
+                                                        <Edit3 size={13} /> Edit
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-db-delete"
+                                                        onClick={() => setDeleteModalGroup(group)}
+                                                        title={`Delete group ${group.name}`}
+                                                    >
+                                                        <Trash2 size={13} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Member Databases Badges */}
+                                            <div className="custom-db-members-list">
+                                                <span className="custom-db-members-label">Included DBs:</span>
+                                                {group.dbNames.map(dbName => {
+                                                    const dbTables = dbGroups[dbName] || [];
+                                                    const dbChunks = dbTables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
+                                                    return (
+                                                        <span key={dbName} className="custom-db-member-badge">
+                                                            <Database size={12} />
+                                                            <strong style={{ color: 'var(--text-primary)' }}>{dbName}</strong>
+                                                            <span className="member-badge-meta">({dbTables.length} tables • {dbChunks.toLocaleString()} chunks)</span>
+                                                        </span>
+                                                    );
+                                                })}
                                             </div>
                                         </div>
-                                    </div>
-                                    <div className="db-group-actions">
-                                        <button
-                                            type="button"
-                                            className="btn-db-sync"
-                                            onClick={() => handleSyncDatabase(dbName)}
-                                            disabled={syncingDb === dbName}
-                                            title={`Pull latest changes from SQL Server for ${dbName}`}
-                                        >
-                                            <RefreshCw size={13} className={syncingDb === dbName ? 'spin' : ''} />
-                                            {syncingDb === dbName ? 'Syncing...' : 'Sync'}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="btn-db-chat"
-                                            onClick={() => handleChatWithDatabase(dbName)}
-                                            title={`Chat with all data in ${dbName}`}
-                                        >
-                                            <MessageSquare size={13} /> Chat
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="btn-db-delete"
-                                            onClick={() => setDeleteModalDatabase(dbName)}
-                                            title={`Delete entire database ${dbName}`}
-                                        >
-                                            <Trash2 size={13} /> Delete
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="files-table-wrapper" style={{ border: 'none', borderRadius: 0 }}>
-                                    <table className="files-table">
-                                        <thead>
-                                            <tr>
-                                                <th className="th-name">Source / Table</th>
-                                                <th className="th-size">Size</th>
-                                                <th className="th-status">Status</th>
-                                                <th className="th-strategy col-strategy">Strategy</th>
-                                                <th className="th-date col-date">Date</th>
-                                                <th className="th-actions">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {tables.map(file => renderFileRow(file))}
-                                        </tbody>
-                                    </table>
-                                </div>
+                                    );
+                                })}
                             </div>
-                        );
-                    })}
+                        </div>
+                    )}
+
+                    {/* Individual Database Cards */}
+                    <div className="individual-db-list">
+                        {Object.entries(dbGroups).map(([dbName, tables]) => {
+                            const totalChunks = tables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
+
+                            return (
+                                <div key={dbName} className="db-group-card">
+                                    <div className="db-group-header">
+                                        <div className="db-group-title-wrap">
+                                            <div className="db-group-icon">
+                                                <Database size={20} />
+                                            </div>
+                                            <div>
+                                                <div className="db-group-name">{dbName}</div>
+                                                <div className="db-group-meta">
+                                                    <span>{tables.length} {tables.length === 1 ? 'Table' : 'Tables'}</span>
+                                                    <span>•</span>
+                                                    <span>{totalChunks.toLocaleString()} chunks</span>
+                                                    <span>•</span>
+                                                    <span className="db-autosync-pill">
+                                                        <span className="pulse-dot" style={{ width: '5px', height: '5px' }} /> Auto-Sync Active
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="db-group-actions">
+                                            <button
+                                                type="button"
+                                                className="btn-db-sync"
+                                                onClick={() => handleSyncDatabase(dbName)}
+                                                disabled={syncingDb === dbName}
+                                                title={`Pull latest changes from SQL Server for ${dbName}`}
+                                            >
+                                                <RefreshCw size={13} className={syncingDb === dbName ? 'spin' : ''} />
+                                                {syncingDb === dbName ? 'Syncing...' : 'Sync'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn-db-chat"
+                                                onClick={() => handleChatWithDatabase(dbName)}
+                                                title={`Chat with all data in ${dbName}`}
+                                            >
+                                                <MessageSquare size={13} /> Chat
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn-db-delete"
+                                                onClick={() => setDeleteModalDatabase(dbName)}
+                                                title={`Delete entire database ${dbName}`}
+                                            >
+                                                <Trash2 size={13} /> Delete
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="files-table-wrapper" style={{ border: 'none', borderRadius: 0 }}>
+                                        <table className="files-table">
+                                            <thead>
+                                                <tr>
+                                                    <th className="th-name">Source / Table</th>
+                                                    <th className="th-size">Size</th>
+                                                    <th className="th-status">Status</th>
+                                                    <th className="th-strategy col-strategy">Strategy</th>
+                                                    <th className="th-date col-date">Date</th>
+                                                    <th className="th-actions">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {tables.map(file => renderFileRow(file))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 
@@ -1034,6 +1258,138 @@ const UploadedFiles: React.FC = () => {
                 </div>
             </div>
 
+            {/* Modal: Create / Edit Custom Database Group */}
+            {isGroupModalOpen && (
+                <div className="modal-backdrop" onClick={() => setIsGroupModalOpen(false)}>
+                    <div className="modal-content-card group-modal-card" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-title">
+                            <Boxes size={22} color="var(--brand-green)" />
+                            {editingGroup ? 'Edit Database Group' : 'Group Databases Together'}
+                        </div>
+                        <div className="modal-body">
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginBottom: '1rem', lineHeight: 1.5 }}>
+                                Group multiple connected databases into a single unified business source. The databases stay separate under the hood, but appear as a single option in <strong>RAG Chatbot</strong> and <strong>Executive Dashboard</strong> with your custom name.
+                            </p>
+
+                            {groupModalError && (
+                                <div className="modal-form-error">
+                                    <AlertTriangle size={14} />
+                                    <span>{groupModalError}</span>
+                                </div>
+                            )}
+
+                            <div className="form-group-item">
+                                <label className="modal-field-label">
+                                    Custom Group Name <span style={{ color: '#ef4444' }}>*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    className="modal-text-input"
+                                    placeholder="e.g. Asaan POS, Store Main Branch, Pharmacy POS..."
+                                    value={groupNameInput}
+                                    onChange={(e) => {
+                                        setGroupNameInput(e.target.value);
+                                        if (groupModalError) setGroupModalError(null);
+                                    }}
+                                    autoFocus
+                                />
+                            </div>
+
+                            <div className="form-group-item" style={{ marginTop: '1.25rem' }}>
+                                <label className="modal-field-label">
+                                    Select Databases to Combine ({selectedDbNamesForGroup.length} selected) <span style={{ color: '#ef4444' }}>*</span>
+                                </label>
+                                <div className="db-selection-checkbox-list">
+                                    {Object.keys(dbGroups).length === 0 ? (
+                                        <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.84rem' }}>
+                                            No connected databases found to group.
+                                        </div>
+                                    ) : (
+                                        Object.entries(dbGroups).map(([dbName, tables]) => {
+                                            const isChecked = selectedDbNamesForGroup.includes(dbName);
+                                            const totalChunks = tables.reduce((acc, t) => acc + (t.chunk_count || 0), 0);
+                                            return (
+                                                <div
+                                                    key={dbName}
+                                                    className={`db-checkbox-item ${isChecked ? 'selected' : ''}`}
+                                                    onClick={() => handleToggleDbInGroup(dbName)}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isChecked}
+                                                        onChange={() => {}}
+                                                        className="db-custom-checkbox"
+                                                    />
+                                                    <div className="db-checkbox-info">
+                                                        <div className="db-checkbox-title">
+                                                            <Database size={15} style={{ color: 'var(--brand-green)' }} />
+                                                            <span>{dbName}</span>
+                                                        </div>
+                                                        <div className="db-checkbox-meta">
+                                                            {tables.length} tables • {totalChunks.toLocaleString()} chunks
+                                                        </div>
+                                                    </div>
+                                                    {isChecked && <Check size={16} color="var(--brand-green)" />}
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="modal-footer">
+                            <button
+                                type="button"
+                                className="btn-file-action map"
+                                onClick={() => setIsGroupModalOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-save-group"
+                                onClick={handleSaveGroup}
+                            >
+                                {editingGroup ? 'Update Database Group' : 'Save Database Group'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Confirmation Modal for Delete Custom Database Group */}
+            {deleteModalGroup && (
+                <div className="modal-backdrop" onClick={() => setDeleteModalGroup(null)}>
+                    <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-title">
+                            <AlertTriangle size={22} color="#ef4444" />
+                            Delete Database Group?
+                        </div>
+                        <div className="modal-body">
+                            Are you sure you want to remove the database group <strong>{deleteModalGroup.name}</strong>?
+                            <p style={{ marginTop: '0.5rem', color: '#64748b', fontSize: '0.84rem' }}>
+                                This will only dissolve the group presentation. The underlying member databases (<strong>{deleteModalGroup.dbNames.join(', ')}</strong>) and their vector data will remain completely intact.
+                            </p>
+                        </div>
+                        <div className="modal-footer">
+                            <button
+                                className="btn-file-action map"
+                                onClick={() => setDeleteModalGroup(null)}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                className="btn-file-action uningest"
+                                style={{ background: '#ef4444', color: '#ffffff', borderColor: '#dc2626' }}
+                                onClick={confirmDeleteGroup}
+                            >
+                                Dissolve Group
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Confirmation Modal for Delete Single File */}
             {deleteModalFile && (
                 <div className="modal-backdrop" onClick={() => setDeleteModalFile(null)}>
@@ -1069,7 +1425,7 @@ const UploadedFiles: React.FC = () => {
                 </div>
             )}
 
-            {/* Confirmation Modal for Delete Database Group */}
+            {/* Confirmation Modal for Delete Entire Database */}
             {deleteModalDatabase && (
                 <div className="modal-backdrop" onClick={() => setDeleteModalDatabase(null)}>
                     <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
@@ -1078,7 +1434,7 @@ const UploadedFiles: React.FC = () => {
                             Delete Entire Database?
                         </div>
                         <div className="modal-body">
-                            Are you sure you want to delete database group <strong>{deleteModalDatabase}</strong>?
+                            Are you sure you want to delete database <strong>{deleteModalDatabase}</strong>?
                             <p style={{ marginTop: '0.5rem', color: '#b91c1c' }}>
                                 ⚠️ This will remove <strong>all tables</strong> belonging to this database from the KnowledgeBase and purge all associated vector chunks from ChromaDB.
                             </p>

@@ -1,7 +1,7 @@
 import os
 import re
 import urllib.parse
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 import pandas as pd
 from typing import Optional, Dict, Any, List
 from app.connectors.base import Connector
@@ -110,7 +110,10 @@ def resolve_sql_connection(raw_connection: str, db_type: str = "sqlite") -> tupl
         return sqlalchemy_url, "mssql", db_name
 
     # Case 2: SQLite file (.db / .sqlite)
-    if clean_lower.endswith(".db") or clean_lower.endswith(".sqlite") or (db_type == "sqlite" and ("/" in clean or "\\" in clean)):
+    has_url_scheme = bool(re.match(r"^[a-z][a-z0-9+.-]*://", clean_lower))
+    if (not has_url_scheme and clean_lower.endswith((".db", ".sqlite", ".sqlite3", ".stardb"))) or (
+        db_type == "sqlite" and not has_url_scheme and ("/" in clean or "\\" in clean)
+    ):
         clean_path = clean.replace("sqlite:///", "").replace("\\", "/")
         base = os.path.basename(clean_path)
         db_name, _ = os.path.splitext(base)
@@ -153,11 +156,20 @@ def resolve_sql_connection(raw_connection: str, db_type: str = "sqlite") -> tupl
         m = re.search(r'/([^/?@:]+)(?:\?|$)', clean)
         if m:
             db_name = m.group(1).strip()
+        # Use the maintained psycopg v3 SQLAlchemy dialect by default. Explicit
+        # driver URLs (postgresql+psycopg2://, etc.) remain untouched.
+        parts = urlsplit(clean)
+        if "+" not in parts.scheme:
+            clean = urlunsplit(("postgresql+psycopg", parts.netloc, parts.path, parts.query, parts.fragment))
     elif clean_lower.startswith("mysql") or clean_lower.startswith("mariadb"):
         detected_type = "mysql"
         m = re.search(r'/([^/?@:]+)(?:\?|$)', clean)
         if m:
             db_name = m.group(1).strip()
+        # PyMySQL is pure Python and works without native client libraries.
+        parts = urlsplit(clean)
+        if "+" not in parts.scheme:
+            clean = urlunsplit(("mysql+pymysql", parts.netloc, parts.path, parts.query, parts.fragment))
     elif clean_lower.startswith("sqlite"):
         detected_type = "sqlite"
 
@@ -253,6 +265,20 @@ class SQLConnector(Connector):
 
         return tables
 
+    @staticmethod
+    def _quote_table_identifier(connection, table_name: str, db_type: str) -> str:
+        """Quote a discovered table name for the active SQL dialect."""
+        if hasattr(connection, "dialect"):
+            preparer = connection.dialect.identifier_preparer
+            return ".".join(preparer.quote(part) for part in str(table_name).split("."))
+        escaped = str(table_name).replace('"', '""')
+        return f'"{escaped}"'
+
+    def _validate_discovered_table(self, table_name: str) -> str:
+        if table_name not in self.list_tables():
+            raise ValueError(f"Table {table_name!r} was not found among discovered tables")
+        return table_name
+
     def get_table_primary_key(self, table_name: str) -> List[str]:
         """Discover primary key column(s) for a given table."""
         conn = self._get_engine()
@@ -260,7 +286,8 @@ class SQLConnector(Connector):
             if self.db_type == "sqlite":
                 if hasattr(conn, 'cursor'):
                     cursor = conn.cursor()
-                    cursor.execute(f"PRAGMA table_info([{table_name}])")
+                    safe_table = str(table_name).replace('"', '""')
+                    cursor.execute(f'PRAGMA table_info("{safe_table}")')
                     cols = cursor.fetchall()
                     pk_cols = [c[1] for c in cols if len(c) > 5 and c[5] > 0]
                     if pk_cols:
@@ -290,11 +317,13 @@ class SQLConnector(Connector):
                 conn = self._get_engine()
                 row_count = 0
                 try:
-                    count_df = pd.read_sql(f"SELECT COUNT(*) AS total_count FROM [{table}]" if self.db_type == "mssql" else f"SELECT COUNT(*) AS total_count FROM {table}", conn)
+                    self._validate_discovered_table(table)
+                    table_ref = self._quote_table_identifier(conn, table, self.db_type)
+                    count_df = pd.read_sql(f"SELECT COUNT(*) AS total_count FROM {table_ref}", conn)
                     row_count = int(count_df.iloc[0, 0])
                 except Exception:
                     try:
-                        count_df = pd.read_sql(f"SELECT COUNT(*) AS total_count FROM {table}", conn)
+                        count_df = pd.read_sql(f"SELECT COUNT(*) AS total_count FROM {table_ref}", conn)
                         row_count = int(count_df.iloc[0, 0])
                     except Exception:
                         row_count = 0
@@ -307,7 +336,8 @@ class SQLConnector(Connector):
                 sample_df = self.preview(n=sample_n, table_or_query=table)
                 # Drop tracking columns from preview
                 cols = [c for c in sample_df.columns if c not in ('source_connector', 'source_row')]
-                sample_rows = sample_df[cols].to_dict(orient="records")
+                clean_df = sample_df[cols].astype(object).where(pd.notnull(sample_df[cols]), None)
+                sample_rows = clean_df.to_dict(orient="records")
 
                 table_details.append({
                     "table_name": table,
@@ -346,7 +376,12 @@ class SQLConnector(Connector):
         target = table_or_query or self._get_default_table()
         conn = self._get_engine()
         try:
-            query = f"SELECT COUNT(*) AS total_count FROM [{target}]" if self.db_type == "mssql" else f"SELECT COUNT(*) AS total_count FROM {target}"
+            if target.strip().lower().startswith(("select ", "with ")):
+                query = f"SELECT COUNT(*) AS total_count FROM ({target}) AS source_rows"
+            else:
+                self._validate_discovered_table(target)
+                table_ref = self._quote_table_identifier(conn, target, self.db_type)
+                query = f"SELECT COUNT(*) AS total_count FROM {table_ref}"
             count_df = pd.read_sql(query, conn)
             return int(count_df.iloc[0, 0])
         except Exception:
@@ -358,27 +393,29 @@ class SQLConnector(Connector):
 
     def fetch(self, table_or_query: Optional[str] = None, watermark_column: Optional[str] = None, watermark_value: Optional[Any] = None, **kwargs) -> pd.DataFrame:
         target = table_or_query or self._get_default_table()
-        is_query = target.strip().lower().startswith("select ")
+        is_query = target.strip().lower().startswith(("select ", "with "))
+        conn = self._get_engine()
         if is_query:
             query = target
-        elif self.db_type == "mssql":
-            query = f"SELECT * FROM [{target}]"
         else:
-            query = f"SELECT * FROM {target}"
+            self._validate_discovered_table(target)
+            table_ref = self._quote_table_identifier(conn, target, self.db_type)
+            query = f"SELECT * FROM {table_ref}"
 
-        if watermark_column and watermark_value:
-            col_ref = f"[{watermark_column}]" if self.db_type == "mssql" else watermark_column
+        params = None
+        if watermark_column and watermark_value is not None:
+            col_ref = self._quote_table_identifier(conn, watermark_column, self.db_type)
             if " WHERE " in query.upper():
-                query += f" AND {col_ref} > '{watermark_value}'"
+                query += f" AND {col_ref} > :__watermark_value"
             else:
-                query += f" WHERE {col_ref} > '{watermark_value}'"
+                query += f" WHERE {col_ref} > :__watermark_value"
+            params = {"__watermark_value": watermark_value}
 
-        conn = self._get_engine()
         try:
             if self.db_type == "sqlite" and not hasattr(conn, 'connect'):
-                df = pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn, params=params)
             else:
-                df = pd.read_sql(query, conn)
+                df = pd.read_sql(query, conn, params=params)
         finally:
             if hasattr(conn, 'close') and self.db_type == "sqlite":
                 conn.close()
@@ -390,9 +427,13 @@ class SQLConnector(Connector):
 
     def preview(self, n: int = 5, table_or_query: Optional[str] = None, **kwargs) -> pd.DataFrame:
         target = table_or_query or self._get_default_table()
-        is_query = target.strip().lower().startswith("select ")
+        is_query = target.strip().lower().startswith(("select ", "with "))
         conn = self._get_engine()
         try:
+            table_ref = None
+            if not is_query:
+                self._validate_discovered_table(target)
+                table_ref = self._quote_table_identifier(conn, target, self.db_type)
             if self.db_type == "mssql":
                 if is_query:
                     # If it already starts with SELECT, try inserting TOP n if not already present
@@ -401,19 +442,19 @@ class SQLConnector(Connector):
                     else:
                         query = target
                 else:
-                    query = f"SELECT TOP {n} * FROM [{target}]"
+                    query = f"SELECT TOP {n} * FROM {table_ref}"
                 df = pd.read_sql(query, conn)
             elif self.db_type == "sqlite" and not hasattr(conn, 'connect'):
-                query = target if is_query else f"SELECT * FROM {target}"
+                query = target if is_query else f"SELECT * FROM {table_ref}"
                 limited_query = f"{query} LIMIT {n}"
                 df = pd.read_sql_query(limited_query, conn)
             else:
-                query = target if is_query else f"SELECT * FROM {target}"
+                query = target if is_query else f"SELECT * FROM {table_ref}"
                 limited_query = f"{query} LIMIT {n}"
                 df = pd.read_sql(limited_query, conn)
         except Exception:
             # Fallback if LIMIT or syntax fails
-            query = target if is_query else (f"SELECT * FROM [{target}]" if self.db_type == "mssql" else f"SELECT * FROM {target}")
+            query = target if is_query else f"SELECT * FROM {table_ref}"
             if self.db_type == "sqlite" and not hasattr(conn, 'connect'):
                 df = pd.read_sql_query(query, conn)
             else:
@@ -429,7 +470,8 @@ class SQLConnector(Connector):
         return df
 
     def describe(self) -> str:
-        return f"Universal SQL Connector ({self.db_type}) -> {self.connection_string}"
+        # Connection URLs and ODBC strings can carry usernames/passwords.
+        return f"Universal SQL Connector ({self.db_type}) -> {self.extract_db_name()}"
 
     def capabilities(self) -> Dict[str, Any]:
         return {

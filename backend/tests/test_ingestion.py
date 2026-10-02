@@ -356,6 +356,38 @@ def test_greedy_merge_strategy(fake_kb):
     assert fake_kb.stats()["total_chunks"] == 2
 
 
+def test_merge_falls_back_to_rows_when_group_key_is_missing(fake_kb):
+    df = pd.DataFrame([
+        {"source_row": 1, "product_id": "DrugA", "quantity": 4},
+        {"source_row": 2, "product_id": "DrugB", "quantity": 9},
+        {"source_row": 3, "product_id": "DrugC", "quantity": 2},
+    ])
+
+    summary = fake_kb.add_dataframe(
+        df, source_meta={"source_file": "ungrouped.csv"}, domain="pharmacy", strategy="merge"
+    )
+
+    assert summary.total_chunks == 3
+    assert {item["metadata"]["source_row"] for item in fake_kb._get_chroma().data} == {1, 2, 3}
+
+
+def test_merge_keeps_rows_with_missing_group_ids_separate(fake_kb):
+    df = pd.DataFrame([
+        {"source_row": 1, "invoice_id": "INV-1", "product_id": "DrugA"},
+        {"source_row": 2, "invoice_id": None, "product_id": "DrugB"},
+        {"source_row": 3, "invoice_id": None, "product_id": "DrugC"},
+        {"source_row": 4, "invoice_id": "INV-2", "product_id": "DrugD"},
+    ])
+
+    summary = fake_kb.add_dataframe(
+        df, source_meta={"source_file": "partial-keys.csv"}, domain="pharmacy",
+        strategy="merge", merge_key="invoice_id",
+    )
+
+    assert summary.total_chunks == 4
+    assert {item["metadata"]["source_row"] for item in fake_kb._get_chroma().data} == {1, 2, 3, 4}
+
+
 def test_search_returns_empty_on_empty_collection(fake_kb):
     """BUG 3 regression: search on an empty collection must return [] not crash."""
     results = fake_kb.search("anything", top_k=5)

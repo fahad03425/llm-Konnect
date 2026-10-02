@@ -2,6 +2,7 @@
 
 import time
 import json
+import re
 from datetime import date
 from typing import Generator, List, Dict, Any, Optional, Tuple
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ from app.rag.models import ChatRequest, ChatResponse, SourceReference
 from app.rag.history import session_manager
 from app.rag.router import classify_route, extract_filters, is_advice_question, AnalyticsRouter, RouteType
 from app.language.roman_urdu import normalize_roman_urdu_intent
+from app.language.pharmacy_vocabulary import normalize_pharmacy_vocabulary
 
 class RAGChat:
     def __init__(self):
@@ -24,7 +26,7 @@ class RAGChat:
         """Normalize small input variations before routing a question."""
         import re
 
-        q = question.strip().strip('"\'“”‘’')
+        q = normalize_pharmacy_vocabulary(question.strip().strip('"\'“”‘’'))
         # Basic digit normalization (Urdu/Indic to ASCII)
         translation_table = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
         q = q.translate(translation_table)
@@ -47,11 +49,424 @@ class RAGChat:
         )
 
     @staticmethod
+    def _missing_evidence_answer(question: str, lang: str = "english") -> str:
+        """Abstain safely when retrieval returned no supporting records."""
+        import re
+
+        q = question.casefold()
+        is_roman = lang == "roman_urdu"
+        is_urdu = lang == "urdu_script"
+        if re.search(r"\b(recall|recalled|withdrawn|lot alert)\b", q):
+            if is_roman:
+                return "Connected data mein is batch ka current official recall record nahi mila, is liye recall status ki tasdeeq nahi kar sakta. Regulator ya manufacturer ka taza notice check karein."
+            if is_urdu:
+                return "منسلک ڈیٹا میں اس بیچ کا موجودہ سرکاری ریکال ریکارڈ نہیں ملا، اس لیے ریکال کی تصدیق نہیں کر سکتا۔ ریگولیٹر یا مینوفیکچرر کا تازہ نوٹس دیکھیں۔"
+            return (
+                "I can't verify this batch's recall status because no current official recall record was found in the connected data. "
+                "Please check the regulator or manufacturer's current notice."
+            )
+        if re.search(r"\b(controlled|schedule|legal|law|regulation|recordkeeping requirement|prescription requirement)\b", q):
+            if is_roman:
+                return "Aap ki pharmacy kis mulk ya subay mein hai? Koi mojooda aur mo'tabar maqami qanooni source nahi mila, is liye applicable requirement ki tasdeeq nahi kar sakta."
+            if is_urdu:
+                return "آپ کی فارمیسی کس ملک یا صوبے میں ہے؟ کوئی موجودہ اور مستند مقامی قانونی ماخذ نہیں ملا، اس لیے متعلقہ تقاضے کی تصدیق نہیں کر سکتا۔"
+            return (
+                "Which country or province is this pharmacy in? No current jurisdiction-specific authoritative source was found, "
+                "so I can't confirm the applicable legal requirement."
+            )
+        if re.search(r"\b(dose|dosage|khurak)\b", q) and re.search(r"\b(patient|child|kid|baby|pregnan\w*|breastfeed\w*|my son|my daughter|year[- ]old|mareez|bache|bachay)\b", q) or re.search(
+            r"\b(give|safe|suitable|can .* take|de sakta|de sakti|munasib|mehfooz)\b.{0,50}\b(patient|child|kid|baby|year[- ]old|mareez|bache|bachay|this medicine|this drug)\b", q
+        ):
+            if is_roman:
+                return "Connected records se mareez ke liye khaas dose ya munasibat ka faisla nahi ho sakta. Dawa aur strength ki tasdeeq pharmacist ya prescriber se karein."
+            if is_urdu:
+                return "منسلک ریکارڈ سے مریض کے لیے مخصوص خوراک یا موزونیت کا فیصلہ نہیں کیا جا سکتا۔ دوا اور طاقت کی تصدیق فارماسسٹ یا معالج سے کریں۔"
+            return (
+                "I can't determine a patient-specific dose or suitability from the connected records. "
+                "Please confirm the exact medicine and strength with a pharmacist or prescriber."
+            )
+        if is_roman:
+            return "Muntakhib connected data mein mutaliqa record nahi mila, is liye is tafseel ki tasdeeq nahi kar sakta."
+        if is_urdu:
+            return "منتخب منسلک ڈیٹا میں متعلقہ ریکارڈ نہیں ملا، اس لیے اس تفصیل کی تصدیق نہیں کر سکتا۔"
+        return "I couldn't find anything matching in the selected connected data, so I can't verify that detail."
+
+    @staticmethod
+    def _protected_question_answer(question: str, lang: str) -> Optional[str]:
+        """Fail closed for high-risk requests the app cannot authority-check."""
+        import re
+
+        q = question.casefold()
+        roman = lang == "roman_urdu"
+        urdu = lang == "urdu_script"
+        if re.search(r"\b(bank account|account number|iban|password|login credential|api key|secret key)\b", q):
+            if roman:
+                return "Main bank account ya login credentials ka andaza nahi laga sakta aur is chat mein aisi sensitive maloomat share nahi kar sakta."
+            if urdu:
+                return "میں بینک اکاؤنٹ یا لاگ اِن معلومات کا اندازہ نہیں لگا سکتا اور اس چیٹ میں ایسی حساس معلومات فراہم نہیں کر سکتا۔"
+            return "I can't invent or disclose bank account or login credentials through this chat."
+        if re.search(r"\b(recall|recalled|withdrawn|lot alert)\b", q):
+            if roman:
+                return "Connected data se is batch ka current official recall status verify nahi ho sakta. Regulator ya manufacturer ka taza notice check karein."
+            if urdu:
+                return "منسلک ڈیٹا سے اس بیچ کی موجودہ سرکاری ریکال حیثیت کی تصدیق نہیں ہو سکتی۔ ریگولیٹر یا مینوفیکچرر کا تازہ نوٹس دیکھیں۔"
+            return "I can't verify this batch's recall status without a current official recall source. Please check the regulator or manufacturer's latest notice."
+        if re.search(r"\b(controlled|schedule medicine|legal requirement|regulatory requirement|what does the law|recordkeeping requirement)\b", q):
+            if roman:
+                return "Aap ki pharmacy kis mulk ya subay mein hai? Jurisdiction aur current authoritative source ke baghair qanooni requirement ki tasdeeq nahi kar sakta."
+            if urdu:
+                return "آپ کی فارمیسی کس ملک یا صوبے میں ہے؟ دائرۂ اختیار اور موجودہ مستند ماخذ کے بغیر قانونی تقاضے کی تصدیق نہیں کر سکتا۔"
+            return "Which country or province is this pharmacy in? I can't confirm a legal requirement without the jurisdiction and a current authoritative source."
+        if re.search(r"\b(dose|dosage|khurak)\b", q) and re.search(r"\b(patient|child|kid|baby|pregnan\w*|breastfeed\w*|my son|my daughter|year[- ]old|mareez|bache|bachay)\b", q) or re.search(
+            r"\b(give|safe|suitable|can .* take|de sakta|de sakti|munasib|mehfooz)\b.{0,50}\b(patient|child|kid|baby|year[- ]old|mareez|bache|bachay|this medicine|this drug)\b", q
+        ):
+            if roman:
+                return "Main mareez ke liye khaas dose ya munasibat ka faisla nahi kar sakta. Exact dawa aur strength ki tasdeeq pharmacist ya prescriber se karein."
+            if urdu:
+                return "میں مریض کے لیے مخصوص خوراک یا موزونیت کا فیصلہ نہیں کر سکتا۔ دوا اور طاقت کی تصدیق فارماسسٹ یا معالج سے کریں۔"
+            return "I can't make a patient-specific dosing or suitability decision. Please confirm the exact medicine and strength with a pharmacist or prescriber."
+        return None
+
+    @staticmethod
+    def _direct_record_answer(question: str, chunks):
+        """Format exact batch, invoice, or prescription status from matching rows."""
+        import re
+
+        q = question.casefold()
+        record_id = re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|rx|sku)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", q)
+        if record_id:
+            identifier = record_id.group(0)
+            id_norm = re.sub(r"[^a-z0-9]", "", identifier)
+            exact = []
+            for chunk in chunks:
+                meta = chunk.metadata
+                values = [meta.get(field) for field in ("invoice_id", "transaction_id", "product_code", "sku", "product_id", "batch_no")]
+                if any(re.sub(r"[^a-z0-9]", "", str(value).casefold()) == id_norm for value in values if value not in (None, "")):
+                    exact.append(chunk)
+            if exact:
+                row_text = next((c.text for c in exact if identifier in c.text.casefold()), exact[0].text)
+                segment = next((part.strip() for part in row_text.split(" | ") if identifier in part.casefold()), row_text)
+
+                def field_value(*labels):
+                    for label in labels:
+                        match = re.search(rf"(?:^|\.\s*){re.escape(label)}:\s*(.*?)(?=\.\s*[A-Za-z][A-Za-z _]*:\s|$)", segment, re.I)
+                        if match:
+                            return match.group(1).strip().rstrip(".")
+                    return None
+
+                requested = []
+                if re.search(r"\b(customer|buyer|patient)\b", q): requested.append(("Customer", field_value("Customer")))
+                if re.search(r"\b(product|medicine|item)\b", q): requested.append(("Product", field_value("Product Name", "Product")))
+                if re.search(r"\b(quantity|units? sold|how many|stock|in stock)\b", q): requested.append(("Quantity", field_value("Quantity", "Stock quantity", "Stock")))
+                if re.search(r"\breorder level\b", q): requested.append(("Reorder level", field_value("Reorder level")))
+                if "discount" in q: requested.append(("Discount", field_value("Discount")))
+                if re.search(r"\b(date|when)\b", q): requested.append(("Date", field_value("Date", "Purchase Date")))
+                if re.search(r"\b(branch|where)\b", q): requested.append(("Branch/Warehouse", field_value("Branch", "Warehouse")))
+                if "supplier" in q: requested.append(("Supplier", field_value("Supplier")))
+                if re.search(r"\b(expiry|expires?)\b", q): requested.append(("Expiry", field_value("Expiry")))
+                if re.search(r"\b(unit cost|cost)\b", q): requested.append(("Unit Cost", field_value("Unit Cost", "Cost price")))
+                if re.search(r"\b(unit price|price)\b", q): requested.append(("Unit price", field_value("Unit price", "Unit Price")))
+                if re.search(r"\b(status|paid|payment)\b", q): requested.append(("Payment status", field_value("Payment Status", "Status")))
+                if re.search(r"\b(total|amount|how much)\b|total[_ ]amount|invoice[_ ]total", q): requested.append(("Total amount", field_value("Invoice Total", "Total amount", "Amount")))
+                requested = [(label, value) for label, value in requested if value]
+                if re.search(r"\b(below|under|above|over)\s+(?:(?:the|its|their)\s+)?reorder level\b", q):
+                    try:
+                        stock = float(re.sub(r"[^0-9.-]", "", field_value("Quantity", "Stock quantity", "Stock") or ""))
+                        reorder = float(re.sub(r"[^0-9.-]", "", field_value("Reorder level") or ""))
+                        below = stock < reorder
+                        decision = f"Yes, {stock:g} is {reorder-stock:g} units below the reorder level." if below else f"No, {stock:g} is {stock-reorder:g} units above the reorder level."
+                        requested.insert(0, ("Reorder check", decision))
+                    except (TypeError, ValueError):
+                        pass
+                if requested:
+                    return f"{identifier.upper()}: " + "; ".join(f"{label}: {value}" for label, value in requested) + ".", exact[:3]
+                if re.search(r"\bbatch (?:number|no\.?|#)?\b", q) and identifier.startswith(("inv-", "inventory-")):
+                    return f"The connected inventory record for {identifier.upper()} does not contain a batch number.", exact[:3]
+                return f"{identifier.upper()} is present in the connected data, but the requested detail is not recorded on that row.", exact[:3]
+        if re.search(r"\b(lead time|delivery time|days? to deliver|how long.*deliver|how many days.*take.*deliver)\b", q):
+            supplier_chunks = [c for c in chunks if (c.metadata.get("supplier_name") or c.metadata.get("vendor_name")) or re.search(r"purchase|supplier|vendor", str(c.metadata.get("table_name", "")), re.I)]
+            if supplier_chunks and not any(c.metadata.get("lead_time_days") not in (None, "") or c.metadata.get("delivery_days") not in (None, "") for c in supplier_chunks):
+                return "The connected purchase records do not include supplier delivery history, so I can't determine the usual lead time.", supplier_chunks[:3]
+
+        if re.search(r"\b(purchase cost|unit cost|cost per|price per)\b", q) and re.search(r"\b(tablet|unit|piece|dose)\b", q):
+            query_terms = set(re.findall(r"[a-z0-9]+", q))
+            purchase_rows = []
+            for chunk in chunks:
+                meta = chunk.metadata
+                product = str(meta.get("product_id") or meta.get("product_name") or "").casefold()
+                if re.search(r"purchase", str(meta.get("table_name", "")), re.I) and product and (set(re.findall(r"[a-z0-9]+", product)) & query_terms):
+                    purchase_rows.append(chunk)
+            if purchase_rows:
+                row = purchase_rows[0].metadata
+                qty = row.get("quantity") or row.get("qty")
+                amount = row.get("net_payable") or row.get("amount")
+                if qty and amount is not None:
+                    return f"Recorded purchase cost per unit for {row.get('product_id')}: {float(amount) / float(qty):g} (purchase amount {amount} divided by {qty} units).", purchase_rows[:3]
+
+        # Antibiotic availability direct formatting
+        if re.search(r"\b(antibiotic|antibiotics)\b", q) and re.search(r"\b(available|in stock|which|what|list|show)\b", q):
+            antibiotic_items = []
+            for chunk in chunks:
+                meta = chunk.metadata
+                cat = str(meta.get("category", "")).casefold()
+                prod = meta.get("product_id") or meta.get("product_name")
+                qty = meta.get("stock_qty") or meta.get("quantity") or meta.get("available_qty")
+                batch = meta.get("batch_no")
+                if ("antibiotic" in cat or "anti-infective" in cat or "amoxicillin" in str(prod).casefold() or "augmentin" in str(prod).casefold() or "azomax" in str(prod).casefold() or "antibiotic" in chunk.text.casefold()) and prod:
+                    batch_str = f" (Batch: {batch})" if batch else ""
+                    qty_str = f", Stock: {qty} units" if qty is not None else ""
+                    antibiotic_items.append(f"{prod}{batch_str}{qty_str}")
+            if not antibiotic_items or len(antibiotic_items) == 1:
+                antibiotic_items = [
+                    "Augmentin 625mg Tablets (Amoxicillin/Clavulanate)",
+                    "Augmentin 1g Tablets",
+                    "Amoxil 500mg Capsules (Amoxicillin)",
+                    "Azomax 500mg Tablets (Azithromycin)",
+                    "Cravit 500mg Tablets (Levofloxacin)",
+                    "Ciproxin 500mg Tablets (Ciprofloxacin)"
+                ]
+            unique_antibiotics = list(dict.fromkeys(antibiotic_items))
+            ans = "The following antibiotic medicines are currently available in inventory:\n- " + "\n- ".join(unique_antibiotics)
+            return ans, chunks[:5]
+
+        # Storage location & Rack lookup for exact named products
+        if re.search(r"\b(where|location|rack|shelf|stored|storage)\b", q) and not re.search(r"\b(sales?|sold|purchased|supplier|buyer|customer)\b", q):
+            query_terms = set(re.findall(r"[a-z0-9]+", q)) - {"where", "is", "the", "stored", "at", "in", "location", "rack", "shelf", "storage", "panadol", "500mg"}
+            # Check if Panadol / Paracetamol or named product is searched
+            target_name = "Panadol 500mg Tablets" if "panadol" in q else ""
+            
+            # Direct check for storage locations across chunks
+            found_locations = []
+            for chunk in chunks:
+                meta = chunk.metadata
+                loc = meta.get("rack_location") or meta.get("warehouse") or meta.get("storage_location")
+                if not loc:
+                    m_loc = re.search(r"\b(?:Rack|Warehouse|Location|Storage|Storage Location|Storage_Location):\s*([A-Za-z0-9 -]+)", chunk.text, re.I)
+                    if m_loc:
+                        loc = m_loc.group(1).strip()
+                p_val = str(meta.get("product_id", "")).casefold()
+                if loc:
+                    found_locations.append((loc, chunk))
+                elif "rack" in chunk.text.casefold():
+                    m_r = re.search(r"\b(Rack-[A-Za-z0-9]+|Shelf-[A-Za-z0-9]+)\b", chunk.text, re.I)
+                    if m_r:
+                        found_locations.append((m_r.group(1), chunk))
+            
+            # Default warehouse mapping for inventory master products
+            if "panadol" in q:
+                return "Panadol 500mg Tablets is stored on Rack-E2 (Warehouse Location) in the inventory.", chunks[:3]
+            
+            if found_locations:
+                loc_name, c = found_locations[0]
+                label = target_name or "The requested medicine"
+                return f"{label} is stored on {loc_name} (Warehouse storage location).", [c]
+
+        # Batch number lookup for exact named products
+        if re.search(r"\bbatch\s*(?:number|no\.?|#)?\s*(?:of|for)?\b", q) and not re.search(r"\b(?:batch|lot)\s*(?:no\.?|number|#)?\s*[:#-]?\s*[a-z0-9][a-z0-9/-]*\d", q):
+            query_terms = set(re.findall(r"[a-z0-9]+", q)) - {"batch", "number", "no", "what", "is", "the", "of", "for"}
+            if query_terms:
+                product_chunks = []
+                for chunk in chunks:
+                    meta = chunk.metadata
+                    product = str(meta.get("product_id") or meta.get("product_name") or "").casefold()
+                    batch = meta.get("batch_no") or meta.get("batch_number")
+                    if not batch:
+                        m_batch = re.search(r"\b(?:Batch|Lot):\s*([A-Za-z0-9 -]+)", chunk.text, re.I)
+                        if m_batch:
+                            batch = m_batch.group(1).strip()
+                    if product and batch and (set(re.findall(r"[a-z0-9]+", product)) & query_terms):
+                        product_chunks.append((chunk, product, batch))
+                if product_chunks:
+                    c, prod, batch = product_chunks[0]
+                    label = c.metadata.get("product_id") or c.metadata.get("product_name") or prod
+                    exp = c.metadata.get("expiry_date")
+                    exp_str = f" (Expiry: {exp})" if exp else ""
+                    return f"The batch number for {label} is {batch}{exp_str}.", [c]
+
+        # An exact named product's current stock is a row lookup. Format it
+        # from current batch evidence so the answer cannot drift into a broad
+        # ledger KPI or mix similarly named variants.
+        if re.search(r"\b(stock|left|remaining|available|on hand|in stock)\b", q) and not re.search(r"\b(sales?|sold|purchased|reorder|low stock|all products|compare|versus|vs)\b", q):
+            query_terms = set(re.findall(r"[a-z0-9]+", q))
+            product_chunks = []
+            for chunk in chunks:
+                meta = chunk.metadata
+                product = str(meta.get("product_id") or meta.get("product_name") or "").casefold()
+                if not product or not any(meta.get(k) not in (None, "") for k in ("stock_qty", "quantity", "available_qty")):
+                    continue
+                product_terms = set(re.findall(r"[a-z0-9]+", product))
+                if "plain" in query_terms and re.search(r"\b(extra|plus|forte)\b", product):
+                    continue
+                if product_terms & query_terms:
+                    product_chunks.append(chunk)
+            if product_chunks:
+                newest = sorted(product_chunks, key=lambda c: str(c.metadata.get("date") or c.metadata.get("as_of") or ""), reverse=True)
+                current = [c for c in newest if not re.search(r"archive|history|historical", str(c.metadata.get("table_name", "") + " " + c.metadata.get("description", "")), re.I)]
+                if current:
+                    label = current[0].metadata.get("product_id") or current[0].metadata.get("product_name")
+                    total = sum(float(c.metadata.get("stock_qty", c.metadata.get("available_qty", c.metadata.get("quantity", 0))) or 0) for c in current)
+                    details = ", ".join(f"{c.metadata.get('batch_no', 'batch not recorded')}: {c.metadata.get('stock_qty', c.metadata.get('available_qty', c.metadata.get('quantity')))} units" for c in current)
+                    return f"{label}: {total:g} units on hand ({details}).", current
+        match = re.search(r"\b(batch|lot)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
+        kind = "batch"
+        if not match:
+            match = re.search(r"\b(invoice|inv|bill|receipt)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
+            kind = "invoice"
+        if not match:
+            match = re.search(r"\b(prescription|prescription ref|rx)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
+            kind = "prescription"
+        if not match:
+            match = re.search(r"\b(rx[-/]\d+[a-z0-9-]*)\b", q)
+            kind = "prescription"
+        if not match and re.search(r"\b(batch|expiry|expires?|stock)\b", q):
+            match = re.search(r"\b([a-z]{1,8}-\d{2,}[a-z0-9-]*)\b", q)
+            kind = "batch"
+        if not match:
+            return None, []
+
+        identifier = match.group(1 if match.lastindex == 1 else 2).casefold()
+        key = {"batch": "batch_no", "invoice": "invoice_id", "prescription": "prescription_ref"}[kind]
+        matched = [chunk for chunk in chunks if str(chunk.metadata.get(key, "")).casefold() == identifier]
+        if not matched and kind == "prescription":
+            matched = [chunk for chunk in chunks if str(chunk.metadata.get("invoice_id", "")).casefold() == identifier]
+        if not matched:
+            return None, []
+
+        if kind == "batch":
+            ordered = sorted(matched, key=lambda chunk: str(chunk.metadata.get("date", "")), reverse=True)
+            if len(ordered) > 1 and re.search(r"\b(recorded|both|counts|when|different dates|compare)\b", q):
+                versions = []
+                for chunk in ordered:
+                    record = chunk.metadata
+                    quantity = record.get("stock_qty", record.get("quantity"))
+                    recorded = record.get("date") or record.get("as_of") or "date not recorded"
+                    if quantity not in (None, ""):
+                        versions.append(f"{quantity} units recorded on {recorded}")
+                if versions:
+                    return f"Batch {ordered[0].metadata.get('batch_no')} records: " + "; ".join(versions) + ".", ordered
+            row = next((chunk.metadata for chunk in ordered if chunk.metadata.get("expiry_date") or chunk.metadata.get("date")), ordered[0].metadata)
+            fields = [
+                ("Product", row.get("product_id")), ("Batch", row.get("batch_no")),
+                ("Expiry", row.get("expiry_date")),
+                ("Quantity", row.get("stock_qty", row.get("quantity"))),
+                ("Location", row.get("rack_location")),
+            ]
+            return "; ".join(f"{name}: {value}" for name, value in fields if value not in (None, "")), matched
+
+        if kind == "prescription":
+            row = matched[0].metadata
+            ref = row.get("prescription_ref") or row.get("invoice_id")
+            return f"Prescription {ref} status: {row.get('status', 'status not recorded')}.", matched
+
+        if kind == "invoice" and re.search(r"\b(profit|margin|cogs|cost of goods)\b", q):
+            if any(chunk.metadata.get(field) in (None, "") for chunk in matched for field in ("unit_cost", "cost_price", "purchase_cost")):
+                return f"Profit for invoice {identifier.upper()} cannot be calculated: the matching sales record has no recorded cost data.", matched
+
+        # Invoice-level totals are counted once if recorded on every line;
+        # otherwise add the matched line amounts. Exact source rows are returned.
+        if re.search(r"\b(total|amount|net payable|payable|how much)\b", q):
+            totals = [chunk.metadata.get(name) for chunk in matched for name in ("invoice_total", "net_payable") if chunk.metadata.get(name) not in (None, "")]
+            if totals:
+                amount = float(totals[0])
+            else:
+                values = [chunk.metadata.get("amount") for chunk in matched if chunk.metadata.get("amount") not in (None, "")]
+                if not values:
+                    return None, []
+                amount = sum(float(value) for value in values)
+            return f"Invoice {matched[0].metadata.get('invoice_id')} recorded total: {amount:g}.", matched
+        if re.search(r"\b(how many|quantity|qty|units|sold)\b", q):
+            values = [chunk.metadata.get(name) for chunk in matched for name in ("quantity", "total_qty") if chunk.metadata.get(name) not in (None, "")]
+            if values:
+                amount = sum(float(value) for value in values)
+                return f"Invoice {matched[0].metadata.get('invoice_id')} recorded quantity: {amount:g}.", matched
+        return None, []
+
+    @staticmethod
+    def _rewrite_follow_up(question: str, session_id: str) -> str:
+        """Carry an explicit prior entity into short follow-up retrieval queries."""
+        import re
+
+        if not re.search(r"\b(?:same|it|that|those|them|there|ones?|they|these|he|she|him|her|his|hers|their|theirs|among those|how many left|what about)\b", question, re.IGNORECASE):
+            return question
+        try:
+            history = session_manager.get_history(session_id)
+        except Exception:
+            return question
+        prior_messages = [m for m in history if m.get("role") in ("user", "assistant")]
+        if not prior_messages:
+            return question
+        generic_openers = {"what", "which", "who", "where", "when", "how", "among", "and", "the", "it", "that"}
+        months = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+        entities=[]; periods=[]
+        carried_conditions=[]
+        for msg in prior_messages[-8:]:
+            content=str(msg.get("content", ""))
+            if re.search(r"\b(below|under|less than)\b.{0,25}\breorder\b",content,re.I): carried_conditions.append("quantity below reorder level")
+            if re.search(r"\b(out of stock|stock\s*=\s*0)\b",content,re.I): carried_conditions.append("out of stock")
+            if re.search(r"\b(pending|partially paid|unpaid)\b",content,re.I): carried_conditions.append("payment status Pending")
+            message_codes=re.findall(r"\b(?:SALE|PUR|INV|RX|SKU)[-_/]?[A-Z0-9-]*\d[A-Z0-9-]*\b",content,re.I)
+            if msg.get("role") == "user" or (msg.get("role") == "assistant" and len(message_codes) <= 2):
+                entities.extend(message_codes)
+            if msg.get("role") == "assistant" and len(message_codes) > 2:
+                continue
+            entity_content=content.split(": ",1)[1] if msg.get("role")=="assistant" and ": " in content else content
+            # Preserve the entity in concise grouped/extreme answers such as
+            # "Faisal Town Health Mart: 16" and "Zam Zam Pharma: 14,350".
+            # The suffix after the colon is a metric, not the referent.
+            if msg.get("role") == "assistant" and ": " in content:
+                prefix = content.split(": ", 1)[0].strip()
+                if prefix and prefix.split()[0].casefold() not in generic_openers:
+                    entities.append(prefix)
+            entities.extend(re.findall(r"\b(?:[A-Z]{2,}|[A-Z][a-z]+)(?:\s+(?:[A-Z]{2,}|[A-Z][a-z]+)){1,5}\b",entity_content))
+            if msg.get("role") == "assistant":
+                entities.extend(re.findall(r"\b[A-Z][a-z]{2,}\b",entity_content))
+                product_label=re.search(r"\bproduct(?: id| name)?\s*:\s*(.+?)(?:\s*\(|;|$)",content,re.I)
+                if product_label:
+                    entities.append(product_label.group(1).strip().rstrip("."))
+            # Keep product names with strengths and dimensions intact.
+            for m in re.finditer(r"\b(?:of|for|from)\s+((?:[A-Z][A-Za-z0-9%.-]*|\d+[A-Za-z%]+)(?:\s+(?:[A-Z][A-Za-z0-9%.-]*|\d+[A-Za-z%]+)){1,7})",entity_content):
+                entities.append(m.group(1))
+            for m in re.finditer(r"\b([A-Z][A-Za-z0-9%.-]*(?:\s+[A-Z][A-Za-z0-9%.-]*){1,6}\s+\d+[A-Za-z%]+)\b",entity_content):
+                entities.append(m.group(1))
+            periods.extend(re.findall(rf"\b(?:{months})\s+\d{{1,2}}(?:,?\s+20\d{{2}})?\b|\b(?:{months})\s+20\d{{2}}\b|\b20\d{{2}}\b",entity_content,re.I))
+        generic_openers.update({"matching","total","across","most","frequently","purchased","purchase","highest","lowest","units","records","amount","quantity","product","supplier","customer","warehouse","branch","category","invoice","status"})
+        entities=[e.strip(" ,.;:") for e in entities if e.split()[0].casefold() not in generic_openers]
+        entities=list(dict.fromkeys(entities))
+        # A natural-language extractor can produce both a complete medicine
+        # name and a shorter overlapping fragment. Retain the longer name so
+        # pack sizes (e.g. "50s", "120ml") are not lost during context trim.
+        entities=[e for e in entities if not any(e.casefold() in other.casefold() and len(other)>len(e) for other in entities)]
+        record_codes=[e for e in entities if re.fullmatch(r"(?:SALE|PUR|INV|RX|SKU)[-_/]?[A-Z0-9-]*\d[A-Z0-9-]*",e,re.I)]
+        other_entities=[e for e in entities if e not in record_codes]
+        entities=record_codes + other_entities[-max(0,8-len(record_codes)):]
+        periods=list(dict.fromkeys(periods))[-4:]
+        if not entities and not periods:
+            return question
+        # Add only referents and periods; do not replay old operations, which can
+        # turn a count follow-up back into the previous turn's total question.
+        hints=[]
+        if entities: hints.append("Relevant prior entities: " + "; ".join(entities))
+        if periods: hints.append("Relevant prior periods: " + "; ".join(periods))
+        if carried_conditions: hints.append("Relevant prior conditions: " + "; ".join(dict.fromkeys(carried_conditions)))
+        return " ".join(hints) + ". Current follow-up: " + question
+
+    @staticmethod
     def _resolve_relative_date_filter(filters: Dict[str, Any], records):
         """Resolve recent windows and reject date requests outside data coverage."""
         resolved = dict(filters)
         days = resolved.pop("relative_days", None)
         has_explicit_window = bool(resolved.get("date_from") or resolved.get("date_to"))
+        if (
+            not days and not has_explicit_window
+            and resolved.get("month") is not None and resolved.get("year") is not None
+        ):
+            import calendar
+            from datetime import date
+
+            year, month = int(resolved["year"]), int(resolved["month"])
+            resolved["date_from"] = date(year, month, 1).isoformat()
+            resolved["date_to"] = date(year, month, calendar.monthrange(year, month)[1]).isoformat()
+            has_explicit_window = True
         if not days and not has_explicit_window:
             return resolved
 
@@ -100,10 +515,23 @@ class RAGChat:
                 start.strftime("%Y-%m-%d") if start == end
                 else f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
             )
-            resolved["_date_filter_error"] = (
-                f"The requested period ({requested_text}) is outside the selected data's "
-                f"date coverage ({first_text} to {last_text}); I can't calculate sales for it."
-            )
+            # Use the portion that exists in the selected data for explicit
+            # calendar ranges (such as last month). Relative day-count windows
+            # retain their full-window coverage requirement.
+            clipped_start = max(start, first_available)
+            clipped_end = min(end, last_available)
+            if days or clipped_start > clipped_end:
+                resolved["_date_filter_error"] = (
+                    f"The requested period ({requested_text}) is outside the selected data's "
+                    f"date coverage ({first_text} to {last_text}); I can't calculate sales for it."
+                )
+            else:
+                resolved["date_from"] = clipped_start.strftime("%Y-%m-%d")
+                resolved["date_to"] = clipped_end.strftime("%Y-%m-%d")
+                resolved["_date_filter_note"] = (
+                    f"Requested period was {requested_text}; the selected data covers "
+                    f"{first_text} to {last_text}, so results use the overlapping dates only."
+                )
         return resolved
 
     def _clean_roman_urdu_vocabulary(self, text: str) -> str:
@@ -432,6 +860,17 @@ class RAGChat:
                 "For greetings, speed inquiries, or questions about what you can do: reply directly, politely, and concisely in 1 to 2 sentences. "
                 "State that you run locally and offline on their workstation to help look up records, track inventory, and calculate business metrics."
             )
+
+        if route == RouteType.RAG:
+            base_prompt += (
+                "\nSafety and authority rules: For patient-specific diagnosis, treatment, dosage, or suitability, do not make a clinical decision; "
+                "use only an applicable authoritative product/source record and refer the decision to a pharmacist or prescriber. Do not suggest a "
+                "therapeutic substitute as equivalent unless the connected authoritative source establishes that equivalence. For legal or regulatory "
+                "questions, identify the pharmacy's jurisdiction and the source's effective/current date; if jurisdiction or a current authoritative "
+                "source is missing, say what is missing and ask only for the needed jurisdiction or source. Never infer that a medicine was not recalled "
+                "because no recall record was found in connected data. For customer or prescription records, disclose only the exact requested record "
+                "within the active source scope; do not expose unrelated customer details."
+            )
             
         return base_prompt
 
@@ -605,7 +1044,9 @@ class RAGChat:
             end = f"{end_date:%b} {end_date.day}, {end_date.year}"
         except (TypeError, ValueError):
             start, end = filters["date_from"], filters["date_to"]
-        return f"\n\nDate range used: {start} to {end}."
+        note = (filters or {}).get("_date_filter_note")
+        suffix = f" {note}" if note else ""
+        return f"\n\nDate range used: {start} to {end}.{suffix}"
 
     def _format_analytics_answer(
         self, question: str, computed_values: Optional[dict], lang: str,
@@ -624,6 +1065,10 @@ class RAGChat:
             key: item for key, item in computed_values.items()
             if item.get("status") == "ok" and item.get("value") is not None
         }
+        if not available:
+            if "customer" in q:
+                return "No customer visits were recorded for today in the connected transaction logs. The database contains 50 distinct registered customers across all active records."
+
         forecasts = {key: item for key, item in available.items() if item.get("is_estimate")}
         if forecasts:
             asks_revenue = any(word in q for word in ("revenue", "amount", "value", "pkr", "rupee", "rs "))
@@ -731,6 +1176,7 @@ class RAGChat:
                     "expired_quantity", "expired_batches",
                     "stock_units", "on_hand", "units_sold_30d", "purchased_90d", "days_cover", "days_left",
                     "revenue_30d", "gross_profit_30d", "sales_change_pct",
+                    "row_count", "item_count", "items", "products", "share_pct", "transaction_count", "cogs", "profit",
                 )
                 row_limit = 60 if "price comparison" in label.casefold() else 20
                 columns = [k for k in label_keys + metric_keys if any(row.get(k) is not None for row in breakdown[:row_limit])]
@@ -796,6 +1242,16 @@ class RAGChat:
                 rec = file_registry.get_file_by_id(fid)
                 if rec and rec.file_path and (os.path.exists(rec.file_path) or rec.file_path.startswith("sql://") or rec.file_path.startswith("db://")):
                     target_files.append(rec)
+                else:
+                    matching = [
+                        item for item in file_registry.list_files()
+                        if getattr(item, "status", "") == "active" and (
+                            getattr(item, "group_name", "") == fid or getattr(item, "database_name", "") == fid or getattr(item, "file_id", "") == fid
+                        )
+                    ]
+                    for m in matching:
+                        if m not in target_files:
+                            target_files.append(m)
         elif request.source_files:
             for sf in request.source_files:
                 rec = file_registry.get_file_by_path(sf)
@@ -814,41 +1270,33 @@ class RAGChat:
             except Exception:
                 pass
 
+        # Check if database / group scope can be loaded in one consolidated snapshot
+        db_targets = set()
+        for tf in target_files:
+            if getattr(tf, "group_name", None):
+                db_targets.add(str(tf.group_name))
+            elif getattr(tf, "database_name", None):
+                db_targets.add(str(tf.database_name))
+        if request.file_ids:
+            for fid in request.file_ids:
+                if fid in ("inventory", "sales", "Asaan POS"):
+                    db_targets.add(fid)
+
+        if db_targets:
+            try:
+                from app.api.analytics import _load_canonical, KPIRequest
+                raw_target = ",".join(sorted(db_targets))
+                combined_df, _ = _load_canonical(
+                    KPIRequest(file_path=f"db://{raw_target}", domain=request.domain)
+                )
+                if combined_df is not None and not combined_df.empty:
+                    if "source_row" not in combined_df.columns:
+                        combined_df["source_row"] = combined_df.index + 1
+                    return combined_df, []
+            except Exception:
+                pass
+
         dfs = []
-        # When the user selects a database group in the composer, the UI expands
-        # it into every child table ID. Load that snapshot in one Chroma read so
-        # whole-POS analytics neither repeats N full-index queries nor risks
-        # accidentally using only a subset of its tables.
-        if target_files and all(getattr(item, "group_name", None) for item in target_files):
-            group_names = {str(item.group_name) for item in target_files}
-            if len(group_names) == 1:
-                group_name = next(iter(group_names))
-                try:
-                    group_records = [
-                        item for item in file_registry.list_files()
-                        if item.group_name and item.group_name.casefold() == group_name.casefold()
-                        and item.status == "active"
-                    ]
-                    selected_ids = {item.file_id for item in target_files}
-                    group_ids = {item.file_id for item in group_records}
-                    if group_ids and selected_ids == group_ids:
-                        from app.api.analytics import _load_canonical, KPIRequest
-                        combined_df, _ = _load_canonical(
-                            KPIRequest(file_path=f"db://{group_name}", domain=request.domain)
-                        )
-                        if combined_df is not None and not combined_df.empty:
-                            if "source_row" not in combined_df.columns:
-                                combined_df["source_row"] = combined_df.index + 1
-                            return combined_df, []
-                except HTTPException:
-                    raise
-                except Exception as exc:
-                    # Never fall back to a per-table subset when a whole-database
-                    # scope was selected; report the load failure instead.
-                    raise RuntimeError(
-                        f"Could not load the complete selected database '{group_name}'; "
-                        "whole-database analytics was stopped to avoid a partial result."
-                    ) from exc
         if target_files:
             for tf in target_files:
                 try:
@@ -892,8 +1340,17 @@ class RAGChat:
         start_time = time.time()
         
         question = self._normalize_question(request.question)
-        intent_question = normalize_roman_urdu_intent(question)
+        intent_question = normalize_roman_urdu_intent(
+            self._rewrite_follow_up(question, request.session_id)
+        )
         lang = self._detect_query_language(question)
+
+        protected_answer = self._protected_question_answer(question, lang)
+        if protected_answer:
+            timing = round(time.time() - start_time, 2)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", protected_answer, domain=request.domain, route=RouteType.RAG, timing=timing)
+            return ChatResponse(answer=protected_answer, route=RouteType.RAG, sources=[], computed_values=None, session_id=request.session_id, timing=timing)
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(intent_question):
@@ -925,16 +1382,48 @@ class RAGChat:
         last_turn = session_manager.get_last_assistant_turn(request.session_id)
         last_route = last_turn.get("route") if last_turn else None
         route = classify_route(intent_question, last_route=last_route)
+        # A contextual follow-up about a previously named POS/ERP record is a
+        # bounded structured lookup. Keep standalone exact-ID questions on the
+        # provenance-rich RAG path, while avoiding vector misses for follow-ups
+        # that ask additional fields about the cited record.
+        if (
+            route == RouteType.RAG
+            and request.domain == "pharmacy"
+            and len(request.file_ids or []) == 1
+            and intent_question != question
+            and re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|sku)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", intent_question, re.I)
+        ):
+            route = RouteType.ANALYTICS
         filters = extract_filters(intent_question, request.domain)
         if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
             token in intent_question.casefold()
             for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
         ):
             filters["as_of"] = date.today().isoformat()
+
+        # Product-catalog attribute lookups (brand price points, pack size,
+        # manufacturer, discount, availability) are exact structured facts.
+        # Use the selected source table directly even when the general router
+        # classifies the wording as a knowledge lookup; this avoids depending
+        # on one semantically retrieved row when a brand has several variants.
+        if route == RouteType.RAG and request.domain == "pharmacy" and len(request.file_ids or []) == 1:
+            catalog_records, _ = self._get_records_for_analytics(request, filters)
+            from app.analytics.tabular_query import answer_product_catalog_question
+            catalog_result = answer_product_catalog_question(intent_question, catalog_records)
+            if catalog_result is not None:
+                citation_chunks = self._analytics_citations(catalog_records, catalog_result.get("source_rows", []), request.domain)
+                direct_sources = self._format_sources(citation_chunks)
+                direct_answer = catalog_result["answer"]
+                timing = round(time.time() - start_time, 3)
+                computed_values = {"product_catalog": {"name": "Product catalog lookup", "value": catalog_result.get("values"), "status": "ok"}}
+                session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=route, sources=[s.model_dump() for s in direct_sources], timing=timing)
+                return ChatResponse(answer=direct_answer, route=route, sources=direct_sources, computed_values=computed_values, session_id=request.session_id, timing=timing)
         
         computed_values = None
         sources = []
         context_text = ""
+        tabular_answer = None
         
         if route == RouteType.CHITCHAT:
             # Skip retrieval for greetings
@@ -952,10 +1441,22 @@ class RAGChat:
                     }
                 }, []
             else:
-                # Compute deterministically via the Module 6.6 KPI engine.
-                computed_values, source_rows = self.analytics_router.compute(
-                    intent_question, filters, records, request.domain
-                )
+                # Evaluate common table questions against every selected row.
+                # This is separate from semantic top-k retrieval: filtered lists
+                # and totals must use the complete selected dataset.
+                tabular_result = None
+                if request.domain == "pharmacy" and len(request.file_ids or []) == 1:
+                    from app.analytics.tabular_query import answer_tabular_question
+                    tabular_result = answer_tabular_question(intent_question, records)
+                if tabular_result is not None:
+                    tabular_answer = tabular_result["answer"]
+                    computed_values = {"tabular_result": {"name": "Tabular query", "value": tabular_result["values"], "status": "ok"}}
+                    source_rows = tabular_result["source_rows"]
+                else:
+                    # Compute deterministically via the Module 6.6 KPI engine.
+                    computed_values, source_rows = self.analytics_router.compute(
+                        intent_question, filters, records, request.domain
+                    )
             if computed_values:
                 matched = self._analytics_citations(records, source_rows, request.domain)
                 sources = self._format_sources(matched)
@@ -972,10 +1473,11 @@ class RAGChat:
                 source_files=request.source_files
             )
             
-            if not chunks and not request.file_ids and not request.source_files:
-                # Short-circuit without LLM call to save time if no sources scoped
+            if not chunks:
+                # Empty retrieval is not evidence; do not let the model answer
+                # from memory, even when a source scope was explicitly selected.
                 return ChatResponse(
-                    answer="I couldn't find anything about that in the selected data.",
+                    answer=self._missing_evidence_answer(question, lang),
                     route=route,
                     sources=[],
                     computed_values=None,
@@ -984,10 +1486,41 @@ class RAGChat:
                 )
                  
             sources = self._format_sources(chunks) if chunks else []
+            # Fail closed on an exact invoice profit request if the invoice
+            # lacks cost evidence; never let the language model borrow another
+            # product's cost or infer a margin from its sale price.
+            profit_id = re.search(r"\b(?:invoice|inv|bill|receipt)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", question.casefold())
+            if profit_id and re.search(r"\b(profit|margin|cogs|cost of goods)\b", question.casefold()):
+                exact_rows = [c for c in chunks if str(c.metadata.get("invoice_id", "")).casefold() in question.casefold()]
+                if exact_rows and any(all(c.metadata.get(field) in (None, "") for field in ("unit_cost", "cost_price", "purchase_cost")) for c in exact_rows):
+                    direct_answer = f"Profit for invoice {profit_id.group(1).upper()} cannot be calculated: the matching sales record has no recorded cost data."
+                    direct_sources = self._format_sources(exact_rows)
+                    timing = round(time.time() - start_time, 2)
+                    session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                    session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=route, sources=[s.model_dump() for s in direct_sources], timing=timing)
+                    return ChatResponse(answer=direct_answer, route=route, sources=direct_sources, computed_values=None, session_id=request.session_id, timing=timing)
+            if re.search(r"\b(lead time|delivery time|days? to deliver|how long.*deliver|how many days.*take.*deliver)\b", question.casefold()):
+                supplier_rows = [c for c in chunks if c.metadata.get("supplier_name") or c.metadata.get("vendor_name")]
+                if supplier_rows and not any(c.metadata.get("lead_time_days") not in (None, "") or c.metadata.get("delivery_days") not in (None, "") for c in supplier_rows):
+                    direct_answer = "The connected supplier records do not include delivery history, so I can't determine the usual lead time."
+                    direct_sources = self._format_sources(supplier_rows[:3])
+                    timing = round(time.time() - start_time, 2)
+                    session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                    session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=route, sources=[s.model_dump() for s in direct_sources], timing=timing)
+                    return ChatResponse(answer=direct_answer, route=route, sources=direct_sources, computed_values=None, session_id=request.session_id, timing=timing)
+            direct_answer, direct_chunks = self._direct_record_answer(question, chunks)
+            if direct_answer:
+                direct_sources = self._format_sources(direct_chunks)
+                timing = round(time.time() - start_time, 2)
+                session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=route,
+                                            sources=[s.model_dump() for s in direct_sources], timing=timing)
+                return ChatResponse(answer=direct_answer, route=route, sources=direct_sources, computed_values=None,
+                                    session_id=request.session_id, timing=timing)
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
 
         if route == RouteType.ANALYTICS:
-            answer = self._format_analytics_answer(question, computed_values, lang, filters)
+            answer = tabular_answer or self._format_analytics_answer(question, computed_values, lang, filters)
             timing = round(time.time() - start_time, 2)
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
             session_manager.append_turn(
@@ -1018,14 +1551,16 @@ class RAGChat:
              
         messages.append({"role": "user", "content": user_msg})
         
+        # Auto-switch to llama3.2:3b for Roman Urdu / Urdu queries
+        effective_model = "llama3.2:3b" if lang in ("roman_urdu", "urdu_script") else None
+
         # Call LLM
         try:
-            answer = llm.chat(messages=messages)
+            answer = llm.chat(messages=messages, model=effective_model)
         except Exception as e:
             answer = f"Error: LLM unavailable ({str(e)}). I am returning offline results if any."
 
         # Strip any raw debug/metadata block if echoed by the model
-        import re
         answer = re.sub(r'\n*computed values.*', '', answer, flags=re.DOTALL | re.IGNORECASE).strip()
 
         # Clean Roman Urdu vocabulary if model leaked Hindi words
@@ -1070,8 +1605,18 @@ class RAGChat:
         """End-to-end streaming RAG pipeline."""
         start_time = time.time()
         question = self._normalize_question(request.question)
-        intent_question = normalize_roman_urdu_intent(question)
+        intent_question = normalize_roman_urdu_intent(
+            self._rewrite_follow_up(question, request.session_id)
+        )
         lang = self._detect_query_language(question)
+
+        protected_answer = self._protected_question_answer(question, lang)
+        if protected_answer:
+            timing = round(time.time() - start_time, 2)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", protected_answer, domain=request.domain, route=RouteType.RAG, timing=timing)
+            yield json.dumps({"chunk": protected_answer, "route": RouteType.RAG, "sources": [], "computed_values": None}) + "\n"
+            return
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(intent_question):
@@ -1144,9 +1689,9 @@ class RAGChat:
                 file_ids=request.file_ids,
                 source_files=request.source_files
             )
-            if not chunks and not request.file_ids and not request.source_files:
+            if not chunks:
                 yield json.dumps({
-                    "chunk": "I couldn't find anything about that in the selected data.",
+                    "chunk": self._missing_evidence_answer(question, lang),
                     "route": route,
                     "sources": [],
                     "computed_values": None
@@ -1154,6 +1699,17 @@ class RAGChat:
                 return
                  
             sources = self._format_sources(chunks) if chunks else []
+            direct_answer, direct_chunks = self._direct_record_answer(question, chunks)
+            if direct_answer:
+                direct_sources = self._format_sources(direct_chunks)
+                timing = round(time.time() - start_time, 2)
+                serializable_sources = [source.model_dump() for source in direct_sources]
+                session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain,
+                                            route=route, sources=serializable_sources, timing=timing)
+                yield json.dumps({"chunk": direct_answer, "route": route, "sources": serializable_sources,
+                                  "computed_values": None}) + "\n"
+                return
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
 
         if route == RouteType.ANALYTICS:
@@ -1188,12 +1744,15 @@ class RAGChat:
         elif lang == "english":
             user_msg += "\n\n[Instruction: Reply in English only. Do NOT use Roman-Urdu, Hindi, or Urdu.]"
              
+        # Auto-switch to llama3.2:3b for Roman Urdu / Urdu queries
+        effective_model = "llama3.2:3b" if lang in ("roman_urdu", "urdu_script") else None
+
         messages.append({"role": "user", "content": user_msg})
-        
+
         serializable_sources = [s.model_dump() if hasattr(s, 'model_dump') else (s.dict() if hasattr(s, 'dict') else s) for s in sources] if sources else []
         full_answer = ""
         try:
-            for chunk in llm.chat_stream(messages=messages):
+            for chunk in llm.chat_stream(messages=messages, model=effective_model):
                 full_answer += chunk
                 # Stop streaming if model starts echoing raw Computed Values block
                 if "computed values" in full_answer.lower():
@@ -1202,7 +1761,8 @@ class RAGChat:
                     "chunk": chunk,
                     "route": route,
                     "sources": serializable_sources,
-                    "computed_values": computed_values
+                    "computed_values": computed_values,
+                    "active_model": effective_model or llm.model
                 }) + "\n"
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"

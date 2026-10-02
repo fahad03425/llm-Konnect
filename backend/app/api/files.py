@@ -136,7 +136,7 @@ class UningestRequest(BaseModel):
 
 @router.get("", response_model=Dict[str, Any])
 @router.get("/list", response_model=Dict[str, Any])
-def list_all_files():
+def list_all_files(domain: Optional[str] = Query(None, description="Optional business domain filter (e.g. pharmacy, ecommerce, finance)")):
     """List all uploaded and sample dataset files with ingestion status, real-time progress, and duplicate detection."""
     _, upload_dir, samples_dir, storage_dir = get_base_dirs()
 
@@ -244,7 +244,13 @@ def list_all_files():
                 "is_processing": is_processing,
                 "is_duplicate_of": is_dup_of,
                 "chunk_count": reg.chunk_count if reg else 0,
-                "domain": reg.domain if reg else "pharmacy",
+                "domain": reg.domain if (reg and reg.domain) else (
+                    "ecommerce" if any(k in fname.lower() for k in ["ecom", "order", "shopify", "retail"]) else (
+                        "home_finance" if any(k in fname.lower() for k in ["personal", "home", "budget"]) else (
+                            "finance" if any(k in fname.lower() for k in ["pl_ledger", "vendor_invoice", "accounting"]) else "pharmacy"
+                        )
+                    )
+                ),
                 "strategy": reg.strategy if reg else "row",
                 "status": status,
                 "progress": progress,
@@ -353,6 +359,11 @@ def list_all_files():
                 "source_type": reg.source_type or ("database" if "sql://" in reg.file_path else "file"),
                 "table_name": reg.table_name
             })
+
+    # Filter items by domain if explicitly requested
+    if domain and domain.strip().lower() not in ("all", "*", ""):
+        dom_req = domain.strip().lower()
+        items = [i for i in items if (i.get("domain") or "").strip().lower() == dom_req]
 
     total_chunks = sum(i["chunk_count"] for i in items)
     ingested_count = sum(1 for i in items if i["is_ingested"])

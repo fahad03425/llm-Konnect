@@ -1,10 +1,10 @@
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
     LayoutDashboard,
     Database,
     Files,
     MessageSquare,
-    FileOutput,
     CalendarDays,
     Settings,
     Shield,
@@ -14,10 +14,33 @@ import {
 } from 'lucide-react';
 import { useUser } from '../context/UserContext';
 import { useReport } from '../context/ReportContext';
+import { useChat } from '../context/ChatContext';
 
 const Sidebar = () => {
     const { openSettings, activeDomainMeta } = useUser();
-    const { weeklyIsGenerating, exportIsGenerating } = useReport();
+    const { weeklyIsGenerating } = useReport();
+    const { isLoading: chatIsLoading } = useChat();
+    const [ollamaActive, setOllamaActive] = useState<boolean>(true);
+
+    useEffect(() => {
+        const checkOllama = async () => {
+            try {
+                const res = await fetch('/api/chat/models');
+                if (res.ok) {
+                    const data = await res.json();
+                    setOllamaActive(Array.isArray(data.models) && data.models.length > 0);
+                } else {
+                    setOllamaActive(false);
+                }
+            } catch {
+                setOllamaActive(false);
+            }
+        };
+
+        checkOllama();
+        const interval = setInterval(checkOllama, 10000);
+        return () => clearInterval(interval);
+    }, []);
 
     return (
         <aside className="sidebar">
@@ -28,9 +51,9 @@ const Sidebar = () => {
                     </div>
                     <div className="brand-title">LLM-Konnect</div>
                 </div>
-                <div className="status-badge">
-                    <div className="status-dot" />
-                    <span>Ollama: Active</span>
+                <div className="status-badge" style={{ borderColor: ollamaActive ? 'rgba(74, 222, 128, 0.25)' : 'rgba(239, 68, 68, 0.25)' }}>
+                    <div className="status-dot" style={{ background: ollamaActive ? '#4ade80' : '#ef4444', boxShadow: ollamaActive ? '0 0 8px rgba(74, 222, 128, 0.6)' : '0 0 8px rgba(239, 68, 68, 0.6)' }} />
+                    <span style={{ color: ollamaActive ? '#4ade80' : '#f87171' }}>{ollamaActive ? 'Ollama: Active' : 'Ollama: Offline'}</span>
                 </div>
             </div>
 
@@ -49,12 +72,8 @@ const Sidebar = () => {
                 </NavLink>
                 <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <MessageSquare size={19} />
-                    <span>RAG Chatbot</span>
-                </NavLink>
-                <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <FileOutput size={19} />
-                    <span style={{ flex: 1 }}>Report Export</span>
-                    {exportIsGenerating && (
+                    <span style={{ flex: 1 }}>RAG Chatbot</span>
+                    {chatIsLoading && (
                         <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--brand-teal)' }} />
                     )}
                 </NavLink>

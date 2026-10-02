@@ -402,6 +402,52 @@ def test_yesterday_outside_dataset_coverage_is_reported_instead_of_all_time_tota
     assert "date coverage" in filters["_date_filter_error"]
 
 
+def test_last_month_uses_available_dates_and_discloses_partial_coverage():
+    import pandas as pd
+
+    filters = RAGChat._resolve_relative_date_filter(
+        {"date_from": "2026-09-01", "date_to": "2026-09-30"},
+        pd.DataFrame({"date": ["2026-07-01", "2026-09-29"]}),
+    )
+
+    assert "_date_filter_error" not in filters
+    assert filters["date_from"] == "2026-09-01"
+    assert filters["date_to"] == "2026-09-29"
+    answer = RAGChat()._format_analytics_answer(
+        "tell me the sales of last month",
+        {"total_revenue": {
+            "name": "Sales", "value": 1234, "unit": "PKR", "status": "ok",
+        }},
+        "english",
+        filters,
+    )
+    assert "PKR 1,234.00" in answer
+    assert "Sep 1, 2026 to Sep 29, 2026" in answer
+    assert "overlapping dates only" in answer
+
+
+def test_named_month_and_year_uses_available_dates_and_discloses_partial_coverage():
+    import pandas as pd
+
+    filters = RAGChat._resolve_relative_date_filter(
+        {"month": 9, "year": 2026},
+        pd.DataFrame({"date": ["2026-07-01", "2026-09-29"]}),
+    )
+
+    assert filters["date_from"] == "2026-09-01"
+    assert filters["date_to"] == "2026-09-29"
+    assert "overlapping dates only" in filters["_date_filter_note"]
+
+
+def test_previous_calendar_month_resolves_to_the_full_prior_month():
+    from datetime import date, timedelta
+
+    filters = extract_filters("Show sales made in the previous calendar month", "pharmacy")
+    last_month_end = date.today().replace(day=1) - timedelta(days=1)
+    assert filters["date_from"] == last_month_end.replace(day=1).isoformat()
+    assert filters["date_to"] == last_month_end.isoformat()
+
+
 def test_relative_sales_answer_reports_the_exact_dataset_date_window():
     answer = RAGChat()._format_analytics_answer(
         "what are my sales in last 10 days",
@@ -694,6 +740,38 @@ def test_row_count_intent_and_analytics_route():
     assert comp["row_count"]["value"] == 100.0
     assert comp["row_count"]["status"] == "ok"
     assert comp["row_count"]["provenance"]["rows_used"] == 100
+
+
+def test_empty_retrieval_abstains_with_domain_specific_safety_guidance():
+    missing = RAGChat._missing_evidence_answer
+    assert "current official recall" in missing("Has batch B-1 been recalled?").casefold()
+    legal = missing("Is this medicine legally controlled at my pharmacy?").casefold()
+    assert "country or province" in legal and "can't confirm" in legal
+    clinical = missing("What dose should I give my child?").casefold()
+    assert "pharmacist or prescriber" in clinical
+    assert "couldn't find anything" in missing("Show invoice X-404").casefold()
+    protected = RAGChat._protected_question_answer
+    assert "can't invent" in protected("Make up a bank account number", "english").casefold()
+    assert "pharmacist or prescriber" in protected("What dose should I give my child?", "english").casefold()
+
+
+def test_exact_identifier_answers_are_deterministic_and_keep_source_rows():
+    batch = [
+        RetrievedChunk(text="", metadata={"batch_no": "PN-42", "product_id": "Panadol 500 mg", "quantity": 24,
+                                           "expiry_date": "2027-03-31", "date": "2026-09-29", "source_row": 11}, score=1, source_row=11),
+        RetrievedChunk(text="", metadata={"batch_no": "PN-42", "product_id": "Panadol 500 mg", "quantity": 31,
+                                           "date": "2026-08-29", "source_row": 16}, score=0.9, source_row=16),
+    ]
+    answer, cited = RAGChat._direct_record_answer("What are the recorded counts for batch PN-42 and when?", batch)
+    assert "24 units recorded on 2026-09-29" in answer
+    assert "31 units recorded on 2026-08-29" in answer
+    assert [item.source_row for item in cited] == [11, 16]
+
+    invoice = [RetrievedChunk(text="", metadata={"invoice_id": "INV-1", "amount": 100, "source_row": 20}, score=1, source_row=20),
+               RetrievedChunk(text="", metadata={"invoice_id": "INV-1", "amount": 50, "source_row": 21}, score=0.9, source_row=21)]
+    answer, cited = RAGChat._direct_record_answer("What was the total for invoice INV-1?", invoice)
+    assert answer == "Invoice INV-1 recorded total: 150."
+    assert [item.source_row for item in cited] == [20, 21]
 
 def test_confirmation_followup_route():
     # When last turn was ANALYTICS, "are you sure" stays ANALYTICS

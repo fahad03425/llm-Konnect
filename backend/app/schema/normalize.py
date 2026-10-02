@@ -140,6 +140,17 @@ def _clean_text(val: any) -> Optional[str]:
     return val_str if val_str else None
 
 
+def _clean_percent(val: any) -> Optional[float]:
+    """Parse percentages such as ``10% Off`` without losing the percent value."""
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    text = _convert_urdu_digits(str(val)).strip()
+    text = re.sub(r"(?i)\boff\b", "", text).replace("%", "").strip()
+    return _clean_money(text)
+
+
 # ---------------------------------------------------------------------------
 # Coercion field sets
 # NOTE: money_fields must only contain truly numeric canonical fields.
@@ -157,6 +168,7 @@ _MONEY_FIELDS = frozenset({
 _DOMAIN_MONEY_FIELDS: Dict[str, frozenset] = {
     "pharmacy": frozenset({
         "mrp", "reorder_level", "bonus_quantity", "net_payable", "tax_amount",
+        "original_price", "discounted_price",
         "discount_amount", "tax_pct", "margin_pct", "discount_pct", "total_qty",
         "total_bonus", "total_items", "total_pack", "line_discount_amount",
         "line_tax_amount", "invoice_discount", "invoice_tax", "carriage_charges",
@@ -174,6 +186,7 @@ _DOMAIN_MONEY_FIELDS: Dict[str, frozenset] = {
 # scheme is a text label ("3+1", "buy 2 get 1") — treat as text.
 
 _DATE_FIELDS = frozenset({"date", "expiry_date", "mfg_date"})
+_PERCENT_FIELDS = frozenset({"discount_pct", "tax_pct", "margin_pct", "invoice_tax_pct", "invoice_discount_pct"})
 _SKIP_COERCE = frozenset({"source_connector", "source_row"})
 
 
@@ -247,10 +260,33 @@ def normalize(
             continue
         if col in _DATE_FIELDS:
             df[col] = df[col].apply(_clean_date)
+        elif col in _PERCENT_FIELDS:
+            df[col] = df[col].apply(_clean_percent)
         elif col in money_fields:
             df[col] = df[col].apply(_clean_money)
         else:
             df[col] = df[col].apply(_clean_text)
+
+    # Some pharmaceutical price-list exports contain row-level column shifts:
+    # the Availability status is stored in Pack_Size and the pack description
+    # in Availability. Repair only unambiguous pairs, and only for the known
+    # catalog schema (paired before/after prices + discount percentage). This
+    # preserves genuine free-text statuses and never guesses from pack syntax.
+    if (
+        domain == "pharmacy"
+        and {"pack_size", "availability", "original_price", "discounted_price", "discount_pct"}.issubset(df.columns)
+    ):
+        stock_statuses = {
+            "available", "in stock", "low stock", "out of stock", "sold out",
+            "unavailable", "not available", "discontinued", "add to cart",
+        }
+        pack_is_status = df["pack_size"].fillna("").astype(str).str.strip().str.casefold().isin(stock_statuses)
+        availability_is_status = df["availability"].fillna("").astype(str).str.strip().str.casefold().isin(stock_statuses)
+        swapped = pack_is_status & ~availability_is_status & df["availability"].notna()
+        if swapped.any():
+            original_pack = df.loc[swapped, "pack_size"].copy()
+            df.loc[swapped, "pack_size"] = df.loc[swapped, "availability"]
+            df.loc[swapped, "availability"] = original_pack
 
     # Some purchase exports put the settlement mode (Cash/Credit) in a column
     # called Transaction_Type. Preserve it as payment_method and infer the

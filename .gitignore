@@ -19,6 +19,10 @@ chroma/
 *.sqlite3-*
 
 debug.json
+backend/*_results.json
+backend/report_*.json
+backend/pharmacy_*.json
+backend/.pytest-tmp/
 
 # Allow sample data files in data/samples
 !data/samples/*.csv

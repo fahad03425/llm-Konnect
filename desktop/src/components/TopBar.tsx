@@ -51,7 +51,7 @@ const TopBar = () => {
     const location = useLocation();
     const navigate = useNavigate();
     const { user, activeDomainMeta, openSettings, theme, toggleTheme } = useUser();
-    const { isAnyReportGenerating, activeGeneratingType } = useReport();
+    const { isAnyReportGenerating } = useReport();
 
     // Notification dropdown state
     const [isNotifOpen, setIsNotifOpen] = useState(false);
@@ -116,7 +116,6 @@ const TopBar = () => {
             case '/connect': return 'Connect Source';
             case '/files': return 'Uploaded Files & Datasets';
             case '/chat': return 'RAG Chatbot';
-            case '/reports': return 'Report Export';
             case '/weekly-report': return 'Weekly Report';
             default: return 'LLM-Konnect';
         }
@@ -164,12 +163,12 @@ const TopBar = () => {
                 {isAnyReportGenerating && (
                     <button
                         className="domain-chip generating-chip"
-                        onClick={() => navigate(activeGeneratingType === 'weekly' ? '/weekly-report' : '/reports')}
+                        onClick={() => navigate('/weekly-report')}
                         title="Report generation is actively running in the background. Click to view progress."
                         type="button"
                     >
                         <RefreshCw size={12} className="animate-spin" />
-                        <span>Generating {activeGeneratingType === 'weekly' ? 'Weekly Report' : 'Executive Report'}...</span>
+                        <span>Generating Weekly Report...</span>
                     </button>
                 )}
             </div>

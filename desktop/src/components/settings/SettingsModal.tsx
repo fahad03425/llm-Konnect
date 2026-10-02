@@ -65,7 +65,6 @@ export default function SettingsModal() {
                     <div className="settings-section">
                         <div className="settings-section-header">
                             <span className="settings-section-title">Appearance &amp; Theme</span>
-                            <span className="settings-section-badge">Google Material Design 3</span>
                         </div>
                         <div className="settings-theme-grid">
                             <button

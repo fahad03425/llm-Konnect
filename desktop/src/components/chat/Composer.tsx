@@ -10,8 +10,10 @@ import {
     Database,
     Layers,
     CheckSquare,
-    Square
+    Square,
+    Boxes
 } from 'lucide-react';
+import { getCustomDbGroups, type CustomDbGroup } from '../../utils/dbGroups';
 
 export interface ScopeFile {
     file_id: string;
@@ -50,8 +52,20 @@ export const Composer = ({
     const [isOpen, setIsOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [expandedDbGroups, setExpandedDbGroups] = useState<Record<string, boolean>>({});
+    const [customDbGroups, setCustomDbGroups] = useState<CustomDbGroup[]>(() => getCustomDbGroups());
     const popoverRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
+
+    // Listen for custom database group updates
+    useEffect(() => {
+        const handleGroupsChanged = () => {
+            setCustomDbGroups(getCustomDbGroups());
+        };
+        window.addEventListener('custom-db-groups-changed', handleGroupsChanged);
+        return () => {
+            window.removeEventListener('custom-db-groups-changed', handleGroupsChanged);
+        };
+    }, []);
 
     // Close popover when clicking outside
     useEffect(() => {
@@ -106,6 +120,23 @@ export const Composer = ({
         return { dbGroups, standaloneFiles };
     }, [availableFiles]);
 
+    // Detect if a custom database group is active
+    const activeCustomGroup = useMemo(() => {
+        for (const grp of customDbGroups) {
+            const memberFiles = availableFiles.filter(f => 
+                f.group_name && grp.dbNames.some(d => d.toLowerCase().trim() === f.group_name?.toLowerCase().trim())
+            );
+            if (memberFiles.length > 0) {
+                const memberIds = memberFiles.map(f => f.file_id);
+                if (memberIds.length === selectedFiles.length && memberIds.every(id => selectedFileIds.includes(id))) {
+                    const chunks = memberFiles.reduce((acc, f) => acc + (f.chunk_count || 0), 0);
+                    return { name: grp.name, count: memberFiles.length, chunks, dbNames: grp.dbNames, fileIds: memberIds };
+                }
+            }
+        }
+        return null;
+    }, [customDbGroups, availableFiles, selectedFileIds, selectedFiles]);
+
     // Detect database groups that are completely selected
     const fullySelectedGroups = useMemo(() => {
         const groups: {
@@ -135,6 +166,7 @@ export const Composer = ({
 
     // Single active database group when the entire selection is just this database
     const activeDbGroup = useMemo(() => {
+        if (activeCustomGroup) return null;
         if (fullySelectedGroups.length === 1) {
             const grp = fullySelectedGroups[0];
             if (selectedFiles.length === grp.files.length) {
@@ -142,7 +174,7 @@ export const Composer = ({
             }
         }
         return null;
-    }, [fullySelectedGroups, selectedFiles]);
+    }, [activeCustomGroup, fullySelectedGroups, selectedFiles]);
 
     // File IDs that belong to fully selected database groups
     const fullySelectedGroupFileIds = useMemo(() => {
@@ -155,8 +187,12 @@ export const Composer = ({
 
     // Selected files that are NOT part of a fully selected database group (or individual standalone files)
     const remainingSelectedFiles = useMemo(() => {
+        if (activeCustomGroup) {
+            const customGroupFileIdSet = new Set(activeCustomGroup.fileIds);
+            return selectedFiles.filter(f => !customGroupFileIdSet.has(f.file_id));
+        }
         return selectedFiles.filter(f => !fullySelectedGroupFileIds.has(f.file_id));
-    }, [selectedFiles, fullySelectedGroupFileIds]);
+    }, [selectedFiles, activeCustomGroup, fullySelectedGroupFileIds]);
 
     // Filtered files for search inside popover
     const filteredFiles = useMemo(() => {
@@ -232,6 +268,9 @@ export const Composer = ({
         if (selectedFiles.length === 0) {
             return "Type a plain-language question…";
         }
+        if (activeCustomGroup) {
+            return `Ask question across whole ${activeCustomGroup.name} (${activeCustomGroup.chunks.toLocaleString()} chunks)…`;
+        }
         if (activeDbGroup) {
             return `Ask question across whole ${activeDbGroup.name} database (${activeDbGroup.chunks.toLocaleString()} chunks)…`;
         }
@@ -241,7 +280,7 @@ export const Composer = ({
         const previewNames = selectedFiles.slice(0, 2).map(f => f.table_name || f.filename).join(', ');
         const extra = selectedFiles.length > 2 ? ` +${selectedFiles.length - 2} more` : '';
         return `Ask question across ${selectedFiles.length} sources (${previewNames}${extra})…`;
-    }, [selectedFiles, activeDbGroup]);
+    }, [selectedFiles, activeCustomGroup, activeDbGroup]);
 
     return (
         <div className="chat-input-wrapper">
@@ -251,6 +290,8 @@ export const Composer = ({
                         <div className="scope-label-wrapper">
                             {selectedFiles.length === 0 ? (
                                 <Globe size={14} className="scope-icon" />
+                            ) : activeCustomGroup ? (
+                                <Boxes size={14} className="scope-icon active" style={{ color: 'var(--brand-green)' }} />
                             ) : selectedFiles.length === 1 ? (
                                 selectedFiles[0].source_type === 'database' ? (
                                     <Database size={14} className="scope-icon active" />
@@ -274,6 +315,8 @@ export const Composer = ({
                             <span className="trigger-label">
                                 {selectedFiles.length === 0 ? (
                                     <>All Knowledge Base ({totalKbChunks.toLocaleString()} chunks)</>
+                                ) : activeCustomGroup ? (
+                                    <>{activeCustomGroup.name} (Consolidated Database — {activeCustomGroup.chunks.toLocaleString()} chunks)</>
                                 ) : activeDbGroup ? (
                                     <>{activeDbGroup.name} (Whole Database — {activeDbGroup.chunks.toLocaleString()} chunks)</>
                                 ) : selectedFiles.length === 1 ? (
@@ -375,7 +418,67 @@ export const Composer = ({
 
                                 <div className="popover-divider" />
 
-                                {/* Database Groups */}
+                                {/* Custom Database Groups (Consolidated Single Option) */}
+                                {customDbGroups.length > 0 && (
+                                    <>
+                                        <div className="group-header" style={{ margin: '0.4rem 0 0.2rem' }}>
+                                            <div className="group-title" style={{ color: 'var(--brand-green)', fontWeight: 600 }}>
+                                                <Boxes size={13} className="group-title-icon" style={{ color: 'var(--brand-green)' }} />
+                                                <span>Consolidated Database Groups</span>
+                                            </div>
+                                        </div>
+                                        {customDbGroups.map(grp => {
+                                            const memberFiles = availableFiles.filter(f => 
+                                                f.group_name && grp.dbNames.some(d => d.toLowerCase().trim() === f.group_name?.toLowerCase().trim())
+                                            );
+                                            if (memberFiles.length === 0) return null;
+                                            const ids = memberFiles.map(f => f.file_id);
+                                            const allSelected = ids.length > 0 && ids.every(id => selectedFileIds.includes(id));
+                                            const groupChunks = memberFiles.reduce((acc, curr) => acc + (curr.chunk_count || 0), 0);
+
+                                            const handleToggleCustomGroup = () => {
+                                                if (!onSelectFiles) return;
+                                                if (allSelected) {
+                                                    onSelectFiles(selectedFileIds.filter(id => !ids.includes(id)));
+                                                } else {
+                                                    const combined = Array.from(new Set([...selectedFileIds, ...ids]));
+                                                    onSelectFiles(combined);
+                                                }
+                                            };
+
+                                            return (
+                                                <div key={grp.id} className="popover-group">
+                                                    <div
+                                                        className={`popover-item whole-db-item ${allSelected ? 'selected' : ''}`}
+                                                        onClick={handleToggleCustomGroup}
+                                                        style={{ borderLeft: '3px solid var(--brand-green)', background: allSelected ? 'rgba(16, 185, 129, 0.12)' : 'rgba(16, 185, 129, 0.04)' }}
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            className="item-checkbox"
+                                                            checked={allSelected}
+                                                            onChange={() => {}}
+                                                        />
+                                                        <div className="item-icon" style={{ color: 'var(--brand-green)' }}>
+                                                            <Boxes size={15} />
+                                                        </div>
+                                                        <div className="item-info">
+                                                            <div className="item-name" style={{ fontWeight: 600 }}>
+                                                                {grp.name} (Consolidated Group)
+                                                            </div>
+                                                            <div className="item-sub">
+                                                                {groupChunks.toLocaleString()} chunks across {grp.dbNames.join(' + ')} ({memberFiles.length} tables)
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                        <div className="popover-divider" />
+                                    </>
+                                )}
+
+                                {/* Individual Database Groups */}
                                 {Object.entries(groupedFiles.dbGroups).map(([groupName, files]) => {
                                     const ids = files.map(f => f.file_id);
                                     const allSelected = ids.length > 0 && ids.every(id => selectedFileIds.includes(id));
@@ -392,23 +495,6 @@ export const Composer = ({
 
                                     return (
                                         <div key={groupName} className="popover-group">
-                                            <div className="group-header">
-                                                <div className="group-title">
-                                                    <Database size={13} className="group-title-icon" />
-                                                    <span>{groupName}</span>
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    className="group-select-all"
-                                                    onClick={e => {
-                                                        e.stopPropagation();
-                                                        handleToggleWholeGroup();
-                                                    }}
-                                                >
-                                                    {allSelected ? 'Deselect Group' : 'Select Group'}
-                                                </button>
-                                            </div>
-
                                             {/* Whole Database Selectable Row */}
                                             <div
                                                 className={`popover-item whole-db-item ${allSelected ? 'selected' : ''}`}
@@ -432,38 +518,6 @@ export const Composer = ({
                                                     </div>
                                                 </div>
                                             </div>
-
-                                            {/* Individual Tables */}
-                                            {files.map(f => {
-                                                const isChecked = selectedFileIds.includes(f.file_id);
-                                                return (
-                                                    <div
-                                                        key={f.file_id}
-                                                        className={`popover-item db-table-item ${isChecked ? 'selected' : ''}`}
-                                                        onClick={() => handleToggleFile(f.file_id)}
-                                                    >
-                                                        <input
-                                                            type="checkbox"
-                                                            className="item-checkbox"
-                                                            checked={isChecked}
-                                                            onChange={() => {}}
-                                                        />
-                                                        <div className="item-icon table-icon">
-                                                            <span className="table-icon-arrow">↳</span>
-                                                        </div>
-                                                        <div className="item-info">
-                                                            <div className="item-name">{f.table_name || f.filename}</div>
-                                                            <div className="item-sub">
-                                                                {f.chunk_count > 0 ? (
-                                                                    `${f.chunk_count.toLocaleString()} chunks`
-                                                                ) : (
-                                                                    <span className="empty-chunk-note">Empty table (0 chunks)</span>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
                                         </div>
                                     );
                                 })}
@@ -538,63 +592,119 @@ export const Composer = ({
                         <div className="selected-chips-bar">
                             <span className="chips-label">Active Scope:</span>
                             <div className="chips-scroll">
-                                {/* Fully selected whole database groups */}
-                                {fullySelectedGroups.map(grp => {
-                                    const isExpanded = !!expandedDbGroups[grp.name];
-                                    return (
-                                        <React.Fragment key={grp.name}>
-                                            <span
-                                                className={`source-chip database-group-chip ${isExpanded ? 'expanded' : ''}`}
-                                                title={`${grp.name} (Whole Database — ${grp.files.length} tables, ${grp.chunks.toLocaleString()} chunks)`}
+                                {/* Custom Consolidated Database Group (Single Chip) */}
+                                {activeCustomGroup ? (
+                                    <React.Fragment>
+                                        <span
+                                            className={`source-chip database-group-chip ${expandedDbGroups[activeCustomGroup.name] ? 'expanded' : ''}`}
+                                            style={{ borderColor: 'var(--brand-green)', background: 'rgba(16, 185, 129, 0.1)' }}
+                                            title={`${activeCustomGroup.name} (Consolidated Group — ${activeCustomGroup.count} tables across ${activeCustomGroup.dbNames.join(', ')}, ${activeCustomGroup.chunks.toLocaleString()} chunks)`}
+                                        >
+                                            <Boxes size={13} className="chip-icon-db" style={{ color: 'var(--brand-green)' }} />
+                                            <span className="chip-name">
+                                                <strong style={{ color: 'var(--brand-green)' }}>{activeCustomGroup.name}</strong> <span className="chip-sub">(Consolidated &bull; {activeCustomGroup.count} tables)</span>
+                                            </span>
+                                            <span className="chip-count" style={{ color: 'var(--brand-green)' }}>{activeCustomGroup.chunks.toLocaleString()} chunks</span>
+                                            <button
+                                                type="button"
+                                                className="chip-remove"
+                                                onClick={handleClearSelection}
+                                                title={`Remove entire ${activeCustomGroup.name} group`}
                                             >
-                                                <Database size={12} className="chip-icon-db" />
-                                                <span className="chip-name">
-                                                    <strong>{grp.name}</strong> <span className="chip-sub">(Whole Database &bull; {grp.files.length} tables)</span>
-                                                </span>
-                                                <span className="chip-count">{grp.chunks.toLocaleString()} chunks</span>
+                                                <X size={11} />
+                                            </button>
+                                        </span>
+
+                                        <button
+                                            type="button"
+                                            className={`tables-toggle-btn ${expandedDbGroups[activeCustomGroup.name] ? 'active' : ''}`}
+                                            onClick={() => toggleExpandDb(activeCustomGroup.name)}
+                                            title={expandedDbGroups[activeCustomGroup.name] ? 'Hide individual tables' : 'Show individual tables'}
+                                        >
+                                            <span>{expandedDbGroups[activeCustomGroup.name] ? 'Hide tables' : `Tables (${activeCustomGroup.count})`}</span>
+                                            {expandedDbGroups[activeCustomGroup.name] ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                                        </button>
+
+                                        {/* Sub-expanded tables if user toggles to see individual tables */}
+                                        {expandedDbGroups[activeCustomGroup.name] && selectedFiles.map(f => (
+                                            <span
+                                                key={f.file_id}
+                                                className="source-chip table-chip-sub"
+                                                title={`${f.filename} (${f.chunk_count} chunks)`}
+                                            >
+                                                <span className="chip-icon">📊</span>
+                                                <span className="chip-name">{f.table_name || f.filename}</span>
+                                                <span className="chip-count">{f.chunk_count}</span>
                                                 <button
                                                     type="button"
                                                     className="chip-remove"
-                                                    onClick={e => handleRemoveDbGroup(grp.files, e)}
-                                                    title={`Remove entire ${grp.name} database`}
+                                                    onClick={e => handleRemoveFile(f.file_id, e)}
+                                                    title={`Remove ${f.table_name || f.filename}`}
                                                 >
-                                                    <X size={11} />
+                                                    <X size={10} />
                                                 </button>
                                             </span>
-
-                                            <button
-                                                type="button"
-                                                className={`tables-toggle-btn ${isExpanded ? 'active' : ''}`}
-                                                onClick={() => toggleExpandDb(grp.name)}
-                                                title={isExpanded ? 'Hide individual tables' : 'Show individual tables'}
-                                            >
-                                                <span>{isExpanded ? 'Hide tables' : `Tables (${grp.files.length})`}</span>
-                                                {isExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                                            </button>
-
-                                            {/* Sub-expanded tables if user toggles to see individual tables */}
-                                            {isExpanded && grp.files.map(f => (
+                                        ))}
+                                    </React.Fragment>
+                                ) : (
+                                    /* Fully selected whole database groups */
+                                    fullySelectedGroups.map(grp => {
+                                        const isExpanded = !!expandedDbGroups[grp.name];
+                                        return (
+                                            <React.Fragment key={grp.name}>
                                                 <span
-                                                    key={f.file_id}
-                                                    className="source-chip table-chip-sub"
-                                                    title={`${f.filename} (${f.chunk_count} chunks)`}
+                                                    className={`source-chip database-group-chip ${isExpanded ? 'expanded' : ''}`}
+                                                    title={`${grp.name} (Whole Database — ${grp.files.length} tables, ${grp.chunks.toLocaleString()} chunks)`}
                                                 >
-                                                    <span className="chip-icon">📊</span>
-                                                    <span className="chip-name">{f.table_name || f.filename}</span>
-                                                    <span className="chip-count">{f.chunk_count}</span>
+                                                    <Database size={12} className="chip-icon-db" />
+                                                    <span className="chip-name">
+                                                        <strong>{grp.name}</strong> <span className="chip-sub">(Whole Database &bull; {grp.files.length} tables)</span>
+                                                    </span>
+                                                    <span className="chip-count">{grp.chunks.toLocaleString()} chunks</span>
                                                     <button
                                                         type="button"
                                                         className="chip-remove"
-                                                        onClick={e => handleRemoveFile(f.file_id, e)}
-                                                        title={`Remove ${f.table_name || f.filename}`}
+                                                        onClick={e => handleRemoveDbGroup(grp.files, e)}
+                                                        title={`Remove entire ${grp.name} database`}
                                                     >
-                                                        <X size={10} />
+                                                        <X size={11} />
                                                     </button>
                                                 </span>
-                                            ))}
-                                        </React.Fragment>
-                                    );
-                                })}
+
+                                                <button
+                                                    type="button"
+                                                    className={`tables-toggle-btn ${isExpanded ? 'active' : ''}`}
+                                                    onClick={() => toggleExpandDb(grp.name)}
+                                                    title={isExpanded ? 'Hide individual tables' : 'Show individual tables'}
+                                                >
+                                                    <span>{isExpanded ? 'Hide tables' : `Tables (${grp.files.length})`}</span>
+                                                    {isExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                                                </button>
+
+                                                {/* Sub-expanded tables if user toggles to see individual tables */}
+                                                {isExpanded && grp.files.map(f => (
+                                                    <span
+                                                        key={f.file_id}
+                                                        className="source-chip table-chip-sub"
+                                                        title={`${f.filename} (${f.chunk_count} chunks)`}
+                                                    >
+                                                        <span className="chip-icon">📊</span>
+                                                        <span className="chip-name">{f.table_name || f.filename}</span>
+                                                        <span className="chip-count">{f.chunk_count}</span>
+                                                        <button
+                                                            type="button"
+                                                            className="chip-remove"
+                                                            onClick={e => handleRemoveFile(f.file_id, e)}
+                                                            title={`Remove ${f.table_name || f.filename}`}
+                                                        >
+                                                            <X size={10} />
+                                                        </button>
+                                                    </span>
+                                                ))}
+                                            </React.Fragment>
+                                        );
+                                    })
+                                )}
 
                                 {/* Remaining individual files / tables not part of a whole database */}
                                 {remainingSelectedFiles.map(f => (

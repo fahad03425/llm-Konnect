@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 
 export type Verdict = 'usable' | 'usable_with_warnings' | 'not_usable';
-export type SourceType = 'file' | 'sql' | 'watcher';
+export type SourceType = 'file' | 'sql' | 'watcher' | 'tally' | 'shopify';
 
 export interface PreviewData {
     columns: string[];

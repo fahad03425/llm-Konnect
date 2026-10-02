@@ -31,3 +31,11 @@ If you need to connect to something other than CSV, Excel, JSON, SQLite, Access,
 2. Inherit from `app.connectors.base.Connector`.
 3. Implement `fetch()`, `preview()`, `describe()`, and `capabilities()`.
 4. Update `detect_connector(path)` in `base.py` if your connector should be auto-detected from a file extension.
+
+## 4. Relational database support
+
+The universal SQL connector supports SQLite, Microsoft SQL Server, PostgreSQL, and MySQL/MariaDB. PostgreSQL URLs use SQLAlchemy's `psycopg` v3 driver; MySQL and MariaDB URLs use `PyMySQL`. Microsoft SQL Server uses `pyodbc` and requires a compatible system ODBC driver. Install backend dependencies with `pip install -r backend/requirements.txt`.
+
+Use `/api/kb/ingest-database` to ingest all discovered tables, or pass a `tables` list to scope the ingest. The endpoint reports row/chunk totals and every per-table error. Discovery and table lookup quote discovered identifiers; custom `SELECT` queries remain caller-provided SQL and should be limited to authorized, read-only queries. Database connection strings are encrypted in the local registry and masked in the connection-list API.
+
+All rows from each selected table are mapped and indexed as record chunks with database, table, file ID, row ID, and source row metadata. This supports record retrieval and citations across tables. Embeddings do not perform relational joins or replace deterministic aggregate queries: questions that need joins, complete sums, or full-ledger rankings must use the analytics path or a future relational query planner. Table/row coverage should be checked against the ingestion response before relying on an answer.
