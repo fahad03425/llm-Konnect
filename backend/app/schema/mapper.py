@@ -52,8 +52,14 @@ def _normalize_header_string(h: str) -> str:
     """
     if not isinstance(h, str):
         return ""
+    h = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", h)
     h = h.lower().strip()
     # Remove punctuation (ASCII only) — keep Unicode word chars intact
+    # Spreadsheet/database exports commonly encode compound labels as snake
+    # case (Quantity_Sold, Unit_Cost_Price_USD). Treat underscores as word
+    # separators so those headers receive the same synonym matching as their
+    # human-readable equivalents.
+    h = h.replace("_", " ")
     h = re.sub(r'[^\w\s]', '', h, flags=re.UNICODE)
     h = re.sub(r'\s+', ' ', h).strip()
     return h
@@ -78,8 +84,11 @@ def _build_synonym_lookup(domain_pack: Optional[DomainPack]) -> Dict[str, str]:
             for syn in raw_synonyms:
                 norm = _normalize_header_string(syn)
                 if norm:
-                    lookup[norm] = canonical_field
-    return lookup
+                    if norm not in lookup:
+                        lookup[norm] = canonical_field
+                    elif lookup[norm] != canonical_field:
+                        lookup[norm] = ""
+    return {key: value for key, value in lookup.items() if value}
 
 
 def _infer_from_values(
@@ -87,70 +96,16 @@ def _infer_from_values(
     canonical_fields: List[str],
 ) -> Tuple[Optional[str], float, str]:
     """
-    Value-based heuristic: sniff a column's sample values to guess its type.
-    Used only as a fallback when header matching fails.
+    Value-only inference is deliberately disabled: types do not establish semantics.
+    Opaque columns remain unmapped for review.
 
     Returns (canonical_field | None, confidence, reason).
-    All heuristics intentionally conservative (threshold >0.8 of rows).
+    This compatibility helper never assigns a business role from value shape alone.
     """
-    if not values:
-        return None, 0.0, ""
-
-    non_empty = [
-        str(v).strip()
-        for v in values
-        if v is not None and str(v).strip() not in ("", "nan", "None")
-    ]
-    if not non_empty:
-        return None, 0.0, ""
-
-    total = len(non_empty)
-
-    # --- Heuristic 1: mm/yy or mm-yyyy patterns → expiry/date ---
-    mmyy_re = re.compile(r'^\d{1,2}[/-]\d{2,4}$')
-    date_matches = sum(1 for v in non_empty if mmyy_re.match(v))
-    if date_matches / total > 0.8:
-        if "expiry_date" in canonical_fields:
-            return "expiry_date", 0.60, "Values match mm/yy expiry-date pattern"
-        if "date" in canonical_fields:
-            return "date", 0.55, "Values match mm/yy date pattern"
-
-    # --- Heuristic 2: numeric amounts / quantities ---
-    # Strip Pakistani currency symbols and separators before parsing
-    _money_re = re.compile(r'(?i)(rs\.?|pkr|₨|,\s*)')
-    money_count = 0
-    small_int_count = 0
-
-    for v in non_empty:
-        cleaned = _money_re.sub('', v).strip().replace('/-', '').replace('/=', '')
-        # Handle "(100)" → negative
-        if cleaned.startswith('(') and cleaned.endswith(')'):
-            cleaned = cleaned[1:-1]
-        try:
-            fval = float(cleaned)
-            money_count += 1
-            if fval == int(fval) and 0 <= fval <= 9999:
-                small_int_count += 1
-        except ValueError:
-            pass
-
-    if small_int_count / total > 0.8:
-        if "quantity" in canonical_fields:
-            return "quantity", 0.60, "Values look like small non-negative integers"
-    if money_count / total > 0.8:
-        if "amount" in canonical_fields:
-            return "amount", 0.55, "Values look like monetary amounts"
-
-    # --- Heuristic 3: long alphanumeric identifiers (invoice/batch/barcode) ---
-    # Must be ≥6 chars AND contain both letters and digits to avoid
-    # matching plain numbers, dates, or money values
-    id_re = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{6,}$')
-    id_count = sum(1 for v in non_empty if id_re.match(v))
-    if id_count / total > 0.8:
-        if "invoice_id" in canonical_fields:
-            return "invoice_id", 0.55, "Values look like alphanumeric identifiers"
-
-    return None, 0.0, ""
+    # Value shape cannot establish business meaning: 200 may be a key,
+    # quantity, price or balance; Panadol 500mg is not an invoice identifier.
+    # Keep opaque columns for explicit review rather than auto-accepting a guess.
+    return None, 0.0, "Values alone do not establish a business field; review required"
 
 
 def _resolve_conflicts(suggestions_map: Dict[str, MappingSuggestion]) -> None:
@@ -168,7 +123,7 @@ def _resolve_conflicts(suggestions_map: Dict[str, MappingSuggestion]) -> None:
         if len(suggs) <= 1:
             continue
         # Sort descending by confidence, then alphabetically by source_column for determinism
-        suggs.sort(key=lambda s: (-s.confidence, s.source_column))
+        suggs.sort(key=lambda s: (-s.confidence, _normalize_header_string(s.source_column) != _normalize_header_string(s.canonical_field or ""), s.source_column))
         for loser in suggs[1:]:
             loser.canonical_field = None
             loser.confidence = 0.0
@@ -195,7 +150,7 @@ def suggest_mapping(
       1. Exact match against canonical field names (e.g. "date" → date).
       2. Exact match against domain-pack synonym table (e.g. "qty" → quantity).
       3. Fuzzy match using difflib against canonical fields AND synonyms.
-         Threshold: ≥0.75 ratio. Ties broken by score then alpha order.
+         Threshold: ≥0.86 ratio. Ties broken by score then alpha order.
       4. Value-based inference on sample_rows as a last resort.
 
     One canonical field is assigned to at most one source column (if resolve_conflicts=True).
@@ -217,7 +172,7 @@ def suggest_mapping(
     synonyms = _build_synonym_lookup(domain_pack)
 
     # Pre-build normalized canonical targets once (avoid repeated work in loops)
-    norm_canonical = [(cf, cf.replace("_", " ")) for cf in canonical_fields]
+    norm_canonical = [(cf, _normalize_header_string(cf)) for cf in canonical_fields]
 
     suggestions_map: Dict[str, MappingSuggestion] = {}
 
@@ -254,8 +209,11 @@ def suggest_mapping(
                 best_conf = 1.0
                 reason = "Exact match with known synonym"
 
+        # Reference identifiers, status flags and totals with explicit units
+        # must not acquire unrelated semantics through spelling similarity.
+        protected = bool(re.search(r"\b(?:id|code|flag|active|enabled|disable|disabled|returned|mode|index)\b", norm_raw))
         # --- Stage 3: Fuzzy match ---
-        if not best_field:
+        if not best_field and not protected:
             best_fuzzy_field: Optional[str] = None
             best_fuzzy_score: float = 0.0
 
@@ -308,6 +266,35 @@ def suggest_mapping(
             reason=reason,
         )
 
+    # Generic relational context: distinguish customer receivables from vendor
+    # payables and purchase event dates from bookkeeping modification dates.
+    normalized = {_normalize_header_string(str(c)): str(c) for c in columns}
+    if domain_pack and getattr(domain_pack, "name", "") == "pharmacy":
+        customer = bool({"customer", "customer id", "customer name", "patient name"} & normalized.keys())
+        supplier = bool({"vendor id", "supplier id", "supplier name"} & normalized.keys())
+        contextual = {}
+        if customer != supplier:
+            contextual["amount due"] = "customer_balance" if customer else "supplier_payable_amount"
+            contextual["due date"] = "customer_due_date" if customer else "supplier_payment_due_date"
+        if supplier and ("paid amount" in normalized or "grand total" in normalized or "total" in normalized):
+            for candidate in ("delivery date", "sent date"):
+                if candidate in normalized:
+                    contextual[candidate] = "date"
+                    break
+        if {"quantity", "purchase price", "sale price"} <= normalized.keys():
+            contextual["sale price"] = "unit_price"
+        if supplier and "total" in normalized and "quantity" not in normalized:
+            contextual["total"] = "invoice_total"
+            contextual["sub total"] = "sales_subtotal"
+        # Distinguish line discounts/taxes from invoice-level adjustments.
+        contextual.update({"total discount": "invoice_discount", "total tax": "invoice_tax"})
+        for source, target in contextual.items():
+            if source in normalized and target in canonical_fields:
+                column = normalized[source]
+                suggestions_map[column] = MappingSuggestion(
+                    source_column=column, canonical_field=target, confidence=1.0,
+                    reason="Relational schema context establishes field meaning")
+
     # Product-pricing catalog exports use "Discount" for a percentage label
     # (for example "10% Off"), while POS ledgers commonly use it for a money
     # amount. The paired before/after price columns disambiguate this schema.
@@ -325,6 +312,60 @@ def suggest_mapping(
                     reason="Catalog schema: Discount is a percent paired with before/after prices",
                 )
 
+    # When both a product code and a human-readable product name are present,
+    # keep the label in the legacy product_id slot used by analytics and
+    # preserve the code separately. Without this paired-column rule, both
+    # columns claim product_id and alphabetical conflict resolution can retain
+    # the opaque code while dropping the name.
+    if domain_pack and "product_code" in canonical_fields:
+        normalized_by_column = {
+            str(column): _normalize_header_string(str(column)) for column in columns
+        }
+        brand_columns = [
+            column for column, normalized in normalized_by_column.items()
+            if re.search(r"\bbrand name\b|\bbrand\b", normalized)
+        ]
+        name_columns = [
+            column for column, normalized in normalized_by_column.items()
+            if re.search(r"\bproduct name\b|\bmedicine name\b|\bitem name\b|\bdrug name\b", normalized)
+        ]
+        code_columns = [
+            column for column, normalized in normalized_by_column.items()
+            if re.search(r"\bproduct id\b|\bmedicine id\b|\bitem id\b|\bdrug id\b|\bsku\b", normalized)
+        ]
+        if brand_columns and name_columns:
+            brand_col = brand_columns[0]
+            name_col = name_columns[0]
+            if brand_col in suggestions_map and name_col in suggestions_map:
+                suggestions_map[brand_col] = MappingSuggestion(
+                    source_column=brand_col,
+                    canonical_field="product_id",
+                    confidence=1.0,
+                    reason="Paired schema: Brand name assigned to primary product identity",
+                )
+                suggestions_map[name_col] = MappingSuggestion(
+                    source_column=name_col,
+                    canonical_field="description",
+                    confidence=1.0,
+                    reason="Paired schema: Full medicine name assigned to description",
+                )
+        elif name_columns and code_columns:
+            name_column = name_columns[0]
+            code_column = code_columns[0]
+            if name_column in suggestions_map and code_column in suggestions_map:
+                suggestions_map[name_column] = MappingSuggestion(
+                    source_column=name_column,
+                    canonical_field="product_id",
+                    confidence=1.0,
+                    reason="Paired product schema: retain human-readable name as product identity",
+                )
+                suggestions_map[code_column] = MappingSuggestion(
+                    source_column=code_column,
+                    canonical_field="product_code",
+                    confidence=1.0,
+                    reason="Paired product schema: preserve source product identifier separately",
+                )
+
     # --- Conflict resolution ---
     if resolve_conflicts:
         _resolve_conflicts(suggestions_map)
@@ -337,8 +378,9 @@ def suggest_mapping(
     # A transaction needs (date + amount). An inventory record needs product_id.
     # If product_id is mapped we treat as inventory → no txn fields required.
     txn_required = ["date", "amount"]
-    if "product_id" in mapped_canonical:
-        required_missing = []   # inventory mode — product_id is enough
+    transaction_fields = {"invoice_id", "transaction_id", "txn_type", "purchase_order_no"}
+    if "product_id" in mapped_canonical and not (transaction_fields & mapped_canonical):
+        required_missing = []   # Catalog/inventory mode, no transaction identity present.
     else:
         required_missing = [f for f in txn_required if f not in mapped_canonical]
 
@@ -354,13 +396,14 @@ def suggest_mapping(
 def map_headers(
     raw_headers: List[str],
     domain_pack: Optional[DomainPack] = None,
+    resolve_conflicts: bool = True,
 ) -> Dict[str, str]:
     """
     Legacy helper: returns {raw_header: canonical_field} for all columns
     that receive ANY confident suggestion (not just exact matches).
     Retained for backward compatibility with the /normalize endpoint.
     """
-    proposal = suggest_mapping(raw_headers, [], domain_pack, resolve_conflicts=False)
+    proposal = suggest_mapping(raw_headers, [], domain_pack, resolve_conflicts=resolve_conflicts)
     return {
         s.source_column: s.canonical_field
         for s in proposal.suggestions

@@ -103,17 +103,18 @@ def test_shopify_ecommerce_products(mock_requests_get):
     assert df.loc[0, "product_name"] == "Ergonomic Desk Chair"
     assert df.loc[0, "product_sku"] == "CHR-ERGO-GRY"
     assert df.loc[0, "unit_price"] == 299.0
-    assert df.loc[0, "cost_per_item"] == 150.0
+    assert pd.isna(df.loc[0, "cost_per_item"])
+    assert df.loc[0, "compare_at_price"] == 150.0
     assert df.loc[0, "quantity"] == 45
 
 
-@patch('requests.get')
+@patch('requests.post')
 def test_shopify_ecommerce_reviews(mock_requests_get):
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.headers = {}
-    mock_response.json.return_value = {
-        "metaobjects": [
+    mock_response.json.return_value = {"data": {
+        "metaobjects": {"pageInfo": {"hasNextPage": False}, "nodes": [
             {
                 "fields": [
                     {"key": "product_title", "value": "Ergonomic Desk Chair"},
@@ -122,10 +123,10 @@ def test_shopify_ecommerce_reviews(mock_requests_get):
                     {"key": "rating", "value": "5"},
                     {"key": "body", "value": "Best office chair I have ever used."}
                 ],
-                "created_at": "2026-03-20T10:00:00Z"
+                "updatedAt": "2026-03-20T10:00:00Z"
             }
-        ]
-    }
+        ]}
+    }}
     mock_requests_get.return_value = mock_response
 
     conn = ShopifyConnector("my-furniture-store", "shpat_test_token")

@@ -1,0 +1,13 @@
+{
+  "benchmark": "user_report_pharmacy_qa",
+  "score_basis": "Baseline responses rescored with the same case-scoring rules as advanced_rag_benchmark_after.json. Raw baseline responses and citations are in advanced_rag_benchmark_before_answers.json.",
+  "case_count": 75,
+  "numeric_case_accuracy": 0.08771929824561403,
+  "mean_expected_number_recall": 0.16812865497076024,
+  "intent_route_accuracy": 0.9066666666666666,
+  "answerable_citation_coverage": 0.803030303030303,
+  "record_evidence_recall": 0.39305555555555555,
+  "expected_answer_id_recall": 0.0,
+  "abstention_accuracy": 0.0,
+  "metric_caveat": "Same heuristic evaluation limits as the after report: report-derived development questions, no independent holdout, no safety-sensitive cases."
+}

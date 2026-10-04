@@ -77,6 +77,12 @@ def render(fact_ids: List[str], commentary: List[str], catalog: Dict[str, Tuple[
 
     if commentary:
         valid_comments = [c.strip() for c in commentary if c and c.strip()]
+        # The model may add qualitative interpretation, but every quantitative
+        # statement must be emitted from a catalog fact ID. Otherwise a number
+        # in commentary could bypass verification while the referenced fact is
+        # valid, making the report appear verified despite a fabricated claim.
+        if any(has_quantity(comment) for comment in valid_comments):
+            raise ValueError("Narrative commentary must not contain numeric claims; cite a fact ID instead")
         if valid_comments:
             sections.append(" ".join(valid_comments))
 
@@ -87,8 +93,16 @@ def has_quantity(text: str) -> bool:
     """Check if free-form text contains any numeric quantities or currency amounts."""
     if not text:
         return False
-    # Check for digits
-    return bool(re.search(r"\d", text))
+    # Catch spelled-out quantities too, so commentary cannot bypass the fact
+    # catalog with a phrase such as "five percent growth".
+    number_words = (
+        "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+        "thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
+        "thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+        "million|billion|first|second|third|fourth|fifth|sixth|seventh|"
+        "eighth|ninth|tenth|half|quarter"
+    )
+    return bool(re.search(r"\d|\b(?:" + number_words + r")\b", text, re.IGNORECASE))
 
 
 def parse_response(raw_text: str, ground_truth: Any) -> Union[GroundedNarrative, str]:

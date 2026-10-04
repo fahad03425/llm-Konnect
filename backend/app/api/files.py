@@ -267,59 +267,43 @@ def list_all_files(domain: Optional[str] = Query(None, description="Optional bus
         if reg.filename.startswith("."):
             continue
         norm = file_registry.normalize_path(reg.file_path).lower()
-        if norm not in seen_paths:
-            is_virtual_db = reg.file_path.startswith("sql://") or reg.file_path.startswith("db://") or reg.source_type == "database"
-            
-            # Check if file exists at original path or relocated in uploads/samples
-            real_path = reg.file_path
-            if not is_virtual_db:
-                if os.path.exists(reg.file_path):
-                    real_path = reg.file_path
-                elif os.path.exists(os.path.join(upload_dir, reg.filename)):
-                    real_path = os.path.join(upload_dir, reg.filename)
-                elif os.path.exists(os.path.join(samples_dir, reg.filename)):
-                    real_path = os.path.join(samples_dir, reg.filename)
-                else:
-                    if reg.status not in ("processing", "failed", "active"):
-                        # File does not exist on disk — do not list untracked ghost files
-                        continue
-                    real_path = reg.file_path
+        if norm in seen_paths:
+            continue
+        is_virtual_db = reg.file_path.startswith("sql://") or reg.file_path.startswith("db://") or reg.source_type == "database"
+        
+        # Check if file exists at original path or relocated in uploads/samples
+        real_path = reg.file_path
+        if not is_virtual_db:
+            if os.path.exists(reg.file_path):
+                real_path = reg.file_path
+            elif os.path.exists(os.path.join(upload_dir, reg.filename)):
+                real_path = os.path.join(upload_dir, reg.filename)
+            elif os.path.exists(os.path.join(samples_dir, reg.filename)):
+                real_path = os.path.join(samples_dir, reg.filename)
+            else:
+                if reg.status not in ("processing", "failed", "active"):
+                    # File does not exist on disk — do not list untracked ghost files
+                    continue
+                real_path = reg.file_path
 
-            seen_paths.add(norm)
-            exists = os.path.exists(real_path) if not is_virtual_db else True
-            size_bytes = os.path.getsize(real_path) if (not is_virtual_db and exists) else reg.file_size_bytes or 0
-            active_task = active_tasks_copy.get(norm)
+        real_norm = file_registry.normalize_path(real_path).lower()
+        if real_norm in seen_paths:
+            continue
+        seen_paths.add(norm)
+        seen_paths.add(real_norm)
+        exists = os.path.exists(real_path) if not is_virtual_db else True
+        size_bytes = os.path.getsize(real_path) if (not is_virtual_db and exists) else reg.file_size_bytes or 0
+        active_task = active_tasks_copy.get(norm) or active_tasks_copy.get(real_norm)
 
-            if active_task and active_task.get("status") == "processing":
-                is_proc = True
-                stat = "processing"
-                prog = float(active_task.get("progress", 10.0))
-                step = active_task.get("step_text", "Processing...")
-                err = None
-                is_ing = False
-            elif reg.status == "processing":
-                if reg.chunk_count and reg.chunk_count > 0:
-                    is_proc = False
-                    stat = "active"
-                    prog = 100.0
-                    step = "Completed"
-                    err = None
-                    is_ing = True
-                else:
-                    is_proc = True
-                    stat = "processing"
-                    prog = float(reg.progress or 10.0)
-                    step = reg.step_text or "Processing..."
-                    err = None
-                    is_ing = False
-            elif reg.status == "failed":
-                is_proc = False
-                stat = "failed"
-                prog = 0.0
-                step = "Failed"
-                err = reg.error_message
-                is_ing = False
-            elif reg.status == "active" and reg.chunk_count > 0:
+        if active_task and active_task.get("status") == "processing":
+            is_proc = True
+            stat = "processing"
+            prog = float(active_task.get("progress", 10.0))
+            step = active_task.get("step_text", "Processing...")
+            err = None
+            is_ing = False
+        elif reg.status == "processing":
+            if reg.chunk_count and reg.chunk_count > 0:
                 is_proc = False
                 stat = "active"
                 prog = 100.0
@@ -327,38 +311,59 @@ def list_all_files(domain: Optional[str] = Query(None, description="Optional bus
                 err = None
                 is_ing = True
             else:
-                is_proc = False
-                stat = "not_ingested"
-                prog = 0.0
-                step = ""
+                is_proc = True
+                stat = "processing"
+                prog = float(reg.progress or 10.0)
+                step = reg.step_text or "Processing..."
                 err = None
                 is_ing = False
+        elif reg.status == "failed":
+            is_proc = False
+            stat = "failed"
+            prog = 0.0
+            step = "Failed"
+            err = reg.error_message
+            is_ing = False
+        elif reg.status == "active" and reg.chunk_count > 0:
+            is_proc = False
+            stat = "active"
+            prog = 100.0
+            step = "Completed"
+            err = None
+            is_ing = True
+        else:
+            is_proc = False
+            stat = "not_ingested"
+            prog = 0.0
+            step = ""
+            err = None
+            is_ing = False
 
-            items.append({
-                "file_id": reg.file_id,
-                "filename": reg.filename,
-                "file_path": reg.file_path.replace("\\", "/"),
-                "file_size_bytes": size_bytes,
-                "file_size_formatted": format_bytes(size_bytes),
-                "extension": os.path.splitext(reg.filename)[1].lower() or "db",
-                "dir_type": "database" if (reg.source_type == "database" or "sql://" in reg.file_path) else "external",
-                "modified_at": reg.ingested_at,
-                "is_ingested": is_ing,
-                "is_encrypted": is_encrypted_file(reg.file_path) if os.path.exists(reg.file_path) else False,
-                "is_processing": is_proc,
-                "is_duplicate_of": None,
-                "chunk_count": reg.chunk_count,
-                "domain": reg.domain,
-                "strategy": reg.strategy,
-                "status": stat,
-                "progress": prog,
-                "step_text": step,
-                "error_message": err,
-                "ingested_at": reg.ingested_at,
-                "group_name": reg.group_name,
-                "source_type": reg.source_type or ("database" if "sql://" in reg.file_path else "file"),
-                "table_name": reg.table_name
-            })
+        items.append({
+            "file_id": reg.file_id,
+            "filename": reg.filename,
+            "file_path": reg.file_path.replace("\\", "/"),
+            "file_size_bytes": size_bytes,
+            "file_size_formatted": format_bytes(size_bytes),
+            "extension": os.path.splitext(reg.filename)[1].lower() or "db",
+            "dir_type": "database" if (reg.source_type == "database" or "sql://" in reg.file_path) else "external",
+            "modified_at": reg.ingested_at,
+            "is_ingested": is_ing,
+            "is_encrypted": is_encrypted_file(reg.file_path) if os.path.exists(reg.file_path) else False,
+            "is_processing": is_proc,
+            "is_duplicate_of": None,
+            "chunk_count": reg.chunk_count,
+            "domain": reg.domain,
+            "strategy": reg.strategy,
+            "status": stat,
+            "progress": prog,
+            "step_text": step,
+            "error_message": err,
+            "ingested_at": reg.ingested_at,
+            "group_name": reg.group_name,
+            "source_type": reg.source_type or ("database" if "sql://" in reg.file_path else "file"),
+            "table_name": reg.table_name
+        })
 
     # Filter items by domain if explicitly requested
     if domain and domain.strip().lower() not in ("all", "*", ""):
@@ -436,6 +441,7 @@ async def upload_file(file: UploadFile = File(...)):
 def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: Optional[str]):
     """Execute ingestion in background thread with live stage reporting and cancellation support."""
     active_file_id = file_id
+    previous_record = file_registry.get_file_by_path(file_path)
     try:
         if _is_task_cancelled(file_path):
             raise InterruptedError("Ingestion was cancelled before start")
@@ -458,30 +464,25 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
         except ValueError:
             pass
 
-        mapping = map_headers(list(df.columns), domain_pack)
+        from app.schema.source_domain import require_source_domain
+        from app.schema.profile import source_signature, source_identity, confirmed_mapping
+        require_source_domain(df, domain)
+        signature = source_signature(list(df.columns), connector.__class__.__name__, domain, source_identity(file_path))
+        mapping = confirmed_mapping(signature, df, domain)
+        if mapping is None:
+            raise ValueError('Review and confirm the source mapping in Connect Source before importing it.')
         canonical_df = apply_mapping(df, mapping, domain=domain, keep_extras=True)
 
         if _is_task_cancelled(file_path):
             raise InterruptedError("Ingestion was cancelled")
 
         _update_task(file_path, file_id, 35.0, "Validating canonical records...", status="processing")
-        try:
-            report = validate(canonical_df, domain=domain)
-            if not report.is_usable:
-                err_reasons = "; ".join(p.message for p in report.errors) if report.errors else "Data validation notice"
-                print(f"[Ingestion] Dataset format notices for {file_path}: {err_reasons}")
-        except Exception as ve:
-            print(f"[Ingestion] Validation notice for {file_path}: {ve}")
+        report = validate(canonical_df, domain=domain)
+        if not report.is_usable:
+            raise ValueError('; '.join(p.message for p in report.errors) or 'Dataset failed validation')
 
         existing_reg = file_registry.get_file_by_path(file_path)
         active_file_id = file_id or (existing_reg.file_id if existing_reg else None)
-
-        if active_file_id:
-            _kb.delete_source(active_file_id)
-        _kb.delete_source(file_path)
-
-        if _is_task_cancelled(file_path):
-            raise InterruptedError("Ingestion was cancelled")
 
         source_meta = {
             "source_file": file_path,
@@ -500,11 +501,9 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
             strategy=strategy,
             file_id=active_file_id,
             progress_callback=on_kb_progress,
+            replace_existing=True,
             cancel_check=lambda: _is_task_cancelled(file_path)
         )
-
-        if _is_task_cancelled(file_path):
-            raise InterruptedError("Ingestion was cancelled")
 
         _update_task(file_path, active_file_id, 98.0, "Registering in Knowledge Base...", status="processing")
 
@@ -527,15 +526,8 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
         is_cancelled = isinstance(e, InterruptedError) or _is_task_cancelled(file_path)
         if is_cancelled:
             print(f"[Ingestion] Ingestion cancelled for {file_path}")
-            try:
-                if active_file_id:
-                    _kb.delete_source(active_file_id)
-                _kb.delete_source(file_path)
-                file_registry.delete_file(file_path)
-                if active_file_id:
-                    file_registry.delete_file(active_file_id)
-            except Exception as ce:
-                print(f"[Ingestion] Cleanup error on cancel: {ce}")
+            _update_task(file_path, active_file_id, 0.0, "Ingestion cancelled; previous index retained",
+                         status="active" if previous_record and previous_record.chunk_count > 0 else "failed", error_message=str(e))
             with _tasks_lock:
                 _active_tasks.pop(_norm_key(file_path), None)
             _clear_task_cancelled(file_path)
@@ -543,7 +535,7 @@ def _run_ingest_background(file_path: str, domain: str, strategy: str, file_id: 
             import traceback
             traceback.print_exc()
             print(f"Background ingestion failed for {file_path}: {e}")
-            _update_task(file_path, file_id, 0.0, "Ingestion failed", status="failed", error_message=str(e))
+            _update_task(file_path, file_id, 0.0, "Ingestion failed", status="active" if previous_record and previous_record.chunk_count > 0 else "failed", error_message=str(e))
             with _tasks_lock:
                 _active_tasks.pop(_norm_key(file_path), None)
             _clear_task_cancelled(file_path)
@@ -593,6 +585,23 @@ def quick_ingest_file(req: QuickIngestRequest):
                     detail=f"File '{existing_by_hash.filename}' is already currently processing."
                 )
 
+    # New sources go through the same review flow as the connection wizard.
+    from app.schema.source_domain import require_source_domain
+    from app.schema.profile import source_signature, source_identity, confirmed_mapping
+    try:
+        connector = detect_connector(req.file_path)
+        preview = connector.preview(n=25)
+        require_source_domain(preview, req.domain)
+        signature = source_signature(list(preview.columns), connector.__class__.__name__, req.domain, source_identity(req.file_path))
+        if confirmed_mapping(signature, preview, req.domain) is None:
+            return {'status': 'mapping_required', 'file_path': req.file_path,
+                    'message': 'Review and confirm this source mapping in Connect Source before importing.'}
+    except Exception as exc:
+        msg = str(exc)
+        if 'InvalidTag' in type(exc).__name__ or 'decrypt' in msg.lower():
+            msg = 'This file was encrypted with a different vault key or is corrupted. Please re-upload the file.'
+        raise HTTPException(status_code=400, detail=msg)
+
     # 2. Mark as processing in memory and SQLite registry
     reg = file_registry.set_file_status(
         file_path=req.file_path,
@@ -634,29 +643,35 @@ def quick_ingest_file(req: QuickIngestRequest):
     }
 
 @router.post("/cancel-ingest")
-def cancel_ingest_file(req: CancelIngestRequest):
+def cancel_ingest_file(
+    req: Optional[CancelIngestRequest] = None,
+    file_path: Optional[str] = Query(None),
+    file_id: Optional[str] = Query(None),
+    filename: Optional[str] = Query(None)
+):
     """Cancel an active background ingestion task and reset file state."""
-    target_path = req.file_path
-    target_id = req.file_id
+    target_path = (req.file_path if req else None) or file_path
+    target_id = (req.file_id if req else None) or file_id
+    target_fname = (req.filename if req else None) or filename
 
     if not target_path and target_id:
         reg = file_registry.get_file_by_id(target_id)
         if reg:
             target_path = reg.file_path
 
-    if not target_path and req.filename:
+    if not target_path and target_fname:
         _, upload_dir, samples_dir, _ = get_base_dirs()
-        cand1 = os.path.join(upload_dir, req.filename)
-        cand2 = os.path.join(samples_dir, req.filename)
+        cand1 = os.path.join(upload_dir, target_fname)
+        cand2 = os.path.join(samples_dir, target_fname)
         if os.path.exists(cand1):
             target_path = cand1
         elif os.path.exists(cand2):
             target_path = cand2
 
-    if not target_path:
+    if not target_path and not target_id and not target_fname:
         raise HTTPException(status_code=400, detail="file_path, file_id, or filename is required to cancel ingestion.")
 
-    norm_path = target_path.replace("\\", "/")
+    norm_path = target_path.replace("\\", "/") if target_path else (target_id or target_fname or "")
     key = _norm_key(norm_path)
 
     # 1. Mark task as cancelled so any background loop aborts immediately
@@ -666,19 +681,21 @@ def cancel_ingest_file(req: CancelIngestRequest):
     with _tasks_lock:
         _active_tasks.pop(key, None)
 
-    # 3. Clean up SQLite registry and Chroma DB
-    try:
-        if target_id:
-            _kb.delete_source(target_id)
-            file_registry.delete_file(target_id)
-        _kb.delete_source(norm_path)
-        file_registry.delete_file(norm_path)
-    except Exception as e:
-        print(f"[Cancel] Cleanup notice for {norm_path}: {e}")
+    # 3. Clean up SQLite file registry state
+    previous = file_registry.get_file_by_id(target_id) if target_id else (file_registry.get_file_by_path(target_path) if target_path else None)
+    if previous:
+        if previous.chunk_count and previous.chunk_count > 0:
+            file_registry.update_progress(previous.file_path, 100.0,
+                                          "Ingestion cancelled; previous index retained", status="active")
+        else:
+            file_registry.delete_file(previous.file_id)
+
+    # Run general cleanup to guarantee no leftover processing rows
+    file_registry.cleanup_stale_processing(active_keys=set(_active_tasks.keys()))
 
     return {
         "status": "cancelled",
-        "message": f"Ingestion cancelled for {os.path.basename(norm_path)}",
+        "message": f"Ingestion cancelled for {os.path.basename(norm_path) if norm_path else 'file'}",
         "file_path": norm_path,
         "file_id": target_id
     }

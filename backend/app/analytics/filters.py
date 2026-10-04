@@ -25,7 +25,7 @@ _FIELD_COLUMNS = {
 # Fields that actually select rows. `as_of` and `options` are carried alongside them
 # (and shown in provenance) but never filter anything by themselves.
 _ROW_FILTER_FIELDS = (
-    "date_from", "date_to", "month", "year",
+    "date_from", "date_to", "month", "day", "year",
     "category", "product_id", "supplier_id", "customer_id", "txn_type", "payment_label",
 )
 
@@ -36,8 +36,8 @@ class KPIFilters:
     A slice of the canonical DataFrame.
 
     All fields are optional; an all-None instance means "every row". Date filters
-    are inclusive on both ends. `month`/`year` are convenience filters (the chatbot
-    seam extracts a month from questions like "total sales in January").
+    are inclusive on both ends. `month`/`day`/`year` are convenience filters (the chatbot
+    seam extracts exact calendar dates and months from user queries).
 
     Two fields are not row selectors:
 
@@ -54,6 +54,7 @@ class KPIFilters:
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     month: Optional[int] = None
+    day: Optional[int] = None
     year: Optional[int] = None
     category: Optional[str] = None
     product_id: Optional[str] = None
@@ -115,7 +116,7 @@ def apply_filters(
 
     # --- Date-based filters -------------------------------------------------
     date_wanted = any(
-        v is not None for v in (filters.date_from, filters.date_to, filters.month, filters.year)
+        v is not None for v in (filters.date_from, filters.date_to, filters.month, filters.day, filters.year)
     )
     if date_wanted:
         if "date" not in df.columns:
@@ -140,6 +141,8 @@ def apply_filters(
                     mask &= dates.notna() & (dates <= end + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
             if filters.month is not None:
                 mask &= dates.notna() & (dates.dt.month == int(filters.month))
+            if filters.day is not None:
+                mask &= dates.notna() & (dates.dt.day == int(filters.day))
             if filters.year is not None:
                 mask &= dates.notna() & (dates.dt.year == int(filters.year))
 

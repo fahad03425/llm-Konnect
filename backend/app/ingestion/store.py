@@ -11,15 +11,16 @@ import os
 import time
 import hashlib
 import threading
+import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 import pandas as pd
-import torch
 
 from app.core.config import settings, get_default_domain
 from app.schema.domain import get_domain_pack
 from app.ingestion.models import IngestSummary, RetrievedChunk
 from app.security.crypto import encrypt_string, decrypt_string
+from app.ingestion.safety import locked, token_windows, chunk_identity, replace_source, publish_delta
 
 _global_chroma_clients: Dict[str, Any] = {}
 _chroma_init_lock = threading.Lock()
@@ -38,6 +39,13 @@ def _get_persistent_chroma_client(chroma_path: str):
 _global_embedders: Dict[str, Any] = {}
 _embedder_lock = threading.Lock()
 
+def _is_cuda_available() -> bool:
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
 def _get_global_embedder(model_name: str, progress_callback: Optional[Callable[[float, str], None]] = None):
     if model_name not in _global_embedders:
         with _embedder_lock:
@@ -45,9 +53,8 @@ def _get_global_embedder(model_name: str, progress_callback: Optional[Callable[[
                 if progress_callback:
                     progress_callback(32.0, "Loading local neural embedding model...")
                 import os
-                import torch
                 from sentence_transformers import SentenceTransformer
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = "cuda" if _is_cuda_available() else "cpu"
                 try:
                     # Try instant offline loading from local cache first
                     _global_embedders[model_name] = SentenceTransformer(model_name, device=device, local_files_only=True)
@@ -86,6 +93,98 @@ class KnowledgeBase:
                 metadata={"hnsw:space": "cosine"}
             )
         return self._collection
+
+    @locked
+    def get_dataframe(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None) -> pd.DataFrame:
+        """Load complete selected structured records from Chroma metadata.
+
+        Semantic search returns only a ranked sample and must never be used as
+        the input to whole-ledger calculations. ``record_json`` is encrypted
+        at rest; older indexed rows fall back to their available metadata and
+        should be re-ingested to enable complete structured analysis.
+        """
+        collection = self._get_chroma()
+        scope_chains = []
+        registry_names = {}
+        if file_ids:
+            try:
+                from app.ingestion.registry import file_registry
+                for file_id in dict.fromkeys(str(value) for value in file_ids if value):
+                    registered = file_registry.get_file_by_id(file_id)
+                    filename = getattr(registered, "filename", None) if registered else None
+                    if filename:
+                        registry_names[file_id] = str(filename)
+            except Exception:
+                pass
+        for file_id in dict.fromkeys(str(value) for value in (file_ids or []) if value):
+            chain = [{"file_id": file_id}, {"group_name": file_id}]
+            if registry_names.get(file_id):
+                chain.append({"filename": registry_names[file_id]})
+            scope_chains.append((chain, registry_names.get(file_id)))
+        requested_names = dict.fromkeys(str(value) for value in (source_files or []) if value)
+        for filename in requested_names:
+            scope_chains.append(([{"filename": filename}, {"source_file": filename}], filename))
+        if not scope_chains:
+            return pd.DataFrame()
+        records = []
+        seen = set()
+        incomplete = False
+        page_size = 20000
+        matched_names = set()
+        for chain, registered_name in scope_chains:
+            if registered_name and registered_name in matched_names:
+                continue
+            for scope in chain:
+                offset = 0
+                found_scope = False
+                while True:
+                    paged = True
+                    try:
+                        result = collection.get(where=scope, include=["metadatas"], limit=page_size, offset=offset)
+                    except TypeError:  # lightweight test/mocked collections may not expose pagination
+                        paged = False
+                        result = collection.get(where=scope, include=["metadatas"])
+                    metadatas = result.get("metadatas") or []
+                    if not metadatas:
+                        break
+                    found_scope = True
+                    for metadata in metadatas:
+                        encoded = metadata.get("record_json")
+                        try:
+                            row = json.loads(decrypt_string(encoded)) if encoded else dict(metadata)
+                        except Exception:
+                            row = dict(metadata)
+                            incomplete = True
+                        if not encoded:
+                            incomplete = True
+                        rows = row if isinstance(row, list) else [row]
+                        if metadata.get("items_in_chunk", 1) > len(rows):
+                            incomplete = True  # legacy merged payload requires re-ingestion
+                        for record_index, row in enumerate(rows):
+                            row = dict(row)
+                            for key in ("file_id", "source_file", "filename", "source_connector", "table_name", "database_name", "group_name", "domain", "row_id"):
+                                current_value = row.get(key)
+                                missing_value = current_value is None or (isinstance(current_value, str) and not current_value.strip())
+                                if key in metadata and (key not in row or missing_value):
+                                    row[key] = metadata[key]
+                            row.setdefault("source_row", metadata.get("source_row", record_index + 1))
+                            identity = (str(row.get("file_id", "")), str(row.get("source_file", "")), str(row.get("row_id", row.get("source_row", ""))))
+                            if identity not in seen:
+                                seen.add(identity)
+                                records.append(row)
+                    if not paged or len(metadatas) < page_size:
+                        break
+                    offset += len(metadatas)
+                if found_scope:
+                    if registered_name:
+                        matched_names.add(registered_name)
+                    elif scope.get("filename"):
+                        matched_names.add(str(scope["filename"]))
+                    break
+        frame = pd.DataFrame(records)
+        if incomplete:
+            frame.attrs["incomplete_source"] = True
+        return frame
 
     def _get_embedder(self, progress_callback: Optional[Callable[[float, str], None]] = None):
         return _get_global_embedder(self.embedding_model_name, progress_callback)
@@ -144,8 +243,13 @@ class KnowledgeBase:
         merge_key: Optional[str] = None,
         file_id: Optional[str] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None
+        cancel_check: Optional[Callable[[], bool]] = None,
+        replace_existing: bool = False
     ) -> IngestSummary:
+        if replace_existing:
+            return replace_source(self, "add_dataframe", (canonical_df,), dict(
+                source_meta=source_meta, domain=domain, strategy=strategy, merge_key=merge_key,
+                file_id=file_id, progress_callback=progress_callback, cancel_check=cancel_check))
         domain = domain or get_default_domain()
         """
         Batched, idempotent upsert of canonical records into Chroma with live progress reporting and cancellation support.
@@ -185,7 +289,7 @@ class KnowledgeBase:
         total_records = len(records)
         
         # Optimized batch sizes for high-throughput tensor encoding and responsive progress updates
-        encode_batch_size = 512 if torch.cuda.is_available() else 256
+        encode_batch_size = 512 if _is_cuda_available() else 256
         upsert_batch_size = 256 if total_records > 500 else max(64, min(128, total_records // 4 or 64))
         total_chunks = 0
         
@@ -266,9 +370,18 @@ class KnowledgeBase:
             for f in pack.filter_metadata_fields:
                 if f in row and row[f] is not None and row[f] != "":
                     base_meta[f] = row[f]
+            # Preserve every canonical source field for exact row lookups and
+            # full-table calculations. Encrypt the payload so patient/customer
+            # identifiers do not become clear-text Chroma metadata.
+            try:
+                record_json = json.dumps(row, ensure_ascii=False, default=lambda value: value.item() if hasattr(value, "item") else str(value))
+                base_meta["record_json"] = encrypt_string(record_json)
+            except Exception:
+                pass
             base_meta.update(derived_meta)
             return self._sanitize_metadata(base_meta)
 
+        source_namespace = hashlib.sha256(f"{domain}|{file_id or ''}|{source_file}".encode()).hexdigest()[:16]
         ids: List[str] = []
         texts: List[str] = []
         metadatas: List[dict] = []
@@ -284,17 +397,31 @@ class KnowledgeBase:
             if progress_callback:
                 pct = min(94.0, 35.0 + (58.0 * (start_row / max(1, total_records))))
                 progress_callback(pct, f"Vectorizing chunks: {start_row} / {total_records} ({pct:.0f}%)...")
-            embeddings = embedder.encode(
-                texts,
-                batch_size=encode_batch_size,
-                show_progress_bar=False,
-                normalize_embeddings=True
-            ).tolist()
-            if cancel_check and cancel_check():
-                raise InterruptedError("Ingestion cancelled by user")
-            docs_to_store = [encrypt_string(t) for t in texts] if getattr(settings, "encryption_enabled", True) else texts
-            collection.upsert(ids=ids, embeddings=embeddings, documents=docs_to_store, metadatas=metadatas)
-            total_chunks += len(ids)
+            expanded_ids, expanded_texts, expanded_metas = [], [], []
+            for chunk_id, text, metadata in zip(ids, texts, metadatas):
+                raw_text = text[len(self.passage_prefix):] if self.passage_prefix else text
+                windows = token_windows(raw_text, embedder, self.passage_prefix,
+                                        settings.chunk_size, settings.chunk_overlap)
+                for index, window in enumerate(windows):
+                    window_id = f"{source_namespace}_{chunk_id}_{index}"
+                    window_meta = {**metadata, "chunk_id": window_id, "chunk_index": index}
+                    expanded_ids.append(window_id)
+                    expanded_texts.append(self.passage_prefix + window)
+                    expanded_metas.append(window_meta)
+            ids[:] = expanded_ids
+            texts[:] = expanded_texts
+            metadatas[:] = expanded_metas
+            for batch_start in range(0, len(ids), 256):
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Ingestion cancelled by user")
+                batch_end = batch_start + 256
+                batch_texts = texts[batch_start:batch_end]
+                embeddings = embedder.encode(batch_texts, batch_size=encode_batch_size,
+                                             show_progress_bar=False, normalize_embeddings=True).tolist()
+                docs_to_store = [encrypt_string(t) for t in batch_texts] if getattr(settings, "encryption_enabled", True) else batch_texts
+                collection.upsert(ids=ids[batch_start:batch_end], embeddings=embeddings,
+                                  documents=docs_to_store, metadatas=metadatas[batch_start:batch_end])
+                total_chunks += len(batch_texts)
             if progress_callback:
                 pct_done = min(94.0, 35.0 + (58.0 * (current_idx / max(1, total_records))))
                 progress_callback(pct_done, f"Ingesting chunks: {current_idx} / {total_records} ({pct_done:.0f}%)...")
@@ -314,12 +441,8 @@ class KnowledgeBase:
 
         if strategy == "merge" and has_usable_merge_key:
             # --- Greedy token-constrained merge strategy ---
-            try:
-                import tiktoken
-                encoding = tiktoken.get_encoding("cl100k_base")
-                count_tokens = lambda t: len(encoding.encode(t))
-            except ImportError:
-                count_tokens = lambda t: len(t.split())
+            tokenizer = getattr(embedder, "tokenizer", None)
+            count_tokens = (lambda text: len(tokenizer.encode(self.passage_prefix + text, add_special_tokens=True))) if tokenizer else (lambda text: len(text.split()))
 
             key_field = merge_key_field
 
@@ -348,6 +471,10 @@ class KnowledgeBase:
                 first_row_dict = current_group_rows[0] if current_group_rows else {}
                 
                 meta = _build_row_meta(first_record_idx, first_row_dict)
+                complete_rows = [dict(row, source_row=source_row) for row, source_row in
+                                 zip(current_group_rows, current_source_rows)]
+                meta["record_json"] = encrypt_string(json.dumps(complete_rows, ensure_ascii=False,
+                    default=lambda value: value.item() if hasattr(value, "item") else str(value)))
                 meta["merged_rows"] = str(current_source_rows)
                 meta["items_in_chunk"] = len(current_texts)
                 meta["chunk_type"] = "merged"
@@ -487,20 +614,31 @@ class KnowledgeBase:
             }
 
         # Query existing chunks in Chroma for this table
-        existing = collection.get(where={"file_id": effective_file_id}, include=["metadatas"])
-        existing_ids = set(existing["ids"]) if existing and existing.get("ids") else set()
-        existing_metas = {cid: meta for cid, meta in zip(existing["ids"], existing["metadatas"])} if existing and existing.get("ids") else {}
+        existing_metas = {}
+        try:
+            from app.api.analytics import _fetch_metadatas_from_sqlite
+            metas = _fetch_metadatas_from_sqlite(self.chroma_dir, "file_id", [effective_file_id], collection_name=self.collection_name)
+            for m in metas:
+                cid = m.get("chunk_id") or m.get("id")
+                if cid:
+                    existing_metas[cid] = m
+        except Exception:
+            try:
+                existing = collection.get(where={"file_id": effective_file_id}, include=["metadatas"])
+                existing_metas = {cid: meta for cid, meta in zip(existing["ids"], existing["metadatas"])} if existing and existing.get("ids") else {}
+            except Exception:
+                existing_metas = {}
+        existing_ids = set(existing_metas.keys())
 
-        # If existing chunks were ingested under older non-deterministic scheme (missing 'row_id' or 'content_hash'), purge once to upgrade
+        # Upgrade old database chunks that lack stable row identity, content
+        # fingerprints, or the encrypted complete-record payload needed for
+        # accurate structured analysis.
         if existing_metas:
             sample_m = next(iter(existing_metas.values()))
-            if "content_hash" not in sample_m or "row_id" not in sample_m:
-                try:
-                    collection.delete(where={"file_id": effective_file_id})
-                except Exception:
-                    pass
-                existing_ids.clear()
-                existing_metas.clear()
+            if "content_hash" not in sample_m or "row_id" not in sample_m or "record_json" not in sample_m:
+                # Missing fingerprints force fresh embeddings; retain the old
+                # IDs until the prepared replacement is published successfully.
+                existing_metas = {key: {**value, "content_hash": ""} for key, value in existing_metas.items()}
 
         def _resolve_row_id(row: dict, row_idx: int) -> str:
             # 1. Search for explicit PK cols (checking raw name, _extra.name, and case-insensitively)
@@ -549,6 +687,7 @@ class KnowledgeBase:
         current_texts: List[str] = []
         current_metas: List[dict] = []
         current_ids_set = set()
+        embedder = self._get_embedder(progress_callback)
 
         for i, row in enumerate(records):
             row_id = _resolve_row_id(row, i)
@@ -582,20 +721,27 @@ class KnowledgeBase:
                 if f in row and row[f] is not None and str(row[f]).strip() != "":
                     meta[f] = row[f]
 
-            sanitized_meta = self._sanitize_metadata(meta)
+            try:
+                record_json = json.dumps(row, ensure_ascii=False, default=lambda value: value.item() if hasattr(value, "item") else str(value))
+                meta["record_json"] = encrypt_string(record_json)
+            except Exception:
+                pass
 
-            current_chunk_ids.append(chunk_id)
-            current_content_hashes.append(content_hash)
-            current_texts.append(self.passage_prefix + row_text)
-            current_metas.append(sanitized_meta)
-            current_ids_set.add(chunk_id)
+            windows = token_windows(row_text, embedder, self.passage_prefix,
+                                    settings.chunk_size, settings.chunk_overlap)
+            for window_index, window in enumerate(windows):
+                window_id = chunk_id if window_index == 0 else f"{chunk_id}_window_{window_index}"
+                window_hash = hashlib.sha256((content_hash + window).encode()).hexdigest()
+                window_meta = self._sanitize_metadata({**meta, "chunk_id": window_id,
+                    "chunk_index": window_index, "content_hash": window_hash})
+                current_chunk_ids.append(window_id)
+                current_content_hashes.append(window_hash)
+                current_texts.append(self.passage_prefix + window)
+                current_metas.append(window_meta)
+                current_ids_set.add(window_id)
 
         # 1. Detect Deleted Rows (present in Chroma, but absent from Database)
         deleted_ids = [cid for cid in existing_ids if cid not in current_ids_set]
-        if deleted_ids:
-            for b_start in range(0, len(deleted_ids), 500):
-                collection.delete(ids=deleted_ids[b_start:b_start + 500])
-
         # 2. Detect New or Updated Rows
         to_upsert_indices: List[int] = []
         new_count = 0
@@ -611,37 +757,34 @@ class KnowledgeBase:
                     to_upsert_indices.append(idx)
                     updated_count += 1
 
-        # 3. Only Embed and Upsert New or Updated Rows
+        # Directly upsert new/updated vectors and delete removed vectors
         if to_upsert_indices:
-            embedder = self._get_embedder(progress_callback)
-            upsert_texts = [current_texts[idx] for idx in to_upsert_indices]
-            upsert_ids = [current_chunk_ids[idx] for idx in to_upsert_indices]
-            upsert_metas = [current_metas[idx] for idx in to_upsert_indices]
-
-            batch_size = 64
-            for b_start in range(0, len(upsert_ids), batch_size):
+            for b_start in range(0, len(to_upsert_indices), 64):
                 if cancel_check and cancel_check():
                     raise InterruptedError("Ingestion cancelled by user")
-                b_end = min(b_start + batch_size, len(upsert_ids))
-                b_texts = upsert_texts[b_start:b_end]
-                b_ids = upsert_ids[b_start:b_end]
-                b_metas = upsert_metas[b_start:b_end]
+                indices = to_upsert_indices[b_start:b_start + 64]
+                b_texts = [current_texts[index] for index in indices]
+                embeddings = embedder.encode(b_texts, batch_size=len(b_texts),
+                                             show_progress_bar=False, normalize_embeddings=True).tolist()
+                docs = [encrypt_string(t) for t in b_texts] if getattr(settings, "encryption_enabled", True) else b_texts
+                collection.upsert(ids=[current_chunk_ids[index] for index in indices],
+                                  embeddings=embeddings, documents=docs,
+                                  metadatas=[current_metas[index] for index in indices])
+        if deleted_ids:
+            try:
+                collection.delete(ids=list(deleted_ids))
+            except Exception:
+                pass
 
-                embeddings = embedder.encode(
-                    b_texts,
-                    batch_size=len(b_texts),
-                    show_progress_bar=False,
-                    normalize_embeddings=True
-                ).tolist()
-
-                docs_to_store = [encrypt_string(t) for t in b_texts] if getattr(settings, "encryption_enabled", True) else b_texts
-                collection.upsert(
-                    ids=b_ids,
-                    embeddings=embeddings,
-                    documents=docs_to_store,
-                    metadatas=b_metas
-                )
-
+        prior_row_ids = {meta.get("row_id") for meta in existing_metas.values()}
+        active_row_ids = {meta.get("row_id") for meta in current_metas}
+        deleted_count = len({existing_metas[cid].get("row_id", cid) for cid in deleted_ids
+                             if existing_metas[cid].get("row_id") not in active_row_ids})
+        new_count = len({current_metas[index]["row_id"] for index in to_upsert_indices
+                         if current_chunk_ids[index] not in existing_ids
+                         and current_metas[index]["row_id"] not in prior_row_ids})
+        updated_count = len({current_metas[index]["row_id"] for index in to_upsert_indices
+                             if current_metas[index]["row_id"] in prior_row_ids})
         active_chunks = len(current_chunk_ids)
         total_records = len(records)
 
@@ -656,7 +799,7 @@ class KnowledgeBase:
             if updated_count:
                 parts.append(f"{updated_count} updated rows re-indexed")
             if deleted_ids:
-                parts.append(f"{len(deleted_ids)} deleted rows purged")
+                parts.append(f"{deleted_count} deleted rows purged")
             message = f"Table '{table_name}' synced: " + ", ".join(parts) + f" (total: {active_chunks} active chunks)."
 
         return {
@@ -666,26 +809,26 @@ class KnowledgeBase:
             "total_db_rows": total_records,
             "new_rows": new_count,
             "updated_rows": updated_count,
-            "deleted_rows": len(deleted_ids),
+            "deleted_rows": deleted_count,
             "chunks": active_chunks,
             "message": message,
             "time_taken_sec": round(time.time() - start_time, 2)
         }
         
-    def add_text_documents(self, docs: List[str], source_meta: dict, domain: Optional[str] = None, file_id: Optional[str] = None) -> IngestSummary:
+    def add_text_documents(self, docs: List[str], source_meta: dict, domain: Optional[str] = None, file_id: Optional[str] = None, replace_existing: bool = False) -> IngestSummary:
+        if replace_existing:
+            return replace_source(self, "add_text_documents", (docs,), dict(source_meta=source_meta, domain=domain, file_id=file_id))
         domain = domain or get_default_domain()
         """
-        Ingest free-text documents using recursive token splitting.
+        Ingest free-text documents using model-token windows with overlap.
         """
-        import tiktoken
         start_time = time.time()
         
         collection = self._get_chroma()
         embedder = self._get_embedder()
         
-        encoding = tiktoken.get_encoding("cl100k_base")
         chunk_size = settings.chunk_size
-        chunk_overlap = int(chunk_size * settings.chunk_overlap)
+        source_namespace = hashlib.sha256(f"{domain}|{file_id or ''}|{source_meta.get('source_file', 'unknown')}".encode()).hexdigest()[:16]
         
         source_file = source_meta.get("source_file", "unknown")
         filename = os.path.basename(source_file)
@@ -698,18 +841,8 @@ class KnowledgeBase:
         batch_size = 64
         
         for doc_idx, doc_text in enumerate(docs):
-            tokens = encoding.encode(doc_text)
-            
-            start = 0
-            chunk_idx = 0
-            while start < len(tokens) or len(tokens) == 0:
-                end = min(start + chunk_size, len(tokens))
-                chunk_tokens = tokens[start:end]
-                if not chunk_tokens and len(tokens) > 0:
-                    break
-                
-                chunk_text = encoding.decode(chunk_tokens) if chunk_tokens else doc_text
-                
+            windows = token_windows(doc_text, embedder, self.passage_prefix, chunk_size, settings.chunk_overlap)
+            for chunk_idx, chunk_text in enumerate(windows):
                 meta = {
                     "source_file": source_file,
                     "filename": filename,
@@ -722,17 +855,12 @@ class KnowledgeBase:
                     "is_free_text": True
                 }
                 
-                chunk_id = self._generate_chunk_id(source_file, doc_idx, chunk_idx)
+                chunk_id = source_namespace + "_" + self._generate_chunk_id(source_file, doc_idx, chunk_idx)
+                meta["chunk_id"] = chunk_id
                 
                 ids.append(chunk_id)
                 texts.append(self.passage_prefix + chunk_text)
                 metadatas.append(self._sanitize_metadata(meta))
-                
-                if len(tokens) == 0:
-                    break
-                    
-                start += chunk_size - chunk_overlap
-                chunk_idx += 1
                 
                 if len(ids) >= batch_size:
                     embeddings = embedder.encode(texts, batch_size=batch_size, normalize_embeddings=True).tolist()
@@ -766,6 +894,7 @@ class KnowledgeBase:
             file_id=file_id
         )
 
+    @locked
     def search(
         self,
         query: str,
@@ -792,8 +921,9 @@ class KnowledgeBase:
         query_text = self.query_prefix + query
         query_embedding = embedder.encode([query_text], normalize_embeddings=True).tolist()[0]
         
-        # Build filter clauses for Chroma metadata
-        clauses = []
+        # Domain is part of the evidence boundary, even for unscoped searches.
+        # Chroma combines this with any selected file and metadata filters.
+        clauses = [{"domain": domain}]
         if filters:
             if "month" in filters and "date_from" not in filters:
                 try:
@@ -877,6 +1007,34 @@ class KnowledgeBase:
         else:
             where_clause = {"$and": clauses}
 
+        def matches_requested_scope(meta: dict) -> bool:
+            # Chroma applies `where`, but keep a local guard as a second
+            # boundary for old indexes, multi-source queries and adapters.
+            if str(meta.get("domain", "")).casefold() != str(domain).casefold():
+                return False
+            if file_ids:
+                source_id = str(meta.get("file_id", ""))
+                group = str(meta.get("group_name", ""))
+                database = str(meta.get("database_name", ""))
+                filename = str(meta.get("filename", "")).casefold()
+                return any(
+                    fid == source_id
+                    or fid.casefold() in (group.casefold(), database.casefold())
+                    or fid.casefold() in filename
+                    or source_id.casefold().startswith(f"db_{fid.casefold()}_")
+                    or source_id.casefold().startswith(f"{fid.casefold()}_")
+                    for fid in file_ids
+                )
+            if source_files:
+                source_file = str(meta.get("source_file", "")).replace("\\", "/")
+                filename = str(meta.get("filename", "")).casefold()
+                return any(
+                    source_file == str(path).replace("\\", "/")
+                    or filename == os.path.basename(str(path)).casefold()
+                    for path in source_files
+                )
+            return True
+
         # Expand candidate retrieval for date windows and concrete identifiers.
         # Embeddings often rank a semantically similar neighboring batch above an
         # exact batch/invoice code, so retrieve a wider set before reranking.
@@ -890,33 +1048,26 @@ class KnowledgeBase:
         has_identifier = bool(identifier_tokens)
         query_k = min(count, max(top_k * 4, 30)) if (has_date_range or has_identifier) else top_k
         
-        # Multi-source balanced retrieval: when multiple file_ids are requested,
-        # retrieve balanced candidates per file_id so one source does not starve the others
+        # Multi-source retrieval used to issue one synchronous Chroma query per
+        # selected file. A database scope with 31 tables therefore performed 31
+        # ANN searches before generation. Over-fetch once from the same scoped
+        # collection, then apply the existing local scope guard and reranking.
         results = None
         if file_ids and len(file_ids) > 1:
             per_source_k = max(4, query_k // len(file_ids))
-            all_docs = []
-            all_metas = []
-            all_distances = []
-            other_clauses = [c for c in clauses if "file_id" not in c and "group_name" not in c] if clauses else []
-            for fid in file_ids:
-                source_clause = {"group_name": fid} if fid in ("inventory", "sales", "PharmacyPOS") else {"file_id": fid}
-                sub_where = {"$and": [source_clause] + other_clauses} if other_clauses else source_clause
-                try:
-                    sub_res = collection.query(
-                        query_embeddings=[query_embedding],
-                        n_results=min(count, per_source_k),
-                        where=sub_where,
-                        include=["documents", "metadatas", "distances"]
-                    )
-                    if sub_res and sub_res.get("documents") and sub_res["documents"][0]:
-                        all_docs.extend(sub_res["documents"][0])
-                        all_metas.extend(sub_res["metadatas"][0])
-                        all_distances.extend(sub_res["distances"][0])
-                except Exception:
-                    pass
-            if all_docs:
-                results = {"documents": [all_docs], "metadatas": [all_metas], "distances": [all_distances]}
+            candidate_k = min(count, max(query_k, per_source_k * len(file_ids)))
+            try:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=candidate_k,
+                    where=where_clause,
+                    include=["documents", "metadatas", "distances"]
+                )
+            except Exception:
+                # Do not broaden a failed selected-source search.
+                if where_clause is not None:
+                    return []
+                raise
 
         if results is None:
             try:
@@ -927,12 +1078,11 @@ class KnowledgeBase:
                     include=["documents", "metadatas", "distances"]
                 )
             except Exception:
-                # Fallback without filter if filter fails
-                results = collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=query_k,
-                    include=["documents", "metadatas", "distances"]
-                )
+                # A failed scoped query must never broaden into another file or
+                # domain. Abstain; the caller can report that retrieval failed.
+                if where_clause is not None:
+                    return []
+                raise
         
         retrieved = []
         seen_chunk_ids = set()
@@ -955,6 +1105,8 @@ class KnowledgeBase:
             distances = results["distances"][0]
             
             for doc, meta, dist in zip(docs, metas, distances):
+                if not matches_requested_scope(meta):
+                    continue
                 if not _is_date_in_range(meta):
                     continue
 
@@ -964,7 +1116,7 @@ class KnowledgeBase:
                     
                 sim = max(0.0, 1.0 - dist)
                 source_row = meta.get("source_row")
-                c_id = f"{meta.get('source_file')}_{source_row}"
+                c_id = chunk_identity(meta)
                 if c_id in seen_chunk_ids:
                     continue
                 seen_chunk_ids.add(c_id)
@@ -982,10 +1134,12 @@ class KnowledgeBase:
                 get_results = collection.get(where=where_clause, include=["documents", "metadatas"])
                 if get_results and get_results.get("documents"):
                     for g_doc, g_meta in zip(get_results["documents"], get_results["metadatas"]):
+                        if not matches_requested_scope(g_meta):
+                            continue
                         if not _is_date_in_range(g_meta):
                             continue
                         g_row = g_meta.get("source_row")
-                        g_id = f"{g_meta.get('source_file')}_{g_row}"
+                        g_id = chunk_identity(g_meta)
                         if g_id in seen_chunk_ids:
                             continue
                         seen_chunk_ids.add(g_id)
@@ -1009,7 +1163,7 @@ class KnowledgeBase:
         # batch identifiers, and retains the selected-source scope.
         if identifier_tokens:
             exact_where_clauses = [c for c in clauses if isinstance(c, dict)]
-            seen_exact = {f"{c.metadata.get('source_file')}_{c.source_row}" for c in retrieved}
+            seen_exact = {chunk_identity(c.metadata) for c in retrieved}
             for token in identifier_tokens:
                 for field in ("invoice_id", "transaction_id", "product_code", "sku", "product_id", "batch_no"):
                     condition = {field: token}
@@ -1020,8 +1174,10 @@ class KnowledgeBase:
                     except Exception:
                         continue
                     for doc, meta in zip(exact.get("documents") or [], exact.get("metadatas") or []):
+                        if not matches_requested_scope(meta):
+                            continue
                         source_row = meta.get("source_row")
-                        chunk_key = f"{meta.get('source_file')}_{source_row}"
+                        chunk_key = chunk_identity(meta)
                         if chunk_key in seen_exact:
                             continue
                         seen_exact.add(chunk_key)
@@ -1051,6 +1207,7 @@ class KnowledgeBase:
 
         return retrieved[:top_k]
 
+    @locked
     def delete_source(self, source: Optional[str]):
         """Remove all chunks from a specific source file (by file_id, source_file path, or filename)."""
         if not source:
@@ -1059,24 +1216,10 @@ class KnowledgeBase:
         if collection.count() == 0:
             return
             
-        fname = os.path.basename(source)
-        norm_path = source.replace("\\", "/")
-        
-        # Fast targeted deletion using $or where clause
-        try:
-            collection.delete(where={"$or": [
-                {"file_id": source},
-                {"filename": fname},
-                {"source_file": source},
-                {"source_file": norm_path}
-            ]})
-        except Exception:
-            # Fallback to single field deletion if $or syntax is unsupported
-            for key, val in [("file_id", source), ("filename", fname), ("source_file", norm_path)]:
-                try:
-                    collection.delete(where={key: val})
-                except Exception:
-                    pass
+        # Resolve exact identifiers first. Never broaden a path to its basename.
+        for key, value in (("file_id", source), ("source_file", source),
+                           ("source_file", source.replace("\\", "/"))):
+            collection.delete(where={key: value})
 
     def reset(self):
         """Delete and recreate the collection."""
@@ -1084,10 +1227,13 @@ class KnowledgeBase:
             self._chroma_client.delete_collection(self.collection_name)
             self._collection = None
 
+    @locked
     def stats(self) -> Dict[str, Any]:
         """Return KB statistics."""
-        collection = self._get_chroma()
-        count = collection.count()
+        try:
+            count = int(self._get_chroma().count())
+        except Exception:
+            count = 0
         return {
             "total_chunks": count,
             "collection_name": self.collection_name

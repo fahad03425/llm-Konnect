@@ -2,7 +2,9 @@
 
 import time
 import json
+import math
 import re
+import logging
 from datetime import date
 from typing import Generator, List, Dict, Any, Optional, Tuple
 from fastapi import HTTPException
@@ -13,15 +15,53 @@ from app.ingestion.models import RetrievedChunk
 from app.ingestion.store import KnowledgeBase
 from app.rag.models import ChatRequest, ChatResponse, SourceReference
 from app.rag.history import session_manager
+from app.rag.intent import analytics_request_guard, is_dataset_question_suggestion_request, is_procedural_how_to_question
 from app.rag.router import classify_route, extract_filters, is_advice_question, AnalyticsRouter, RouteType
 from app.language.roman_urdu import normalize_roman_urdu_intent
 from app.language.pharmacy_vocabulary import normalize_pharmacy_vocabulary
+
+logger = logging.getLogger(__name__)
+
+
+def _valid_source_row(value):
+    """Normalize source row metadata before it reaches Pydantic citation models."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            return None
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _valid_source_name(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text and text.casefold() not in {"nan", "none", "null"} else None
+
+
+def _dataset_question_suggestion_instruction(question: str) -> str:
+    match = re.search(r"\b(\d{1,2})\s+questions?\b", question or "", re.I)
+    count = max(1, min(int(match.group(1)), 8)) if match else 4
+    return (
+        f"\n\nThe user wants example questions answerable from the currently selected data scope. "
+        f"Suggest up to {count} concise questions (use exactly {count} when the evidence supports them). "
+        "Ground every question only in table names, field labels, and values present in the selected-scope Context Records. "
+        "Use the actual business domain shown by those records; do not substitute another domain or invent columns, measures, or tables. "
+        "Prefer distinct questions that can be answered by retrieving or comparing the shown records. "
+        "If the evidence is too narrow, say so briefly and give only the supported questions. "
+        "Do not repeat an earlier assistant refusal; answer this request from the current selected-scope evidence."
+    )
+
 
 class RAGChat:
     def __init__(self):
         self.kb = KnowledgeBase()
         self.analytics_router = AnalyticsRouter()
-        
+
     def _normalize_question(self, question: str) -> str:
         """Normalize small input variations before routing a question."""
         import re
@@ -41,12 +81,57 @@ class RAGChat:
         q = re.sub(r"\byestarday\b", "yesterday", q, flags=re.IGNORECASE)
         # This common typo otherwise sends forecast requests to vector retrieval,
         # which cannot compute a future value from source records.
-        return re.sub(
+        q = re.sub(
             r"\bforcast(s|ed|ing)?\b",
             lambda match: "forecast" + (match.group(1) or ""),
             q,
             flags=re.IGNORECASE,
         )
+        # Fix only clear misspellings of a small intent vocabulary. Never edit
+        # tokens containing digits, identifiers, medicine names, or arbitrary
+        # user supplied entities. This is local and constant-time per token.
+        from difflib import SequenceMatcher
+        intent_words = (
+            "total", "sales", "sale", "revenue", "profit", "gross", "margin",
+            "stock", "inventory", "quantity", "units", "sold", "purchase",
+            "purchases", "expenses", "expense", "average", "count", "forecast",
+            "refund", "discount", "tax", "supplier", "customer", "product",
+            "expiry", "expired", "reorder", "transaction", "transactions",
+            "invoice", "compare", "highest", "lowest", "trend", "price", "cost",
+        )
+
+        def correct_intent_word(match):
+            word = match.group(0)
+            if len(word) < 4 or any(char.isdigit() for char in word):
+                return word
+            folded = word.casefold()
+            if folded in intent_words:
+                return word
+            scored = sorted(
+                ((SequenceMatcher(None, folded, candidate).ratio(), candidate) for candidate in intent_words),
+                reverse=True,
+            )
+            nearest = scored[0][1]
+            matched_chars = sum(
+                block.size
+                for block in SequenceMatcher(None, folded, nearest).get_matching_blocks()
+            )
+            edit_budget = max(len(folded), len(nearest)) - matched_chars
+            # Similarity alone can collapse unrelated words with different
+            # lengths (for example, "recorded" into "reorder"). Limit fuzzy
+            # corrections to near-length, near-spelling matches so routing
+            # terms stay intact.
+            if (
+                abs(len(folded) - len(scored[0][1])) <= 1
+                and edit_budget <= 1
+                and scored[0][0] >= 0.78
+                and scored[0][0] - scored[1][0] >= 0.12
+            ):
+                fixed = scored[0][1]
+                return fixed.capitalize() if word[:1].isupper() else fixed
+            return word
+
+        return re.sub(r"\b[A-Za-z]{4,}\b", correct_intent_word, q)
 
     @staticmethod
     def _missing_evidence_answer(question: str, lang: str = "english") -> str:
@@ -127,13 +212,101 @@ class RAGChat:
             return "I can't make a patient-specific dosing or suitability decision. Please confirm the exact medicine and strength with a pharmacist or prescriber."
         return None
 
+
+    @staticmethod
+    def _get_fast_chitchat_response(question: str, lang: str):
+        """Differentiated, rich responses for greetings, wellbeing, capabilities, thanks, and pleasantries."""
+        import re
+        q = question.strip().lower()
+        q_clean = re.sub(r"[^a-zA-Z0-9\s]", "", q).strip()
+
+        # 1. Wellbeing / "How are you" / "Kaise ho"
+        wellbeing = {
+            "how are you", "how are you doing", "how is it going", "hows it going",
+            "how are you today", "how is your day", "how do you do",
+            "kaise ho", "kya hal hai", "kya haal hai", "kese ho", "theek ho", "thek ho",
+            "sab theek", "sab kaisa hai", "aap kaise hain", "ap kaise hain", "ap kaise ho",
+            "aap kaisay hain", "kese hain", "kaise hain"
+        }
+        if q_clean in wellbeing or any(phrase in q_clean for phrase in ["how are you", "how r u", "kya hal hai", "kya haal hai", "kaise ho", "kese ho", "aap kaise hain"]):
+            if lang == "roman_urdu":
+                return "Alhamdulillah, main bilkul theek hoon! Aap ka shukriya. Main aap ki store sales, purchases aur stock reports analyze karne ke liye tayar hoon. Batayein aaj kya check karna chahte hain?"
+            elif lang == "urdu_script":
+                return "الحمدللہ، میں بالکل ٹھیک ہوں! پوچھنے کا شکریہ۔ میں آپ کی سیلز، خریداری اور اسٹاک رپورٹس کا جائزہ لینے کے لیے تیار ہوں۔ فرمائیے، آج کیا دیکھنا چاہتے ہیں؟"
+            return "I'm doing great, thank you for asking! I'm all set to assist you with your sales trends, inventory records, and business metrics. How can I help you today?"
+
+        # 2. Islamic / Traditional Greetings
+        salam_greetings = {
+            "salam", "assalam o alaikum", "assalamu alaikum", "assalam alaikum",
+            "salam alaikum", "aaoa", "salam bhai", "salam sir", "asalam o alaikum",
+            "assalamualaykum", "asalamu alaykum"
+        }
+        if q_clean in salam_greetings or any(q_clean.startswith(s) for s in ["salam", "assalam"]):
+            if lang == "roman_urdu":
+                return "Walaikum Assalam! Khush aamdeed. Main aap ki pharmacy POS, sales, purchases aur stock management mein kis tarah madad kar sakta hoon?"
+            elif lang == "urdu_script":
+                return "وعلیکم السلام! خوش آمدید۔ میں آپ کے پی او ایس ڈیٹا، سیلز اور انوینٹری میں کیا مدد کر سکتا ہوں؟"
+            return "Walaikum Assalam! Welcome. How can I assist you with your store operations, sales, or inventory today?"
+
+        # 3. Standard Greetings (Hi, Hello, Good Morning)
+        general_greetings = {
+            "hi", "hello", "hey", "hiya", "good morning", "good afternoon",
+            "good evening", "good day", "hello there", "hi there", "hy", "hey there", "greetings"
+        }
+        if q_clean in general_greetings:
+            if lang == "roman_urdu":
+                return "Assalam-o-Alaikum! Main aap ki sales, purchases aur inventory records ke tajziye ke liye hazir hoon. Aaj main aap ki kya madad kar sakta hoon?"
+            elif lang == "urdu_script":
+                return "السلام علیکم! میں آپ کے کاروباری ریکارڈز، سیلز اور انوینٹری کے لیے حاضر ہوں۔ فرمائیے، میں آپ کی کیا مدد کر سکتا ہوں؟"
+            return "Hello! How can I assist you today? I'm ready to help you analyze sales, monitor inventory, lookup products, or generate business reports."
+
+        # 4. Gratitude / Thanks
+        thanks = {
+            "thanks", "thank you", "thx", "shukriya", "bohot shukriya", "bahut shukriya",
+            "dhanyawad", "many thanks", "thanks a lot", "thank u", "great job", "good job",
+            "awesome", "nice", "zabardast", "shukria"
+        }
+        if q_clean in thanks or any(q_clean.startswith(t) for t in ["thank", "shukriya", "shukria"]):
+            if lang == "roman_urdu":
+                return "Aap ka bohot shukriya! Agar aap ko kisi aur record, supplier bill ya inventory item ke baray mein janna ho toh zaroor batayein."
+            elif lang == "urdu_script":
+                return "بہت شکریہ! اگر آپ کو کسی اور ریکارڈ، بل یا انوینٹری کے بارے میں معلومات درکار ہوں تو ضرور بتائیں۔"
+            return "You're very welcome! If there's anything else you'd like to explore in your sales, orders, or inventory records, just let me know."
+
+        # 5. Bot Identity & Capabilities
+        identity = {
+            "who are you", "what are you", "tum kaun ho", "aap kaun hain",
+            "kya kar sakte ho", "what can you do", "help me", "what are your features",
+            "who made you", "introduce yourself", "taaruf"
+        }
+        if q_clean in identity or any(phrase in q_clean for phrase in ["who are you", "what can you do", "tum kaun ho", "aap kaun hain", "kya kar sakte ho"]):
+            if lang == "roman_urdu":
+                return "Main LLM-Konnect ka local AI business intelligence assistant hoon. Main aap ke connected SQL databases, Excel aur CSV sales records ka deep analysis karta hoon—jaise daily revenue, profit margin, low stock aur expiry alerts."
+            elif lang == "urdu_script":
+                return "میں LLM-Konnect کا لوکل اے آئی اسسٹنٹ ہوں۔ میں آپ کے منسلک ایس کیو ایل ڈیٹابیس، ایکسل اور سی ایس وی ریکارڈز کا گہرا تجزیہ کرتا ہوں، جیسے روزانہ آمدن، منافع کا مارجن، اور ایکسپائری الرٹس۔"
+            return "I am LLM-Konnect, your private local AI business intelligence assistant. I help you query connected SQL databases and spreadsheets, calculate revenues and margins, track low stock/expiries, and answer business questions securely on your device."
+
+        # 6. Farewell / Sign-off
+        farewell = {
+            "bye", "goodbye", "good bye", "see you", "see ya", "take care",
+            "allah hafiz", "khuda hafiz", "alvida", "cya", "bye bye"
+        }
+        if q_clean in farewell:
+            if lang == "roman_urdu":
+                return "Allah Hafiz! Aap ka din behtareen guzray. Jab bhi store data ya reports check karni hon, main hazir hoon."
+            elif lang == "urdu_script":
+                return "اللہ حافظ! آپ کا دن اچھا گزرے۔ جب بھی اسٹور ڈیٹا یا رپورٹس چیک کرنی ہوں، میں حاضر ہوں۔"
+            return "Goodbye! Have a productive day managing your business. Whenever you need insights from your records, I'll be right here."
+
+        return None
+
     @staticmethod
     def _direct_record_answer(question: str, chunks):
         """Format exact batch, invoice, or prescription status from matching rows."""
         import re
 
         q = question.casefold()
-        record_id = re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|rx|sku)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", q)
+        record_id = re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|rx|sku|rec|receipt|invoice)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", q)
         if record_id:
             identifier = record_id.group(0)
             id_norm = re.sub(r"[^a-z0-9]", "", identifier)
@@ -154,7 +327,12 @@ class RAGChat:
                             return match.group(1).strip().rstrip(".")
                     return None
 
-                requested = []
+                if re.search(r"\b(total|amount|how much)\b", q):
+                    amounts = [float(c.metadata.get("amount") or c.metadata.get("net_payable") or c.metadata.get("total_amount") or 0) for c in exact if (c.metadata.get("amount") is not None or c.metadata.get("net_payable") is not None or c.metadata.get("total_amount") is not None)]
+                    if amounts:
+                        tot = sum(amounts)
+                        return f"Invoice {identifier.upper()} recorded total: {tot:g}.", exact
+
                 if re.search(r"\b(customer|buyer|patient)\b", q): requested.append(("Customer", field_value("Customer")))
                 if re.search(r"\b(product|medicine|item)\b", q): requested.append(("Product", field_value("Product Name", "Product")))
                 if re.search(r"\b(quantity|units? sold|how many|stock|in stock)\b", q): requested.append(("Quantity", field_value("Quantity", "Stock quantity", "Stock")))
@@ -166,7 +344,14 @@ class RAGChat:
                 if re.search(r"\b(expiry|expires?)\b", q): requested.append(("Expiry", field_value("Expiry")))
                 if re.search(r"\b(unit cost|cost)\b", q): requested.append(("Unit Cost", field_value("Unit Cost", "Cost price")))
                 if re.search(r"\b(unit price|price)\b", q): requested.append(("Unit price", field_value("Unit price", "Unit Price")))
-                if re.search(r"\b(status|paid|payment)\b", q): requested.append(("Payment status", field_value("Payment Status", "Status")))
+                if re.search(r"\bpayment\s+(?:method|type|mode)\b", q):
+                    payment_method = field_value("Payment Method", "Payment Type", "Payment Mode", "Method")
+                    if payment_method:
+                        requested.append(("Payment method", payment_method))
+                    else:
+                        return f"{identifier.upper()}: the selected record does not include a payment method.", exact[:3]
+                elif re.search(r"\b(status|paid|payment)\b", q):
+                    requested.append(("Payment status", field_value("Payment Status", "Status")))
                 if re.search(r"\b(total|amount|how much)\b|total[_ ]amount|invoice[_ ]total", q): requested.append(("Total amount", field_value("Invoice Total", "Total amount", "Amount")))
                 requested = [(label, value) for label, value in requested if value]
                 if re.search(r"\b(below|under|above|over)\s+(?:(?:the|its|their)\s+)?reorder level\b", q):
@@ -216,26 +401,19 @@ class RAGChat:
                     batch_str = f" (Batch: {batch})" if batch else ""
                     qty_str = f", Stock: {qty} units" if qty is not None else ""
                     antibiotic_items.append(f"{prod}{batch_str}{qty_str}")
-            if not antibiotic_items or len(antibiotic_items) == 1:
-                antibiotic_items = [
-                    "Augmentin 625mg Tablets (Amoxicillin/Clavulanate)",
-                    "Augmentin 1g Tablets",
-                    "Amoxil 500mg Capsules (Amoxicillin)",
-                    "Azomax 500mg Tablets (Azithromycin)",
-                    "Cravit 500mg Tablets (Levofloxacin)",
-                    "Ciproxin 500mg Tablets (Ciprofloxacin)"
-                ]
+            if not antibiotic_items:
+                return "I can't identify antibiotic products from the selected records; they do not contain a matching antibiotic category or label.", []
             unique_antibiotics = list(dict.fromkeys(antibiotic_items))
-            ans = "The following antibiotic medicines are currently available in inventory:\n- " + "\n- ".join(unique_antibiotics)
+            ans = "Antibiotic entries identified in the retrieved selected records (the records may not define a complete category list):\n- " + "\n- ".join(unique_antibiotics)
             return ans, chunks[:5]
 
         # Storage location & Rack lookup for exact named products
-        if re.search(r"\b(where|location|rack|shelf|stored|storage)\b", q) and not re.search(r"\b(sales?|sold|purchased|supplier|buyer|customer)\b", q):
-            query_terms = set(re.findall(r"[a-z0-9]+", q)) - {"where", "is", "the", "stored", "at", "in", "location", "rack", "shelf", "storage", "panadol", "500mg"}
-            # Check if Panadol / Paracetamol or named product is searched
-            target_name = "Panadol 500mg Tablets" if "panadol" in q else ""
-            
-            # Direct check for storage locations across chunks
+        if re.search(r"\b(where|location|rack|shelf|stored at|kept at|storage location)\b", q) and not re.search(r"\b(sales?|sold|purchased|supplier|buyer|customer|instructions?|temperature|moisture|refrigerat|cold chain)\b", q):
+            query_terms = set(re.findall(r"[a-z0-9]+", q)) - {
+                "where", "is", "are", "the", "stored", "store", "at", "in", "location", "rack", "shelf", "storage",
+                "find", "show", "tell", "me", "product", "medicine", "item", "kept", "located", "which",
+            }
+            product_chunks = []
             found_locations = []
             for chunk in chunks:
                 meta = chunk.metadata
@@ -244,22 +422,36 @@ class RAGChat:
                     m_loc = re.search(r"\b(?:Rack|Warehouse|Location|Storage|Storage Location|Storage_Location):\s*([A-Za-z0-9 -]+)", chunk.text, re.I)
                     if m_loc:
                         loc = m_loc.group(1).strip()
-                p_val = str(meta.get("product_id", "")).casefold()
-                if loc:
-                    found_locations.append((loc, chunk))
-                elif "rack" in chunk.text.casefold():
+                product_values = [meta.get(k) for k in ("product_id", "product_name", "medicine_name", "product_code", "generic_name")]
+                product_tokens = set()
+                for product_value in product_values:
+                    if product_value not in (None, ""):
+                        product_tokens.update(re.findall(r"[a-z0-9]+", str(product_value).casefold()))
+                if product_tokens and query_terms and product_tokens & query_terms:
+                    product_chunks.append(chunk)
+                    if loc:
+                        found_locations.append((loc, chunk))
+                elif "rack" in chunk.text.casefold() and product_tokens and query_terms and product_tokens & query_terms:
                     m_r = re.search(r"\b(Rack-[A-Za-z0-9]+|Shelf-[A-Za-z0-9]+)\b", chunk.text, re.I)
                     if m_r:
+                        product_chunks.append(chunk)
                         found_locations.append((m_r.group(1), chunk))
-            
-            # Default warehouse mapping for inventory master products
-            if "panadol" in q:
-                return "Panadol 500mg Tablets is stored on Rack-E2 (Warehouse Location) in the inventory.", chunks[:3]
-            
+
+            if len({str(c.metadata.get("product_id") or c.metadata.get("product_name") or c.metadata.get("generic_name")) for c in product_chunks}) > 1:
+                options = sorted({str(c.metadata.get("product_id") or c.metadata.get("product_name") or c.metadata.get("generic_name")) for c in product_chunks})
+                return "I found multiple matching product variants. Which one do you mean: " + "; ".join(options[:8]) + "?", product_chunks[:8]
             if found_locations:
-                loc_name, c = found_locations[0]
-                label = target_name or "The requested medicine"
-                return f"{label} is stored on {loc_name} (Warehouse storage location).", [c]
+                locations = []
+                seen_locations = set()
+                for loc, chunk in found_locations:
+                    if str(loc) not in seen_locations:
+                        seen_locations.add(str(loc))
+                        locations.append((str(loc), chunk))
+                answers = [f"{c.metadata.get('product_id') or c.metadata.get('product_name') or 'The requested item'} is recorded at {loc}." for loc, c in locations]
+                return " ".join(answers), [c for _, c in locations]
+            if product_chunks:
+                return "A matching product record was found, but the selected record does not include a storage location.", product_chunks[:3]
+            return "I couldn't find an exact matching product record in the selected data, so I can't verify its storage location.", []
 
         # Batch number lookup for exact named products
         if re.search(r"\bbatch\s*(?:number|no\.?|#)?\s*(?:of|for)?\b", q) and not re.search(r"\b(?:batch|lot)\s*(?:no\.?|number|#)?\s*[:#-]?\s*[a-z0-9][a-z0-9/-]*\d", q):
@@ -307,7 +499,7 @@ class RAGChat:
                     total = sum(float(c.metadata.get("stock_qty", c.metadata.get("available_qty", c.metadata.get("quantity", 0))) or 0) for c in current)
                     details = ", ".join(f"{c.metadata.get('batch_no', 'batch not recorded')}: {c.metadata.get('stock_qty', c.metadata.get('available_qty', c.metadata.get('quantity')))} units" for c in current)
                     return f"{label}: {total:g} units on hand ({details}).", current
-        match = re.search(r"\b(batch|lot)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
+        match = re.search(r"\b(batch|lot)\s*(?:no\.?|number|#)?\s*(?:called|labeled|named|identified\s+as)?\s*[:#-]?\s*((?:[a-z]{1,8}[-_/])?[a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
         kind = "batch"
         if not match:
             match = re.search(r"\b(invoice|inv|bill|receipt)\s*(?:no\.?|number|#)?\s*[:#-]?\s*([a-z0-9][a-z0-9/-]*\d[a-z0-9/-]*)", q)
@@ -386,7 +578,7 @@ class RAGChat:
         """Carry an explicit prior entity into short follow-up retrieval queries."""
         import re
 
-        if not re.search(r"\b(?:same|it|that|those|them|there|ones?|they|these|he|she|him|her|his|hers|their|theirs|among those|how many left|what about)\b", question, re.IGNORECASE):
+        if not re.search(r"\b(?:same|it|that|those|them|there|ones?|they|these|he|she|him|her|his|hers|their|theirs|among those|how many left|what about|runner[- ]?up|second(?:[- ](?:highest|place|one))?|number two|next)\b", question, re.IGNORECASE):
             return question
         try:
             history = session_manager.get_history(session_id)
@@ -395,6 +587,15 @@ class RAGChat:
         prior_messages = [m for m in history if m.get("role") in ("user", "assistant")]
         if not prior_messages:
             return question
+        follow_up_context = []
+        if re.search(r"\b(runner[- ]?up|second(?:[- ](?:highest|place|one))?|number two|next)\b", question, re.I):
+            previous_questions = [
+                str(m.get("content", "")).strip() for m in prior_messages
+                if m.get("role") == "user"
+                and not re.search(r"\b(runner[- ]?up|second(?:[- ](?:highest|place|one))?|number two|next)\b", str(m.get("content", "")), re.I)
+            ]
+            if previous_questions:
+                follow_up_context.append("Previous analysis question: " + previous_questions[-1])
         generic_openers = {"what", "which", "who", "where", "when", "how", "among", "and", "the", "it", "that"}
         months = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
         entities=[]; periods=[]
@@ -429,6 +630,25 @@ class RAGChat:
             for m in re.finditer(r"\b([A-Z][A-Za-z0-9%.-]*(?:\s+[A-Z][A-Za-z0-9%.-]*){1,6}\s+\d+[A-Za-z%]+)\b",entity_content):
                 entities.append(m.group(1))
             periods.extend(re.findall(rf"\b(?:{months})\s+\d{{1,2}}(?:,?\s+20\d{{2}})?\b|\b(?:{months})\s+20\d{{2}}\b|\b20\d{{2}}\b",entity_content,re.I))
+        referent_match = re.search(r"\bthat\s+(category|product|medicine|drug|supplier|customer|payment method|invoice|batch)\b", question, re.I)
+        if referent_match:
+            referent_kind = referent_match.group(1).casefold()
+            for msg in reversed(prior_messages):
+                if msg.get("role") != "assistant":
+                    continue
+                content = str(msg.get("content", ""))
+                prefix, separator, ranked_results = content.partition(":")
+                if not separator or referent_kind.split()[0] not in prefix.casefold():
+                    continue
+                if ";" not in content and not re.search(r"\b(rank(?:ed|ing))\b", prefix, re.I):
+                    continue
+                first_result = ranked_results.split(";", 1)[0].strip()
+                first_result = re.sub(r"\s*\([^)]*\)\s*[.]?$", "", first_result).strip(" .,:;")
+                if first_result:
+                    # “That category/product” refers to the leading result of
+                    # the immediately prior ranking, not later list entries.
+                    entities = [first_result]
+                    break
         generic_openers.update({"matching","total","across","most","frequently","purchased","purchase","highest","lowest","units","records","amount","quantity","product","supplier","customer","warehouse","branch","category","invoice","status"})
         entities=[e.strip(" ,.;:") for e in entities if e.split()[0].casefold() not in generic_openers]
         entities=list(dict.fromkeys(entities))
@@ -440,11 +660,12 @@ class RAGChat:
         other_entities=[e for e in entities if e not in record_codes]
         entities=record_codes + other_entities[-max(0,8-len(record_codes)):]
         periods=list(dict.fromkeys(periods))[-4:]
-        if not entities and not periods:
+        if not entities and not periods and not follow_up_context:
             return question
         # Add only referents and periods; do not replay old operations, which can
         # turn a count follow-up back into the previous turn's total question.
         hints=[]
+        hints.extend(follow_up_context)
         if entities: hints.append("Relevant prior entities: " + "; ".join(entities))
         if periods: hints.append("Relevant prior periods: " + "; ".join(periods))
         if carried_conditions: hints.append("Relevant prior conditions: " + "; ".join(dict.fromkeys(carried_conditions)))
@@ -452,23 +673,10 @@ class RAGChat:
 
     @staticmethod
     def _resolve_relative_date_filter(filters: Dict[str, Any], records):
-        """Resolve recent windows and reject date requests outside data coverage."""
+        """Resolve recent windows, align implicit years with dataset range, and validate data coverage."""
         resolved = dict(filters)
         days = resolved.pop("relative_days", None)
         has_explicit_window = bool(resolved.get("date_from") or resolved.get("date_to"))
-        if (
-            not days and not has_explicit_window
-            and resolved.get("month") is not None and resolved.get("year") is not None
-        ):
-            import calendar
-            from datetime import date
-
-            year, month = int(resolved["year"]), int(resolved["month"])
-            resolved["date_from"] = date(year, month, 1).isoformat()
-            resolved["date_to"] = date(year, month, calendar.monthrange(year, month)[1]).isoformat()
-            has_explicit_window = True
-        if not days and not has_explicit_window:
-            return resolved
 
         import pandas as pd
 
@@ -480,6 +688,8 @@ class RAGChat:
         else:
             date_values = None
         if date_values is None:
+            if not days and not has_explicit_window and resolved.get("month") is None:
+                return resolved
             resolved["_date_filter_error"] = (
                 "The selected data has no usable transaction dates, so I can't "
                 "calculate the requested date period."
@@ -488,6 +698,8 @@ class RAGChat:
 
         dates = pd.to_datetime(date_values, errors="coerce").dropna()
         if dates.empty:
+            if not days and not has_explicit_window and resolved.get("month") is None:
+                return resolved
             resolved["_date_filter_error"] = (
                 "The selected data has no usable transaction dates, so I can't "
                 "calculate the requested date period."
@@ -496,6 +708,49 @@ class RAGChat:
 
         first_available = dates.min().normalize()
         last_available = dates.max().normalize()
+
+        # Check if query specified a month (and optional day) without an explicit year matching dataset
+        if resolved.get("month") is not None:
+            month = int(resolved["month"])
+            day = int(resolved["day"]) if resolved.get("day") is not None else None
+            explicit_year = resolved.get("year")
+
+            if explicit_year is None:
+                # Find available year in dataset matching this month
+                matching_records = dates[dates.dt.month == month]
+                if day is not None:
+                    matching_day_records = matching_records[matching_records.dt.day == day]
+                    if not matching_day_records.empty:
+                        matching_records = matching_day_records
+                if not matching_records.empty:
+                    chosen_year = int(matching_records.dt.year.iloc[-1])
+                    resolved["year"] = chosen_year
+                    if day is not None:
+                        resolved["date_from"] = f"{chosen_year:04d}-{month:02d}-{day:02d}"
+                        resolved["date_to"] = f"{chosen_year:04d}-{month:02d}-{day:02d}"
+                        has_explicit_window = True
+                    else:
+                        import calendar
+                        from datetime import date
+                        resolved["date_from"] = date(chosen_year, month, 1).isoformat()
+                        resolved["date_to"] = date(chosen_year, month, calendar.monthrange(chosen_year, month)[1]).isoformat()
+                        has_explicit_window = True
+            elif explicit_year is not None:
+                year = int(explicit_year)
+                if day is not None:
+                    resolved["date_from"] = f"{year:04d}-{month:02d}-{day:02d}"
+                    resolved["date_to"] = f"{year:04d}-{month:02d}-{day:02d}"
+                    has_explicit_window = True
+                else:
+                    import calendar
+                    from datetime import date
+                    resolved["date_from"] = date(year, month, 1).isoformat()
+                    resolved["date_to"] = date(year, month, calendar.monthrange(year, month)[1]).isoformat()
+                    has_explicit_window = True
+
+        if not days and not has_explicit_window:
+            return resolved
+
         if days:
             end = last_available
             start = end - pd.Timedelta(days=int(days) - 1)
@@ -508,6 +763,26 @@ class RAGChat:
                 return resolved
             start, end = start.normalize(), end.normalize()
 
+            # If default year was applied outside data range, check if matching month/day exists in dataset
+            if (start < first_available or end > last_available) and resolved.get("year") is None:
+                month = int(resolved.get("month") or start.month)
+                day = int(resolved.get("day") or start.day) if (resolved.get("day") or start == end) else None
+                matching = dates[dates.dt.month == month]
+                if day is not None and start == end:
+                    matching_day = matching[matching.dt.day == day]
+                    if not matching_day.empty:
+                        matching = matching_day
+                if not matching.empty:
+                    y = int(matching.dt.year.iloc[-1])
+                    if start == end and day is not None:
+                        start = pd.Timestamp(year=y, month=month, day=day)
+                        end = start
+                    else:
+                        start = pd.Timestamp(year=y, month=start.month, day=start.day)
+                        end = pd.Timestamp(year=y, month=end.month, day=end.day)
+                    resolved["date_from"] = start.strftime("%Y-%m-%d")
+                    resolved["date_to"] = end.strftime("%Y-%m-%d")
+
         if start < first_available or end > last_available:
             first_text = first_available.strftime("%Y-%m-%d")
             last_text = last_available.strftime("%Y-%m-%d")
@@ -515,9 +790,6 @@ class RAGChat:
                 start.strftime("%Y-%m-%d") if start == end
                 else f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
             )
-            # Use the portion that exists in the selected data for explicit
-            # calendar ranges (such as last month). Relative day-count windows
-            # retain their full-window coverage requirement.
             clipped_start = max(start, first_available)
             clipped_end = min(end, last_available)
             if days or clipped_start > clipped_end:
@@ -533,6 +805,66 @@ class RAGChat:
                     f"{first_text} to {last_text}, so results use the overlapping dates only."
                 )
         return resolved
+
+    @staticmethod
+    def _uses_inventory_expiry_date(question: str) -> bool:
+        """Identify explicit expiry cutoffs that must not be checked against sales dates."""
+        q = str(question or "").casefold()
+        return bool(
+            re.search(r"\b20\d{2}-\d{1,2}-\d{1,2}\b", q)
+            and re.search(r"\b(expir\w*|batches?|lots?)\b", q)
+            and re.search(r"\b(as of|already expired|past expiry|earliest|latest)\b", q)
+            and not re.search(r"\b(sales?|revenue|sold|transactions?|invoices?)\b", q)
+        )
+
+    def _relative_period_comparison(self, question: str, records, domain: str, lang: str):
+        """Compute an explicit comparison of two recent sales periods."""
+        if not re.search(r"\bcompare\b|\bdifference between\b", question, re.I):
+            return None
+        if not re.search(r"\b(sales?|revenue|profit|margin|units?)\b", question, re.I):
+            return None
+        periods = list(dict.fromkeys(
+            int(value) for value in re.findall(r"\b(?:last|past|previous)\s+(\d{1,3})\s+days?\b", question, re.I)
+        ))
+        if len(periods) != 2 or records is None:
+            return None
+
+        period_results = {}
+        source_rows = []
+        for days in periods:
+            filters = self._resolve_relative_date_filter({"relative_days": days}, records)
+            if filters.pop("_date_filter_error", None):
+                return None
+            computed, rows = self.analytics_router.compute(question, filters, records, domain)
+            if not computed:
+                return None
+            metric = next((key for key in ("total_revenue", "gross_profit", "gross_margin_pct", "units_sold") if key in computed), None)
+            if metric is None or computed[metric].get("status") != "ok":
+                return None
+            period_results[str(days)] = {"filters": filters, "metric": metric, "result": computed[metric]}
+            source_rows.extend(rows or [])
+
+        metric_names = {item["metric"] for item in period_results.values()}
+        if len(metric_names) != 1:
+            return None
+        metric_name = next(iter(metric_names))
+        name = period_results[str(periods[0])]["result"].get("name", metric_name.replace("_", " ").title())
+        unit = period_results[str(periods[0])]["result"].get("unit", "")
+        values = [period_results[str(days)]["result"].get("value") for days in periods]
+        lines = []
+        for days in periods:
+            formatted = self._format_analytics_answer(
+                question, {metric_name: period_results[str(days)]["result"]}, lang,
+                period_results[str(days)]["filters"],
+            )
+            lines.append(f"Last {days} days: {formatted}")
+        return {
+            "answer": "\n".join(lines),
+            "values": {"period_comparison": {"metric": metric_name, "name": name, "unit": unit,
+                                               "periods": {str(days): period_results[str(days)]["result"] for days in periods},
+                                               "difference": abs(float(values[0]) - float(values[1]))}},
+            "source_rows": list(dict.fromkeys(source_rows)),
+        }
 
     def _clean_roman_urdu_vocabulary(self, text: str) -> str:
         """Replaces common Roman Hindi word leakages with natural Roman Urdu equivalents."""
@@ -622,17 +954,300 @@ class RAGChat:
         if re.search(r"\b(type\s+of\s+questions?|what\s+can\s+you\s+do|how\s+to\s+use|help|questions?\s+can\s+i\s+ask|capabilities|examples?|suggest\s+questions?)\b", q):
             return False
 
+        if (re.search(r"\b(how many|number of|count)\b.{0,24}\btables?\b", q)
+                and re.search(r"\b(active|selected|in|within|under)\b.{0,60}\b(scope|dataset|database|selection)\b", q)):
+            return True
+
         patterns = [
             r"^(what|which)\s+(is|are)\s+(the\s+|my\s+|active\s+|current\s+|selected\s+)?(data\s*sources?|datasets?|source\s*files?|files?|tables?|database)\b",
             r"^(what|which)\s+(data\s*sources?|datasets?|source\s*files?|files?|tables?)\s+(are\s+)?(active|selected|loaded|connected|used|in\s+use|being\s+used)\b",
             r"^(list|show|display|tell\s+me|name)\s+(the\s+|all\s+|active\s+|current\s+|selected\s+)?(data\s*sources?|datasets?|source\s*files?|tables?|active\s*scope)\b",
             r"^(tell\s+me|give\s+me|show\s+me|what\s+is|name)\s+(?:the\s+)?(?:name\s+of\s+)?(?:the\s+)?(?:active\s+|current\s+|selected\s+|connected\s+)?(data\s*sources?|datasets?|source\s*files?|files?|tables?|databases?)\b",
             r"^(what|which)\s+(?:is\s+)?(?:the\s+)?(?:name\s+of\s+)?(?:active\s+|current\s+|selected\s+|connected\s+)?(data\s*source|dataset|source\s*file|file|table|database)\s+(?:is\s+)?(?:active|current|selected|connected|loaded|in\s+use)\b",
+            r"^(?:what|which)\s+(?:tables?|sources?|files?)\s+(?:(?:are|is)\s+)?(?:included|selected|part\s+of|in)\b.{0,100}\b(?:active\s+|selected\s+|current\s+)?(?:scope|dataset|database)\b",
             r"^(data\s*sources?|active\s*sources?|active\s*scope|active\s*files?|active\s*datasets?|connected\s*datasets?|current\s*dataset)$",
             r"^where\s+(is\s+the\s+data\s+from|are\s+you\s+getting\s+the\s+data)\b",
             r"^(what|which)\s+(data\s*source|dataset|file|table)\s+are\s+you\s+using\b"
         ]
         return any(re.search(p, q) for p in patterns)
+
+    @staticmethod
+    def _is_table_field_inquiry(question: str) -> bool:
+        q = re.sub(r"\s+", " ", str(question).casefold()).strip()
+        return bool(
+            re.search(r"\b(which|what)\b", q)
+            and re.search(r"\btable\b", q)
+            and re.search(r"\b(stores?|contains?|has|holds?|records?|keeps?|includes?)\b", q)
+            and re.search(r"\b(field|column|quantity|qty|amount|total|date|status|payment|product|item|customer|supplier|batch|invoice|receipt|transaction|price|cost|discount|tax)\w*\b", q)
+        )
+
+    def _table_field_lookup(self, question: str, request: ChatRequest):
+        """Find selected structured tables that actually contain a requested field."""
+        if not self._is_table_field_inquiry(question):
+            return None
+        import pandas as pd
+
+        records, _ = self._get_records_for_analytics(request, {})
+        if records is None or not hasattr(records, "columns") or records.empty:
+            return None
+        q = re.sub(r"[^a-z0-9]+", " ", str(question).casefold()).strip()
+        excluded = {"table_name", "source_table", "source_file", "file_id", "source_row", "database_name", "txn_type"}
+        candidates = []
+        for column in records.columns:
+            label = re.sub(r"^_extra\.", "", str(column), flags=re.I)
+            normalized = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
+            if not normalized or normalized in excluded or not records[column].notna().any():
+                continue
+            if re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", q):
+                candidates.append((column, normalized))
+        if not candidates:
+            return None
+        # Prefer canonical field names over connector duplicates such as
+        # _extra.QUANTITY when both forms are present.
+        candidates.sort(key=lambda pair: (str(pair[0]).casefold().startswith("_extra."), len(pair[1])))
+        field_col, field_label = candidates[0]
+        work = records.loc[records[field_col].notna()].copy()
+        if re.search(r"\bsales?\b", q):
+            if "database_name" in work:
+                mask = work.database_name.fillna("").astype(str).str.casefold().eq("sales")
+            elif "source_file" in work:
+                mask = work.source_file.fillna("").astype(str).str.casefold().str.startswith("sql://sales/")
+            else:
+                mask = pd.Series(False, index=work.index)
+            if mask.any():
+                work = work.loc[mask]
+        elif re.search(r"\binventory\b", q) and "database_name" in work:
+            work = work.loc[work.database_name.fillna("").astype(str).str.casefold().eq("inventory")]
+        if re.search(r"\b(per|each|every|item.level|line.level|for each)\b", q):
+            relation_cols = [col for col in ("transaction_id", "invoice_id", "receipt_id", "product_id", "item_id") if col in work and work[col].notna().any()]
+            if not relation_cols:
+                return None
+            work = work.loc[work[relation_cols].notna().any(axis=1)]
+        table_col = next((col for col in ("table_name", "source_table") if col in work and work[col].notna().any()), None)
+        if not table_col:
+            return None
+        counts = work.groupby(table_col, dropna=True).size().sort_values(ascending=False)
+        if counts.empty:
+            return None
+        tables = [{"table": str(name), "matching_rows": int(count)} for name, count in counts.items()]
+        role = "sales" if re.search(r"\bsales?\b", q) else "inventory" if re.search(r"\binventory\b", q) else "selected"
+        names = [item["table"] for item in tables]
+        if len(names) == 1:
+            answer = f"The {role} table {names[0]} stores the requested {field_label} field."
+        else:
+            answer = f"The selected {role} tables with the requested {field_label} field are: " + ", ".join(names) + "."
+        source_col = next((col for col in ("source_file", "file_id") if col in work), None)
+        row_col = "source_row" if "source_row" in work else None
+        if source_col and row_col:
+            source_rows = list(dict.fromkeys((str(row[source_col]), row[row_col]) for _, row in work.head(20).iterrows()))
+        else:
+            source_rows = []
+        return {
+            "answer": answer,
+            "values": {"status": "ok", "field": str(field_col), "tables": tables, "row_count": int(len(work))},
+            "source_rows": source_rows,
+            "records": records,
+        }
+
+    @staticmethod
+    def _is_sales_key_relationship_inquiry(question: str) -> bool:
+        q = re.sub(r"\s+", " ", str(question).casefold()).strip()
+        return bool(
+            re.search(r"\b(which|what)\b", q)
+            and re.search(r"\b(link|join|connect|reference|foreign key|key)\w*\b", q)
+            and re.search(r"\b(sales?\s+)?details?\b|\b(lines?)\b", q)
+            and re.search(r"\b(receipts?|invoices?|headers?)\b", q)
+        )
+
+    def _selected_scope_is_structured_only(self, request: ChatRequest) -> bool:
+        """True only when every selected source is a structured table/file."""
+        import os
+        from app.ingestion.registry import file_registry
+
+        selected = []
+        for file_id in request.file_ids or []:
+            record = file_registry.get_file_by_id(file_id)
+            if record is None:
+                return False
+            selected.append(record)
+        for source_file in request.source_files or []:
+            record = file_registry.get_file_by_path(source_file)
+            if record is None:
+                extension = os.path.splitext(str(source_file))[1].casefold()
+                if extension in {".csv", ".tsv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".parquet", ".json", ".jsonl", ".db", ".sqlite", ".sqlite3"}:
+                    selected.append(type("SelectedSource", (), {"source_type": "file", "filename": source_file, "file_path": source_file})())
+                    continue
+                return False
+            selected.append(record)
+        if not selected:
+            return False
+        structured_extensions = {".csv", ".tsv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".parquet", ".json", ".jsonl", ".db", ".sqlite", ".sqlite3"}
+        for record in selected:
+            if str(getattr(record, "source_type", "")).casefold() == "database":
+                continue
+            path = str(getattr(record, "file_path", "") or "")
+            name = str(getattr(record, "filename", "") or path)
+            extension = os.path.splitext(name)[1].casefold() or os.path.splitext(path)[1].casefold()
+            if extension not in structured_extensions:
+                return False
+        return True
+
+    def _sales_key_relationship_lookup(self, question: str, request: ChatRequest):
+        """Verify a sales detail-to-header key using matching selected row sets."""
+        import pandas as pd
+
+        if not self._is_sales_key_relationship_inquiry(question):
+            return None
+        records, _ = self._get_records_for_analytics(request, {})
+        if records is None or not hasattr(records, "columns") or records.empty:
+            return None
+        sales = records
+        table_col = next((col for col in ("table_name", "source_table", "source_file", "file_id") if col in sales), None)
+        if not table_col:
+            return None
+        table_names = sales[table_col].fillna("").astype(str)
+        row_identity = table_names
+        if "source_file" in sales:
+            row_identity = row_identity + " " + sales.source_file.fillna("").astype(str)
+        row_identity = row_identity.str.casefold()
+        sales_mask = row_identity.str.contains(r"sales?", regex=True)
+        receipt_header_mask = (
+            row_identity.str.contains(r"receipt|invoice|bill|transaction", regex=True)
+            & row_identity.str.contains(r"header|receipt|invoice|bill", regex=True)
+            & ~row_identity.str.contains(r"purchase|buy", regex=True)
+        )
+        sales_mask |= receipt_header_mask
+        if sales_mask.any():
+            sales = sales.loc[sales_mask]
+        elif "database_name" in sales:
+            database_mask = sales.database_name.fillna("").astype(str).str.casefold().eq("sales")
+            if database_mask.any():
+                sales = sales.loc[database_mask]
+            elif "txn_type" in sales:
+                txn_mask = sales.txn_type.fillna("").astype(str).str.casefold().str.contains(r"sale|sales|receipt|invoice", regex=True)
+                sales = sales.loc[txn_mask]
+
+        def key_values(series):
+            def normalize(value):
+                rendered = str(value).strip()
+                try:
+                    numeric = float(rendered)
+                    if numeric.is_integer():
+                        return str(int(numeric))
+                except (TypeError, ValueError):
+                    pass
+                return rendered.casefold()
+            return {normalize(value) for value in series.dropna()}
+
+        # The analytics frame stores invoice header provenance on each joined
+        # sales line. Validate that every distinct line transaction key maps
+        # to exactly one selected sales header row before answering.
+        provenance_cols = ("_header_source_file", "_header_source_row")
+        if all(col in sales for col in provenance_cols):
+            line_rows = sales
+            detail_fields = [col for col in ("product_id", "quantity") if col in line_rows]
+            if detail_fields:
+                line_rows = line_rows.loc[line_rows[detail_fields].notna().all(axis=1)]
+            line_key = next((col for col in ("transaction_id", "invoice_id", "receipt_id", "order_id") if col in line_rows and line_rows[col].notna().any()), None)
+            if line_key:
+                valid = line_rows.loc[line_rows[line_key].notna() & line_rows["_header_source_file"].notna() & line_rows["_header_source_row"].notna()].copy()
+                valid["_normalized_line_key"] = valid[line_key].map(lambda value: next(iter(key_values(pd.Series([value])))))
+                mapping = valid.drop_duplicates(subset=["_normalized_line_key", "_header_source_file", "_header_source_row"])
+                mapping = mapping.copy()
+                mapping["_normalized_header_row"] = (
+                    mapping["_header_source_file"].astype(str).str.casefold()
+                    + "\x1f" + mapping["_header_source_row"].astype(str).str.replace(r"\.0$", "", regex=True)
+                )
+                per_key_header_rows = mapping.groupby("_normalized_line_key")["_normalized_header_row"].nunique()
+                detail_keys = key_values(valid[line_key])
+                if detail_keys and len(per_key_header_rows) == len(detail_keys) and per_key_header_rows.eq(1).all():
+                    header_table_values = valid.get("_header_table_name", pd.Series(dtype=object)).dropna().astype(str).unique().tolist()
+                    header_files = mapping["_header_source_file"].fillna("").astype(str)
+                    header_identity = " ".join(header_table_values) + " " + " ".join(header_files.tolist())
+                    if re.search(r"header|receipt|invoice", header_identity, re.I):
+                        header_table = header_table_values[0] if header_table_values else "sales receipt header"
+                        detail_table = next((str(value) for value in valid[table_col].dropna().unique()), "sales detail")
+                        source_col = next((col for col in ("source_file", "file_id") if col in valid), None)
+                        line_citations = []
+                        if source_col and "source_row" in valid:
+                            line_citations = list(dict.fromkeys(
+                                (str(row[source_col]), row["source_row"])
+                                for _, row in valid.head(20).iterrows()
+                                if pd.notna(row[source_col]) and pd.notna(row["source_row"])
+                            ))
+                        header_citations = list(dict.fromkeys(
+                            (str(row["_header_source_file"]), row["_header_source_row"])
+                            for _, row in mapping.head(20).iterrows()
+                        ))
+                        return {
+                            "answer": (
+                                f"Sales detail `{line_key}` maps to `{header_table}`; "
+                                f"all {len(detail_keys):,} distinct key values map to one selected header row each."
+                            ),
+                            "values": {
+                                "status": "ok", "relationship": "sales_detail_to_receipt_header",
+                                "detail_table": detail_table, "detail_key": line_key,
+                                "header_table": header_table, "header_link": "selected header source row",
+                                "matched_distinct_keys": len(detail_keys),
+                            },
+                            "source_rows": list(dict.fromkeys(line_citations + header_citations)),
+                            "records": records,
+                        }
+
+        detail_rows = sales
+        required_detail = [col for col in ("product_id", "quantity") if col in detail_rows]
+        if required_detail:
+            detail_rows = detail_rows.loc[detail_rows[required_detail].notna().all(axis=1)]
+        detail_key = next((col for col in ("transaction_id", "invoice_id", "receipt_id", "order_id") if col in detail_rows and detail_rows[col].notna().any()), None)
+        header_rows = sales
+        header_signature = [col for col in ("invoice_id", "invoice_total", "paid_amount") if col in header_rows]
+        if header_signature:
+            header_rows = header_rows.loc[header_rows[header_signature].notna().any(axis=1)]
+        header_key = next((col for col in ("_extra.ID", "id", "transaction_id", "invoice_id", "receipt_id") if col in header_rows and header_rows[col].notna().any()), None)
+        if not detail_key or not header_key:
+            return None
+        matches = []
+        for detail_table, detail_group in detail_rows.groupby(table_col, dropna=True):
+            detail_keys = key_values(detail_group[detail_key])
+            if not detail_keys:
+                continue
+            for header_table, header_group in header_rows.groupby(table_col, dropna=True):
+                if str(detail_table) == str(header_table):
+                    continue
+                header_keys = key_values(header_group[header_key])
+                common = detail_keys & header_keys
+                if common and common == detail_keys == header_keys:
+                    matches.append((len(common), str(detail_table), str(header_table), detail_group, header_group))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        matched_count, detail_table, header_table, detail_group, header_group = matches[0]
+        answer = (
+            f"Sales detail `{detail_key}` links to receipt header `{header_key.removeprefix('_extra.')}` "
+            f"(`{header_key}`); all {matched_count:,} selected key values match."
+        )
+        source_col = next((col for col in ("source_file", "file_id") if col in records), None)
+        row_col = "source_row" if "source_row" in records else None
+        source_rows = []
+        if source_col and row_col:
+            for group in (detail_group, header_group):
+                source_rows.extend(
+                    (str(row[source_col]), row[row_col])
+                    for _, row in group.head(20).iterrows()
+                    if pd.notna(row[source_col]) and pd.notna(row[row_col])
+                )
+            source_rows = list(dict.fromkeys(source_rows))
+        return {
+            "answer": answer,
+            "values": {
+                "status": "ok", "relationship": "sales_detail_to_receipt_header",
+                "detail_table": detail_table, "detail_key": detail_key,
+                "header_table": header_table, "header_key": header_key,
+                "matched_distinct_keys": matched_count,
+            },
+            "source_rows": source_rows,
+            "records": records,
+        }
 
     def _get_active_source_names(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None) -> List[str]:
         import os
@@ -681,8 +1296,14 @@ class RAGChat:
                 unique_names.append(n)
         return unique_names
 
-    def _format_data_source_response(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None, lang: str = "english") -> str:
+    def _format_data_source_response(self, file_ids: Optional[List[str]] = None, source_files: Optional[List[str]] = None, lang: str = "english", question: str = "") -> str:
         sources = self._get_active_source_names(file_ids, source_files)
+        if re.search(r"\b(how many|number of|count)\b.{0,24}\btables?\b", question, re.I):
+            table_names = [name for name in sources if re.search(r"\btbl_\d+(?:_\d+)*\b", name, re.I)]
+            groups = sorted({name.split("—", 1)[0].strip() for name in table_names if "—" in name})
+            if lang == "roman_urdu":
+                return f"Asan Pos scope mein {len(table_names)} tables selected hain" + (f" ({', '.join(groups)})." if groups else ".")
+            return f"{len(table_names)} tables are selected in the active scope" + (f" ({', '.join(groups)})." if groups else ".")
         if lang == "roman_urdu":
             if not sources:
                 return "Filhaal koi data source connect ya select nahi hai."
@@ -906,18 +1527,38 @@ class RAGChat:
         for c in retrieved_chunks:
             meta = c.metadata
             label_parts = []
-            if "invoice_id" in meta:
-                label_parts.append(f"Invoice {meta['invoice_id']}")
-            elif "product_id" in meta:
+            has_value = lambda value: value is not None and str(value).strip() and str(value).strip().casefold() != "nan"
+            is_inventory_source = (
+                str(meta.get("database_name", "")).casefold() == "inventory"
+                or str(meta.get("group_name", "")).casefold() == "inventory"
+            )
+            if meta.get("_citation_header_grain") == "purchase":
+                if has_value(meta.get("purchase_order_no")):
+                    label_parts.append(f"Purchase Order {meta['purchase_order_no']}")
+                else:
+                    label_parts.append("Purchase Header")
+            elif is_inventory_source and has_value(meta.get("batch_no")):
+                label_parts.append(f"Batch {meta['batch_no']}")
+            elif is_inventory_source and has_value(meta.get("product_id")):
                 label_parts.append(f"Product {meta['product_id']}")
-            elif "date" in meta:
+            elif has_value(meta.get("invoice_id")):
+                label_parts.append(f"Invoice {meta['invoice_id']}")
+            elif has_value(meta.get("product_id")):
+                label_parts.append(f"Product {meta['product_id']}")
+            elif has_value(meta.get("date")):
                 label_parts.append(f"Date {meta['date']}")
             
-            row_idx = c.source_row if c.source_row is not None else meta.get("source_row")
-            label = ", ".join(label_parts) if label_parts else f"Record {row_idx}"
+            row_idx = _valid_source_row(c.source_row if c.source_row is not None else meta.get("source_row"))
+            label = ", ".join(label_parts) if label_parts else (f"Record {row_idx}" if row_idx is not None else "Record")
             
             raw_src = meta.get("source_file") or meta.get("filename") or "unknown"
             filename = os.path.basename(raw_src) if raw_src else "unknown"
+            file_id = str(meta.get("file_id") or "")
+            source_id_match = re.fullmatch(r"db_(?:sales|inventory)_(tbl_\d+(?:_\d+)*)", file_id, re.I)
+            if source_id_match:
+                filename = source_id_match.group(1)
+            elif filename == "unknown" and file_id:
+                filename = file_id
             
             sources.append(SourceReference(
                 source_file=filename,
@@ -926,7 +1567,7 @@ class RAGChat:
             ))
         return sources
 
-    def _analytics_citations(self, records, source_rows, domain: str, limit: int = 20):
+    def _analytics_citations(self, records, source_rows, domain: str, limit: int = 20, question: str = ""):
         """Build citations from rows that actually contributed to an analytic result."""
         if records is None or not source_rows:
             return []
@@ -934,7 +1575,17 @@ class RAGChat:
             return []
         if not hasattr(records, "iterrows") and not records:
             return []
-        used = set(source_rows)
+        used = set()
+        used_by_file = set()
+        for value in source_rows:
+            if isinstance(value, (tuple, list)) and len(value) == 2:
+                row_number = _valid_source_row(value[1])
+                if row_number is not None:
+                    used_by_file.add((str(value[0]), row_number))
+            else:
+                row_number = _valid_source_row(value)
+                if row_number is not None:
+                    used.add(row_number)
         try:
             from app.schema.domain import get_domain_pack
             pack = get_domain_pack(domain)
@@ -942,20 +1593,176 @@ class RAGChat:
             pack = None
 
         chunks = []
+        seen_citations = set()
         rows = (row.to_dict() for _, row in records.iterrows()) if hasattr(records, "iterrows") else iter(records)
+        rows = list(rows)
+        bare_candidates = {}
         for row in rows:
-            row_number = row.get("source_row")
-            if row_number not in used:
+            row_number = _valid_source_row(row.get("source_row"))
+            if row_number in used:
+                identity = _valid_source_name(row.get("source_file") or row.get("file_id") or row.get("filename"))
+                if identity:
+                    bare_candidates.setdefault(row_number, {}).setdefault(identity, []).append(row)
+        q = str(question or "").casefold()
+        mentions_sales = bool(re.search(r"\b(sales?|sold|revenue|receipts?|invoices?|transactions?|customer|payment)\b", q))
+        mentions_purchases = bool(re.search(r"\b(purchases?|bought|supplier|vendor|purchase orders?)\b", q))
+        mentions_inventory = bool(re.search(r"\b(inventory|stock|batches?|expiry|reorder|on[- ]hand)\b", q))
+        preferred_role = (
+            "sales" if mentions_sales and not mentions_purchases and not mentions_inventory
+            else "purchases" if mentions_purchases and not mentions_sales and not mentions_inventory
+            else "inventory" if mentions_inventory and not mentions_sales and not mentions_purchases
+            else None
+        )
+        allowed_bare_sources = {}
+        for row_number, candidates in bare_candidates.items():
+            if len(candidates) <= 1:
                 continue
+            if preferred_role:
+                matching = set()
+                for identity, candidate_rows in candidates.items():
+                    for candidate in candidate_rows:
+                        role_text = " ".join(str(candidate.get(key) or "") for key in ("txn_type", "table_name", "source_file", "file_id")).casefold()
+                        if preferred_role == "sales" and re.search(r"sale|invoice|receipt|sales", role_text):
+                            matching.add(identity)
+                        elif preferred_role == "purchases" and re.search(r"purchase|expense|vendor|supplier", role_text):
+                            matching.add(identity)
+                        elif preferred_role == "inventory" and re.search(r"inventory|stock|batch", role_text):
+                            matching.add(identity)
+                if matching:
+                    allowed_bare_sources[row_number] = matching
+        for row in rows:
+            row_number = _valid_source_row(row.get("source_row"))
+            source_file = row.get("source_file")
+            detail_identifiers = {
+                valid_name for value in (source_file, row.get("file_id"), row.get("filename"))
+                if (valid_name := _valid_source_name(value)) is not None
+            }
+            header_identifiers = {
+                valid_name for value in (row.get("_header_source_file"), row.get("_header_file_id"))
+                if (valid_name := _valid_source_name(value)) is not None
+            }
+            header_row_number = _valid_source_row(row.get("_header_source_row"))
+            header_matches = header_row_number is not None and any((identifier, header_row_number) in used_by_file for identifier in header_identifiers)
+            detail_matches = (
+                row_number is not None
+                and (row_number in used or any((identifier, row_number) in used_by_file for identifier in detail_identifiers))
+            )
+            if row_number in used and row_number in bare_candidates and len(bare_candidates[row_number]) > 1:
+                identity = _valid_source_name(source_file or row.get("file_id") or row.get("filename"))
+                allowed = allowed_bare_sources.get(row_number, set())
+                if not allowed or identity not in allowed:
+                    continue
+            if (row_number not in used
+                    and not any((identifier, row_number) in used_by_file for identifier in detail_identifiers)
+                    and not header_matches):
+                continue
+            # For calculations and verified relationships that explicitly use
+            # both line and header provenance, keep both citations. Previously
+            # a joined row was rewritten as a header citation, hiding the
+            # contributing detail row from the user.
+            if header_matches and detail_matches and source_file:
+                detail_identity = (str(source_file), row_number)
+                if detail_identity not in seen_citations:
+                    detail_citation_row = dict(row)
+                    detail_citation_row["source_row"] = row_number
+                    chunks.append(RetrievedChunk(
+                        text=pack.row_to_text(detail_citation_row) if pack else str(detail_citation_row),
+                        metadata=detail_citation_row,
+                        score=1.0,
+                        source_row=row_number,
+                    ))
+                    seen_citations.add(detail_identity)
+                    if len(chunks) >= limit:
+                        break
+            citation_row = dict(row)
+            citation_row["source_row"] = row_number
+            if header_matches:
+                citation_row["source_file"] = row.get("_header_source_file")
+                citation_row["source_row"] = header_row_number
+                if (row.get("supplier_id") is not None and str(row.get("supplier_id")).casefold() != "nan"
+                        and row.get("invoice_total") is not None and str(row.get("invoice_total")).casefold() != "nan"):
+                    citation_row["_citation_header_grain"] = "purchase"
+                if row.get("_header_file_id") is not None:
+                    citation_row["file_id"] = row.get("_header_file_id")
+                if row.get("_header_table_name") is not None:
+                    citation_row["table_name"] = row.get("_header_table_name")
+            citation_identity = (str(citation_row.get("source_file") or citation_row.get("file_id") or ""), citation_row.get("source_row", row_number))
+            if citation_identity in seen_citations:
+                continue
+            seen_citations.add(citation_identity)
             chunks.append(RetrievedChunk(
-                text=pack.row_to_text(row) if pack else str(row),
-                metadata=row,
+                text=pack.row_to_text(citation_row) if pack else str(citation_row),
+                metadata=citation_row,
                 score=1.0,
-                source_row=row_number,
+                source_row=citation_row.get("source_row", row_number),
             ))
             if len(chunks) >= limit:
                 break
         return chunks
+
+    def _exact_identifier_answer(self, question: str, request: ChatRequest):
+        """Resolve a single selected-source record key from the complete table.
+
+        Embedding similarity is not a reliable index for identifiers (SALE-...
+        and INV-...); use the mapped source table, then cite the exact row.
+        """
+        if not request.file_ids and not request.source_files:
+            return None
+        match = re.search(
+            r"\b(?:[a-z]{1,8}[-_/])?(?:sale|sales|pur|purchase|inv|inventory|sku|batch|lot|rx|rec|receipt|invoice)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b",
+            question,
+            re.I,
+        )
+        if not match:
+            match = re.search(
+                r"\b(?:bill|invoice|receipt)\s*(?:number|no\.?|#)\s*[:#-]?\s*([a-z0-9/-]*\d[a-z0-9/-]*)\b",
+                question,
+                re.I,
+            )
+        if not match:
+            return None
+        records, _ = self._get_records_for_analytics(request, {})
+        from app.analytics.tabular_query import answer_tabular_question
+        result = answer_tabular_question(question, records)
+        if result is None or "lookup_id" not in result.get("values", {}):
+            return None
+        source_rows = result.get("source_rows", [])
+        wanted = str(result["values"]["lookup_id"]).casefold().replace("_", "-")
+        record_rows = records.to_dict("records") if hasattr(records, "to_dict") else list(records or [])
+        id_columns = (
+            "invoice_id", "invoice_no", "reference_number", "reference_no", "bill_no", "bill_number", "receipt_id",
+            "transaction_id", "purchase_order_no", "product_code", "batch_no",
+            "batch_number", "lot_no", "lot_number", "product_id",
+        )
+        exact_rows = [
+            row for row in record_rows
+            if any(str(row.get(column, "")).strip().casefold().replace("_", "-") == wanted for column in id_columns)
+        ]
+        if exact_rows:
+            records = exact_rows
+            asks_header_field = bool(re.search(
+                r"\b(payment method|payment type|payment mode|receipt status|invoice status|status|invoice total|paid amount|amount paid|customer balance|outstanding balance|balance due|invoice date|receipt date|date)\b",
+                question,
+                re.I,
+            ) or re.search(r"\b(amount|how much)\b.{0,25}\b(paid|received)\b|\b(paid|received)\b.{0,25}\b(amount|how much)\b", question, re.I))
+            if (asks_header_field
+                    and any(_valid_source_name(row.get("_header_source_file")) for row in exact_rows)
+                    and any(_valid_source_row(row.get("_header_source_row")) is not None for row in exact_rows)):
+                scoped_rows = list(dict.fromkeys(
+                    (_valid_source_name(row.get("_header_source_file")), _valid_source_row(row.get("_header_source_row")))
+                    for row in exact_rows
+                    if _valid_source_name(row.get("_header_source_file")) and _valid_source_row(row.get("_header_source_row")) is not None
+                ))
+            else:
+                scoped_rows = [
+                    (_valid_source_name(row.get("source_file")), _valid_source_row(row.get("source_row")))
+                    for row in exact_rows
+                    if _valid_source_name(row.get("source_file")) and _valid_source_row(row.get("source_row")) is not None
+                ]
+            if scoped_rows:
+                source_rows = scoped_rows
+        chunks = self._analytics_citations(records, source_rows, request.domain, question=question)
+        return result, self._format_sources(chunks)
 
 
     def _format_computed_values_context(self, computed_values: dict) -> str:
@@ -1160,6 +1967,16 @@ class RAGChat:
                 parts.append("\n".join(lines))
                 continue
             parts.append(f"{label}: {self._format_analytics_number(item['value'], item.get('unit', ''))}")
+            if key in {"revenue_trend", "units_trend"}:
+                series = item.get("series") or []
+                if len(series) >= 2:
+                    parts.append(f"Comparison: {series[-2]['period']} to {series[-1]['period']}.")
+                period = item.get("period") or {}
+                if period.get("start") and period.get("end"):
+                    parts.append(f"Data coverage: {period['start']} to {period['end']}.")
+                scope = (item.get("provenance") or {}).get("filter")
+                if scope:
+                    parts.append(f"Scope: {scope}.")
             if breakdown:
                 label_keys = (
                     "product_id", "product", "medicine_name", "supplier_name", "supplier_id",
@@ -1321,7 +2138,21 @@ class RAGChat:
                 pass
             return combined_df, []
 
-        # Fallback: if not explicitly scoped or running in mocked test environment, search KB
+        # If a source was selected but is not registered as a local/SQL path,
+        # load every indexed source row from encrypted Chroma record metadata.
+        # Top-k semantic search is only for evidence retrieval; it is never a
+        # complete ledger and must not feed totals, stock, purchase, or exact-ID
+        # calculations.
+        if request.file_ids or request.source_files:
+            try:
+                records = self.kb.get_dataframe(request.file_ids, request.source_files)
+                if records is not None and not records.empty:
+                    return records, []
+            except (AttributeError, ValueError, TypeError):
+                pass
+
+        # Fallback for older indexes that do not yet contain encrypted row
+        # payloads, and for unscoped knowledge retrieval.
         citation_chunks = self.kb.search(
             request.question,
             top_k=50,
@@ -1344,6 +2175,7 @@ class RAGChat:
             self._rewrite_follow_up(question, request.session_id)
         )
         lang = self._detect_query_language(question)
+        suggestion_request = is_dataset_question_suggestion_request(question)
 
         protected_answer = self._protected_question_answer(question, lang)
         if protected_answer:
@@ -1351,13 +2183,32 @@ class RAGChat:
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
             session_manager.append_turn(request.session_id, "assistant", protected_answer, domain=request.domain, route=RouteType.RAG, timing=timing)
             return ChatResponse(answer=protected_answer, route=RouteType.RAG, sources=[], computed_values=None, session_id=request.session_id, timing=timing)
+
+        selected_scope_is_tables_only = self._selected_scope_is_structured_only(request)
+        if is_procedural_how_to_question(intent_question) and selected_scope_is_tables_only:
+            limitation = (
+                "I can't verify those application steps from the selected sources. They contain structured records, but no workflow documentation. "
+                "Please provide the relevant user guide or check with your administrator."
+            )
+            timing = round(time.time() - start_time, 2)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", limitation, domain=request.domain, route=RouteType.RAG, timing=timing)
+            return ChatResponse(
+                answer=limitation,
+                route=RouteType.RAG,
+                sources=[],
+                computed_values={"workflow_documentation": {"name": "Workflow documentation", "value": None, "status": "unavailable", "reason": "The selected scope contains structured POS tables but no workflow documentation."}},
+                session_id=request.session_id,
+                timing=timing,
+            )
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(intent_question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
                 source_files=request.source_files,
-                lang=lang
+                lang=lang,
+                question=intent_question,
             )
             timing = round(time.time() - start_time, 2)
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
@@ -1379,6 +2230,34 @@ class RAGChat:
                 timing=timing
             )
 
+        schema_result = self._table_field_lookup(intent_question, request)
+        if schema_result is not None:
+            timing = round(time.time() - start_time, 2)
+            matched = self._analytics_citations(
+                schema_result["records"], schema_result["source_rows"], request.domain,
+                question=intent_question,
+            )
+            sources = self._format_sources(matched)
+            direct_answer = schema_result["answer"]
+            computed_values = {"schema_lookup": {"name": "Structured table lookup", "value": schema_result["values"], "status": "ok"}}
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=RouteType.ANALYTICS, sources=[s.model_dump() for s in sources], timing=timing)
+            return ChatResponse(answer=direct_answer, route=RouteType.ANALYTICS, sources=sources, computed_values=computed_values, session_id=request.session_id, timing=timing)
+
+        relationship_result = self._sales_key_relationship_lookup(intent_question, request)
+        if relationship_result is not None:
+            timing = round(time.time() - start_time, 2)
+            matched = self._analytics_citations(
+                relationship_result["records"], relationship_result["source_rows"], request.domain,
+                question=intent_question,
+            )
+            sources = self._format_sources(matched)
+            direct_answer = relationship_result["answer"]
+            computed_values = {"schema_relationship": {"name": "Verified table relationship", "value": relationship_result["values"], "status": "ok"}}
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=RouteType.ANALYTICS, sources=[s.model_dump() for s in sources], timing=timing)
+            return ChatResponse(answer=direct_answer, route=RouteType.ANALYTICS, sources=sources, computed_values=computed_values, session_id=request.session_id, timing=timing)
+
         last_turn = session_manager.get_last_assistant_turn(request.session_id)
         last_route = last_turn.get("route") if last_turn else None
         route = classify_route(intent_question, last_route=last_route)
@@ -1391,15 +2270,37 @@ class RAGChat:
             and request.domain == "pharmacy"
             and len(request.file_ids or []) == 1
             and intent_question != question
-            and re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|sku)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", intent_question, re.I)
+            and re.search(r"\b(?:sale|sales|pur|purchase|inv|inventory|sku|rec|receipt|invoice)[-_/]?[a-z0-9-]*\d[a-z0-9-]*\b", intent_question, re.I)
         ):
             route = RouteType.ANALYTICS
         filters = extract_filters(intent_question, request.domain)
+        if self._uses_inventory_expiry_date(intent_question):
+            for key in ("date_from", "date_to", "start_date", "end_date", "relative_days", "month", "day"):
+                filters.pop(key, None)
+        if re.search(r"\b(today|tonight)\b", intent_question, re.I) and re.search(r"\b(according to|in|from)\s+(?:the\s+)?(?:dataset|data|records?|file)\b", intent_question, re.I):
+            # "Today according to the dataset" is dataset-relative language:
+            # resolve it to the latest available source date in the tabular
+            # planner, not the machine's current calendar day.
+            for date_key in ("as_of", "date_from", "date_to", "start_date", "end_date"):
+                filters.pop(date_key, None)
         if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
             token in intent_question.casefold()
             for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
         ):
             filters["as_of"] = date.today().isoformat()
+
+        # Keep exact-ID fast retrieval for record questions. Once the router
+        # has classified an exact-ID field calculation as analytics, let the
+        # tabular planner preserve its operation and header-grain provenance.
+        exact_lookup = self._exact_identifier_answer(intent_question, request) if route == RouteType.RAG else None
+        if exact_lookup is not None:
+            exact_result, direct_sources = exact_lookup
+            direct_answer = exact_result["answer"]
+            timing = round(time.time() - start_time, 3)
+            computed_values = {"record_lookup": {"name": "Exact record lookup", "value": exact_result.get("values"), "status": "ok"}}
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=RouteType.RAG, sources=[s.model_dump() for s in direct_sources], timing=timing)
+            return ChatResponse(answer=direct_answer, route=RouteType.RAG, sources=direct_sources, computed_values=computed_values, session_id=request.session_id, timing=timing)
 
         # Product-catalog attribute lookups (brand price points, pack size,
         # manufacturer, discount, availability) are exact structured facts.
@@ -1411,7 +2312,7 @@ class RAGChat:
             from app.analytics.tabular_query import answer_product_catalog_question
             catalog_result = answer_product_catalog_question(intent_question, catalog_records)
             if catalog_result is not None:
-                citation_chunks = self._analytics_citations(catalog_records, catalog_result.get("source_rows", []), request.domain)
+                citation_chunks = self._analytics_citations(catalog_records, catalog_result.get("source_rows", []), request.domain, question=intent_question)
                 direct_sources = self._format_sources(citation_chunks)
                 direct_answer = catalog_result["answer"]
                 timing = round(time.time() - start_time, 3)
@@ -1426,52 +2327,81 @@ class RAGChat:
         tabular_answer = None
         
         if route == RouteType.CHITCHAT:
-            # Skip retrieval for greetings
+            fast_reply = self._get_fast_chitchat_response(intent_question, lang)
+            if fast_reply:
+                timing = round(time.time() - start_time, 3)
+                session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                session_manager.append_turn(request.session_id, "assistant", fast_reply, domain=request.domain, route=RouteType.CHITCHAT, sources=None, timing=timing)
+                return ChatResponse(answer=fast_reply, route=RouteType.CHITCHAT, sources=[], computed_values=None, session_id=request.session_id, timing=timing)
             pass
             
         elif route == RouteType.ANALYTICS:
-            records, citation_chunks = self._get_records_for_analytics(request, filters)
-            filters = self._resolve_relative_date_filter(filters, records)
-            relative_error = filters.pop("_date_filter_error", None)
-            if relative_error:
-                computed_values, source_rows = {
-                    "total_revenue": {
-                        "name": "Sales", "value": None, "unit": "PKR",
-                        "status": "unavailable", "reason": relative_error,
-                    }
-                }, []
-            else:
-                # Evaluate common table questions against every selected row.
-                # This is separate from semantic top-k retrieval: filtered lists
-                # and totals must use the complete selected dataset.
-                tabular_result = None
-                if request.domain == "pharmacy" and len(request.file_ids or []) == 1:
+            tabular_result = analytics_request_guard(intent_question)
+            records, citation_chunks = ([], []) if tabular_result is not None else self._get_records_for_analytics(request, filters)
+            if tabular_result is None and request.domain == "pharmacy" and len(request.file_ids or []) > 1:
+                tabular_result = self._relative_period_comparison(intent_question, records, request.domain, lang)
+                if tabular_result is None and re.search(r"\bhow many\b", intent_question, re.I) and re.search(r"\binvoice\s+header\s+records?\b", intent_question, re.I):
                     from app.analytics.tabular_query import answer_tabular_question
-                    tabular_result = answer_tabular_question(intent_question, records)
-                if tabular_result is not None:
-                    tabular_answer = tabular_result["answer"]
-                    computed_values = {"tabular_result": {"name": "Tabular query", "value": tabular_result["values"], "status": "ok"}}
-                    source_rows = tabular_result["source_rows"]
+                    tabular_result = answer_tabular_question(intent_question, records, filters=filters)
+                if tabular_result is None and re.search(r"\bhow many\b.{0,35}\b(racks?|warehouses?|locations?|shelves?)\b", intent_question, re.I) and re.search(r"\b(distinct|unique|different)\b", intent_question, re.I) and re.search(r"\b(positive stock|stock|inventory|in stock|on[- ]hand)\b", intent_question, re.I):
+                    from app.analytics.tabular_query import answer_tabular_question
+                    tabular_result = answer_tabular_question(intent_question, records, filters=filters)
+                if tabular_result is None and not filters.get("relative_days"):
+                    from app.analytics.tabular_query import answer_cross_dataset_question, is_cross_table_pharmacy_risk_question, is_distinct_entity_count_question, is_ranked_record_count_question
+                    if not is_cross_table_pharmacy_risk_question(intent_question) and not is_distinct_entity_count_question(intent_question) and not is_ranked_record_count_question(intent_question):
+                        tabular_result = answer_cross_dataset_question(intent_question, records)
+            if tabular_result is None and request.domain == "pharmacy":
+                from app.analytics.tabular_query import is_cross_table_pharmacy_risk_question, answer_tabular_question
+                if is_cross_table_pharmacy_risk_question(intent_question):
+                    hybrid_filters = self._resolve_relative_date_filter(filters, records)
+                    date_error = hybrid_filters.pop("_date_filter_error", None)
+                    if date_error:
+                        tabular_result = {"answer": date_error, "values": {"status": "unavailable", "reason": date_error}, "source_rows": []}
+                    else:
+                        tabular_result = answer_tabular_question(intent_question, records, filters=hybrid_filters)
+            if tabular_result is None and request.domain == "pharmacy":
+                from app.analytics.tabular_query import answer_tabular_question
+                tabular_filters = self._resolve_relative_date_filter(filters, records)
+                date_error = tabular_filters.pop("_date_filter_error", None)
+                if date_error:
+                    tabular_result = {"answer": date_error, "values": {"status": "unavailable", "reason": date_error}, "source_rows": []}
                 else:
-                    # Compute deterministically via the Module 6.6 KPI engine.
+                    tabular_result = answer_tabular_question(intent_question, records, filters=tabular_filters)
+            if tabular_result is not None:
+                tabular_answer = tabular_result["answer"]
+                computed_values = {"tabular_result": {"name": "Tabular query", "value": tabular_result["values"], "status": tabular_result["values"].get("status", "ok")}}
+                source_rows = tabular_result["source_rows"]
+            else:
+                filters = self._resolve_relative_date_filter(filters, records)
+                relative_error = filters.pop("_date_filter_error", None)
+                if relative_error:
+                    computed_values, source_rows = {
+                        "total_revenue": {
+                            "name": "Sales", "value": None, "unit": "PKR",
+                            "status": "unavailable", "reason": relative_error,
+                        }
+                    }, []
+                else:
                     computed_values, source_rows = self.analytics_router.compute(
                         intent_question, filters, records, request.domain
                     )
             if computed_values:
-                matched = self._analytics_citations(records, source_rows, request.domain)
+                matched = self._analytics_citations(records, source_rows, request.domain, question=intent_question)
                 sources = self._format_sources(matched)
                  
         elif route == RouteType.RAG:
             # Dynamic retrieval depth: widen when date or category filters are active
-            retrieval_k = 25 if filters else settings.retrieval_top_k
+            retrieval_k = 25 if filters or suggestion_request else settings.retrieval_top_k
+            retrieval_started = time.perf_counter()
             chunks = self.kb.search(
-                intent_question,
+                "table fields columns and recorded values in the selected data" if suggestion_request else intent_question,
                 top_k=retrieval_k,
                 filters=filters,
                 domain=request.domain,
                 file_ids=request.file_ids,
                 source_files=request.source_files
             )
+            logger.info("rag_stage_timing stage=retrieval seconds=%.3f chunks=%d", time.perf_counter() - retrieval_started, len(chunks))
             
             if not chunks:
                 # Empty retrieval is not evidence; do not let the model answer
@@ -1543,7 +2473,8 @@ class RAGChat:
         user_msg = question
         if context_text:
             user_msg = f"{context_text}\n\nQuestion: {question}"
-
+        if suggestion_request:
+            user_msg += _dataset_question_suggestion_instruction(question)
         if lang == "roman_urdu":
             user_msg += "\n\n[Instruction: Reply in natural Roman-Urdu using English/Latin alphabet only. Use natural Urdu vocabulary (e.g. 'maloomat', 'ziada', 'dastyab') and strictly avoid Hindi words like 'jaankari', 'adhik', 'uplabdh', 'anya', 'pradaan'. Do NOT use Arabic/Urdu script.]"
         elif lang == "english":
@@ -1551,12 +2482,20 @@ class RAGChat:
              
         messages.append({"role": "user", "content": user_msg})
         
-        # Auto-switch to llama3.2:3b for Roman Urdu / Urdu queries
-        effective_model = "llama3.2:3b" if lang in ("roman_urdu", "urdu_script") else None
+        effective_model = None
 
         # Call LLM
         try:
-            answer = llm.chat(messages=messages, model=effective_model)
+            resolve_started = time.perf_counter()
+            effective_model = llm.resolve_chat_model(lang)
+            logger.info("rag_stage_timing stage=model_resolution seconds=%.3f", time.perf_counter() - resolve_started)
+            generation_started = time.perf_counter()
+            logger.info("rag_stage_timing stage=pre_generation seconds=%.3f", generation_started - start_time)
+            answer = llm.chat(
+                messages=messages, model=effective_model,
+                options={"num_predict": 128} if route == RouteType.RAG else None,
+            )
+            logger.info("rag_stage_timing stage=model_call seconds=%.3f", time.perf_counter() - generation_started)
         except Exception as e:
             answer = f"Error: LLM unavailable ({str(e)}). I am returning offline results if any."
 
@@ -1574,7 +2513,7 @@ class RAGChat:
                     {"role": "system", "content": "You are a translator. Rewrite the user's text into Roman-Urdu using ONLY the English/Latin alphabet (e.g. 'Aap ... ke data se deal kar rahe hain'). DO NOT use Arabic or Urdu script."},
                     {"role": "user", "content": answer}
                 ]
-                cleaned = llm.chat(messages=fix_messages)
+                cleaned = llm.chat(messages=fix_messages, model=effective_model)
                 if cleaned and not any('\u0600' <= c <= '\u06FF' for c in cleaned):
                     answer = self._clean_roman_urdu_vocabulary(cleaned)
             except Exception:
@@ -1609,6 +2548,7 @@ class RAGChat:
             self._rewrite_follow_up(question, request.session_id)
         )
         lang = self._detect_query_language(question)
+        suggestion_request = is_dataset_question_suggestion_request(question)
 
         protected_answer = self._protected_question_answer(question, lang)
         if protected_answer:
@@ -1617,13 +2557,30 @@ class RAGChat:
             session_manager.append_turn(request.session_id, "assistant", protected_answer, domain=request.domain, route=RouteType.RAG, timing=timing)
             yield json.dumps({"chunk": protected_answer, "route": RouteType.RAG, "sources": [], "computed_values": None}) + "\n"
             return
+
+        if is_procedural_how_to_question(intent_question) and self._selected_scope_is_structured_only(request):
+            limitation = (
+                "I can't verify those application steps from the selected sources. They contain structured records, but no workflow documentation. "
+                "Please provide the relevant user guide or check with your administrator."
+            )
+            timing = round(time.time() - start_time, 2)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", limitation, domain=request.domain, route=RouteType.RAG, timing=timing)
+            yield json.dumps({
+                "chunk": limitation,
+                "route": RouteType.RAG,
+                "sources": [],
+                "computed_values": {"workflow_documentation": {"name": "Workflow documentation", "value": None, "status": "unavailable", "reason": "The selected scope contains structured records and no workflow documentation."}},
+            }) + "\n"
+            return
         
         # Fast path for metadata/data-source listing inquiries (<0.01s instant answer)
         if self._is_data_source_inquiry(intent_question):
             direct_answer = self._format_data_source_response(
                 file_ids=request.file_ids,
                 source_files=request.source_files,
-                lang=lang
+                lang=lang,
+                question=intent_question,
             )
             timing = round(time.time() - start_time, 2)
             session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
@@ -1644,51 +2601,155 @@ class RAGChat:
             }) + "\n"
             return
 
+        schema_result = self._table_field_lookup(intent_question, request)
+        if schema_result is not None:
+            matched = self._analytics_citations(
+                schema_result["records"], schema_result["source_rows"], request.domain,
+                question=intent_question,
+            )
+            serializable_sources = [source.model_dump() for source in self._format_sources(matched)]
+            direct_answer = schema_result["answer"]
+            computed_values = {"schema_lookup": {"name": "Structured table lookup", "value": schema_result["values"], "status": "ok"}}
+            timing = round(time.time() - start_time, 3)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(
+                request.session_id, "assistant", direct_answer, domain=request.domain,
+                route=RouteType.ANALYTICS, sources=serializable_sources, timing=timing,
+            )
+            yield json.dumps({
+                "chunk": direct_answer,
+                "route": RouteType.ANALYTICS,
+                "sources": serializable_sources,
+                "computed_values": computed_values,
+            }) + "\n"
+            return
+
+        relationship_result = self._sales_key_relationship_lookup(intent_question, request)
+        if relationship_result is not None:
+            matched = self._analytics_citations(
+                relationship_result["records"], relationship_result["source_rows"], request.domain,
+                question=intent_question,
+            )
+            serializable_sources = [source.model_dump() for source in self._format_sources(matched)]
+            direct_answer = relationship_result["answer"]
+            computed_values = {"schema_relationship": {"name": "Verified table relationship", "value": relationship_result["values"], "status": "ok"}}
+            timing = round(time.time() - start_time, 3)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(
+                request.session_id, "assistant", direct_answer, domain=request.domain,
+                route=RouteType.ANALYTICS, sources=serializable_sources, timing=timing,
+            )
+            yield json.dumps({
+                "chunk": direct_answer,
+                "route": RouteType.ANALYTICS,
+                "sources": serializable_sources,
+                "computed_values": computed_values,
+            }) + "\n"
+            return
+
         last_turn = session_manager.get_last_assistant_turn(request.session_id)
         last_route = last_turn.get("route") if last_turn else None
         route = classify_route(intent_question, last_route=last_route)
         filters = extract_filters(intent_question, request.domain)
+        if self._uses_inventory_expiry_date(intent_question):
+            for key in ("date_from", "date_to", "start_date", "end_date", "relative_days", "month", "day"):
+                filters.pop(key, None)
         if route == RouteType.ANALYTICS and not filters.get("as_of") and any(
             token in intent_question.casefold()
             for token in ("forecast", "predict", "prediction", "projection", "next month", "next week", "expected sales")
         ):
             filters["as_of"] = date.today().isoformat()
+
+        exact_lookup = self._exact_identifier_answer(intent_question, request)
+        if exact_lookup is not None:
+            exact_result, direct_sources = exact_lookup
+            direct_answer = exact_result["answer"]
+            serializable_sources = [s.model_dump() for s in direct_sources]
+            timing = round(time.time() - start_time, 3)
+            session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+            session_manager.append_turn(request.session_id, "assistant", direct_answer, domain=request.domain, route=RouteType.RAG, sources=serializable_sources, timing=timing)
+            yield json.dumps({"chunk": direct_answer, "route": RouteType.RAG, "sources": serializable_sources, "computed_values": {"record_lookup": exact_result.get("values")}}) + "\n"
+            return
         
         computed_values = None
         sources = []
         context_text = ""
         
         if route == RouteType.CHITCHAT:
-            pass
+            fast_reply = self._get_fast_chitchat_response(intent_question, lang)
+            if fast_reply:
+                timing = round(time.time() - start_time, 3)
+                session_manager.append_turn(request.session_id, "user", question, domain=request.domain)
+                session_manager.append_turn(request.session_id, "assistant", fast_reply, domain=request.domain, route=RouteType.CHITCHAT, sources=None, timing=timing)
+                yield json.dumps({"chunk": fast_reply, "route": RouteType.CHITCHAT,
+                                  "sources": [], "computed_values": None}) + "\n"
+                return
         elif route == RouteType.ANALYTICS:
-            records, citation_chunks = self._get_records_for_analytics(request, filters)
-            filters = self._resolve_relative_date_filter(filters, records)
-            relative_error = filters.pop("_date_filter_error", None)
-            if relative_error:
-                computed_values, source_rows = {
-                    "total_revenue": {
-                        "name": "Sales", "value": None, "unit": "PKR",
-                        "status": "unavailable", "reason": relative_error,
-                    }
-                }, []
+            tabular_result = analytics_request_guard(intent_question)
+            records, citation_chunks = ([], []) if tabular_result is not None else self._get_records_for_analytics(request, filters)
+            if tabular_result is None and request.domain == "pharmacy" and len(request.file_ids or []) > 1:
+                tabular_result = self._relative_period_comparison(intent_question, records, request.domain, lang)
+                if tabular_result is None and re.search(r"\bhow many\b", intent_question, re.I) and re.search(r"\binvoice\s+header\s+records?\b", intent_question, re.I):
+                    from app.analytics.tabular_query import answer_tabular_question
+                    tabular_result = answer_tabular_question(intent_question, records, filters=filters)
+                if tabular_result is None and re.search(r"\bhow many\b.{0,35}\b(racks?|warehouses?|locations?|shelves?)\b", intent_question, re.I) and re.search(r"\b(distinct|unique|different)\b", intent_question, re.I) and re.search(r"\b(positive stock|stock|inventory|in stock|on[- ]hand)\b", intent_question, re.I):
+                    from app.analytics.tabular_query import answer_tabular_question
+                    tabular_result = answer_tabular_question(intent_question, records, filters=filters)
+                if tabular_result is None and not filters.get("relative_days"):
+                    from app.analytics.tabular_query import answer_cross_dataset_question, is_cross_table_pharmacy_risk_question, is_distinct_entity_count_question, is_ranked_record_count_question
+                    if not is_cross_table_pharmacy_risk_question(intent_question) and not is_distinct_entity_count_question(intent_question) and not is_ranked_record_count_question(intent_question):
+                        tabular_result = answer_cross_dataset_question(intent_question, records)
+            if tabular_result is None and request.domain == "pharmacy":
+                from app.analytics.tabular_query import is_cross_table_pharmacy_risk_question, answer_tabular_question
+                if is_cross_table_pharmacy_risk_question(intent_question):
+                    hybrid_filters = self._resolve_relative_date_filter(filters, records)
+                    date_error = hybrid_filters.pop("_date_filter_error", None)
+                    if date_error:
+                        tabular_result = {"answer": date_error, "values": {"status": "unavailable", "reason": date_error}, "source_rows": []}
+                    else:
+                        tabular_result = answer_tabular_question(intent_question, records, filters=hybrid_filters)
+            if tabular_result is None and request.domain == "pharmacy":
+                from app.analytics.tabular_query import answer_tabular_question
+                tabular_filters = self._resolve_relative_date_filter(filters, records)
+                date_error = tabular_filters.pop("_date_filter_error", None)
+                if date_error:
+                    tabular_result = {"answer": date_error, "values": {"status": "unavailable", "reason": date_error}, "source_rows": []}
+                else:
+                    tabular_result = answer_tabular_question(intent_question, records, filters=tabular_filters)
+            if tabular_result is not None:
+                answer = tabular_result["answer"]
+                computed_values = {"tabular_result": {"name": "Tabular query", "value": tabular_result["values"], "status": tabular_result["values"].get("status", "ok")}}
+                source_rows = tabular_result["source_rows"]
             else:
-                computed_values, source_rows = self.analytics_router.compute(
-                    intent_question, filters, records, request.domain
-                )
+                filters = self._resolve_relative_date_filter(filters, records)
+                relative_error = filters.pop("_date_filter_error", None)
+                if relative_error:
+                    computed_values, source_rows = {
+                        "total_revenue": {
+                            "name": "Sales", "value": None, "unit": "PKR",
+                            "status": "unavailable", "reason": relative_error,
+                        }
+                    }, []
+                else:
+                    computed_values, source_rows = self.analytics_router.compute(
+                        intent_question, filters, records, request.domain
+                    )
             if computed_values:
-                matched = self._analytics_citations(records, source_rows, request.domain)
+                matched = self._analytics_citations(records, source_rows, request.domain, question=intent_question)
                 sources = self._format_sources(matched)
                  
         elif route == RouteType.RAG:
-            retrieval_k = 25 if filters else settings.retrieval_top_k
+            retrieval_k = 25 if filters or suggestion_request else settings.retrieval_top_k
+            retrieval_started = time.perf_counter()
             chunks = self.kb.search(
-                intent_question,
+                "table fields columns and recorded values in the selected data" if suggestion_request else intent_question,
                 top_k=retrieval_k,
                 filters=filters,
                 domain=request.domain,
                 file_ids=request.file_ids,
                 source_files=request.source_files
             )
+            logger.info("rag_stage_timing stage=retrieval seconds=%.3f chunks=%d", time.perf_counter() - retrieval_started, len(chunks))
             if not chunks:
                 yield json.dumps({
                     "chunk": self._missing_evidence_answer(question, lang),
@@ -1713,7 +2774,7 @@ class RAGChat:
             context_text = self._format_context_records(chunks, selected_sources=request.file_ids) if chunks else ""
 
         if route == RouteType.ANALYTICS:
-            answer = self._format_analytics_answer(question, computed_values, lang, filters)
+            answer = tabular_result["answer"] if tabular_result is not None else self._format_analytics_answer(question, computed_values, lang, filters)
             timing = round(time.time() - start_time, 2)
             serializable_sources = [
                 s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in sources
@@ -1738,21 +2799,29 @@ class RAGChat:
         user_msg = question
         if context_text:
             user_msg = f"{context_text}\n\nQuestion: {question}"
-
+        if suggestion_request:
+            user_msg += _dataset_question_suggestion_instruction(question)
         if lang == "roman_urdu":
             user_msg += "\n\n[Instruction: Reply in natural Roman-Urdu using English/Latin alphabet only. Use natural Urdu vocabulary (e.g. 'maloomat', 'ziada', 'dastyab') and strictly avoid Hindi words like 'jaankari', 'adhik', 'uplabdh', 'anya', 'pradaan'. Do NOT use Arabic/Urdu script.]"
         elif lang == "english":
             user_msg += "\n\n[Instruction: Reply in English only. Do NOT use Roman-Urdu, Hindi, or Urdu.]"
              
-        # Auto-switch to llama3.2:3b for Roman Urdu / Urdu queries
-        effective_model = "llama3.2:3b" if lang in ("roman_urdu", "urdu_script") else None
+        effective_model = None
 
         messages.append({"role": "user", "content": user_msg})
 
         serializable_sources = [s.model_dump() if hasattr(s, 'model_dump') else (s.dict() if hasattr(s, 'dict') else s) for s in sources] if sources else []
         full_answer = ""
         try:
-            for chunk in llm.chat_stream(messages=messages, model=effective_model):
+            resolve_started = time.perf_counter()
+            effective_model = llm.resolve_chat_model(lang)
+            logger.info("rag_stage_timing stage=model_resolution seconds=%.3f", time.perf_counter() - resolve_started)
+            generation_started = time.perf_counter()
+            logger.info("rag_stage_timing stage=pre_generation seconds=%.3f", generation_started - start_time)
+            for chunk in llm.chat_stream(
+                messages=messages, model=effective_model,
+                options={"num_predict": 128} if route == RouteType.RAG else None,
+            ):
                 full_answer += chunk
                 # Stop streaming if model starts echoing raw Computed Values block
                 if "computed values" in full_answer.lower():
@@ -1764,12 +2833,12 @@ class RAGChat:
                     "computed_values": computed_values,
                     "active_model": effective_model or llm.model
                 }) + "\n"
+            logger.info("rag_stage_timing stage=model_call seconds=%.3f", time.perf_counter() - generation_started)
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"
             return
              
         timing = round(time.time() - start_time, 2)
-        import re
         saved_answer = re.sub(r'\n*computed values.*', '', full_answer, flags=re.DOTALL | re.IGNORECASE).strip()
         if lang == "roman_urdu":
             saved_answer = self._clean_roman_urdu_vocabulary(saved_answer)

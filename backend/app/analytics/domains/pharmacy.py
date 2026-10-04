@@ -106,7 +106,7 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
     # 2. Demand forecasting
     (
         (
-            "demand for", "forecast demand for", "how much should i order for", "how much to order for",
+            "demand for", "what is the demand", "forecast demand for", "how much should i order for", "how much to order for",
             "kitna mangwana", "kitni dawai mangwani", "dawai ki demand",
         ),
         ("product_demand_forecast", "demand_forecast"),
@@ -124,7 +124,7 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
         (
             "liquidation", "liquidation suggestions", "liquidation plan", "return to distributor",
             "bundle or discount", "prioritize selling because of their expiry", "prioritize selling",
-            "expiring soon", "which vendor supplied the medicines that are expiring", "which category has the most soon-to-expire",
+            "which vendor supplied the medicines that are expiring", "which category has the most soon-to-expire",
             "high-value medicines are close to expiry", "close to expiry",
         ),
         ("expiring_medicines_liquidation", "near_expiry_total", "near_expiry_item_count"),
@@ -170,7 +170,7 @@ PHARMACY_QUESTION_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
             "how many vendors", "active vendors", "vendor supplies", "outstanding balances",
             "highest balance", "purchase orders", "purchase order", "total value of my purchase orders",
             "largest purchase order", "latest purchase order", "not been fully paid", "owe suppliers",
-            "recently received", "vendor supplied", "ordered versus received", "vendor", "vendors", "supplier", "suppliers",
+            "recently received", "vendor supplied", "ordered versus received",
         ),
         ("expense_breakdown_by_supplier", "total_expenses", "supplier_payable_by_supplier", "supplier_payable_total"),
     ),
@@ -1756,6 +1756,7 @@ def register(engine, domain: str = "pharmacy") -> None:
 
 def category_product_counts(df: pd.DataFrame, filters: KPIFilters, domain: str = "pharmacy") -> KPIResult:
     """Distinct product and item counts grouped by canonical category."""
+    from app.analytics.kpi import _no_rows
     key, name = "category_product_counts", "Products per Category"
     formula = "count of distinct products and items grouped by category"
 

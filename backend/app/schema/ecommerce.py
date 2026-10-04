@@ -229,14 +229,16 @@ class EcommerceDomainPack(DomainPack):
                 amt_val = float(sale_amt)
                 if amt_val < 0:
                     problems.append(Problem(
+                        severity="warning", code="NEGATIVE_SALE_AMOUNT",
                         field="sale_amount",
-                        row_idx=row_idx,
+                        row_index=row_idx,
                         message=f"Negative sale amount ({amt_val}) on non-refund record"
                     ))
             except (ValueError, TypeError):
                 problems.append(Problem(
+                    severity="error", code="UNPARSEABLE_NUMBER",
                     field="sale_amount",
-                    row_idx=row_idx,
+                    row_index=row_idx,
                     message="Invalid numeric format for sale_amount"
                 ))
 
@@ -247,8 +249,9 @@ class EcommerceDomainPack(DomainPack):
                 r_val = float(rating)
                 if r_val < 1 or r_val > 5:
                     problems.append(Problem(
+                        severity="warning", code="INVALID_RATING",
                         field="rating",
-                        row_idx=row_idx,
+                        row_index=row_idx,
                         message=f"Review rating {r_val} outside expected 1-5 range"
                     ))
             except (ValueError, TypeError):

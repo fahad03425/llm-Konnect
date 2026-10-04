@@ -24,6 +24,159 @@ def test_classify_route():
     assert classify_route("show me invoices from yesterday") == RouteType.RAG
 
 
+def test_exact_invoice_payment_method_does_not_use_payment_status_as_method():
+    chunks = [RetrievedChunk(
+        text="Invoice REC-00031 | Status: 1 | Amount: 780",
+        metadata={"invoice_id": "REC-00031", "status": 1}, score=1.0,
+    )]
+    answer, cited = RAGChat._direct_record_answer(
+        "What payment method did receipt REC-00031 use?", chunks
+    )
+    assert "does not include a payment method" in answer
+    assert "Payment status: 1" not in answer
+    assert cited == chunks[:3]
+
+
+@pytest.mark.parametrize("question", [
+    "How do I void a posted invoice in Asan Pos?",
+    "The receipt printer stopped working after a sale. What should I check in Asan Pos?",
+])
+def test_table_only_scope_declines_undocumented_pos_workflow_steps(question):
+    request = ChatRequest(
+        question=question,
+        session_id="workflow-doc-gap",
+        domain="pharmacy",
+        file_ids=["db_inventory_tbl_10", "db_sales_tbl_21"],
+    )
+    response = RAGChat().ask(request)
+
+    assert response.route == "rag"
+    assert "can't verify those application steps" in response.answer
+    assert "no workflow documentation" in response.computed_values["workflow_documentation"]["reason"]
+    assert response.sources == []
+
+
+def test_exact_receipt_header_field_cites_invoice_header_not_sales_lines():
+    import pandas as pd
+
+    chat = RAGChat.__new__(RAGChat)
+    frame = pd.DataFrame({
+        "invoice_id": ["REC-00031", "REC-00031"],
+        "transaction_id": [31, 31],
+        "payment_method": ["Cash", "Cash"],
+        "amount": [100, 200],
+        "source_file": ["sql://sales/tbl_22"] * 2,
+        "source_row": [89, 90],
+        "_header_source_file": ["sql://sales/tbl_21"] * 2,
+        "_header_source_row": [31, 31],
+        "_header_file_id": ["db_sales_tbl_21"] * 2,
+        "_header_table_name": ["tbl_21"] * 2,
+    })
+    chat._get_records_for_analytics = lambda request, filters: (frame, None)
+    request = ChatRequest(
+        question="What payment method is recorded for receipt REC-00031?",
+        session_id="exact-header-citation",
+        domain="pharmacy",
+        file_ids=["db_sales_tbl_22"],
+    )
+    result, sources = chat._exact_identifier_answer(request.question, request)
+    assert "Cash" in result["answer"]
+    assert [(source.source_file, source.source_row) for source in sources] == [("tbl_21", 31)]
+
+
+def test_contextual_receipt_date_cites_invoice_header_not_sales_lines():
+    import pandas as pd
+
+    chat = RAGChat.__new__(RAGChat)
+    frame = pd.DataFrame({
+        "invoice_id": ["REC-00031", "REC-00031"],
+        "transaction_id": [31, 31],
+        "date": ["2026-08-17 21:46:00"] * 2,
+        "amount": [100, 200],
+        "source_file": ["sql://sales/tbl_22"] * 2,
+        "source_row": [89, 90],
+        "_header_source_file": ["sql://sales/tbl_21"] * 2,
+        "_header_source_row": [31, 31],
+        "_header_file_id": ["db_sales_tbl_21"] * 2,
+        "_header_table_name": ["tbl_21"] * 2,
+    })
+    chat._get_records_for_analytics = lambda request, filters: (frame, None)
+    request = ChatRequest(
+        question="What date was receipt REC-00031 recorded?",
+        session_id="exact-header-date-citation",
+        domain="pharmacy",
+        file_ids=["db_sales_tbl_22"],
+    )
+    result, sources = chat._exact_identifier_answer(request.question, request)
+    assert "2026-08-17" in result["answer"]
+    assert [(source.source_file, source.source_row) for source in sources] == [("tbl_21", 31)]
+
+
+def test_exact_invoice_paid_amount_cites_invoice_header_not_sales_lines():
+    import pandas as pd
+
+    chat = RAGChat.__new__(RAGChat)
+    frame = pd.DataFrame({
+        "invoice_id": ["REC-00031", "REC-00031"],
+        "transaction_id": [31, 31],
+        "amount": [100, 200],
+        "paid_amount": [300, 300],
+        "source_file": ["sql://sales/tbl_22"] * 2,
+        "source_row": [89, 90],
+        "_header_source_file": ["sql://sales/tbl_21"] * 2,
+        "_header_source_row": [31, 31],
+        "_header_file_id": ["db_sales_tbl_21"] * 2,
+        "_header_table_name": ["tbl_21"] * 2,
+    })
+    chat._get_records_for_analytics = lambda request, filters: (frame, None)
+    request = ChatRequest(
+        question="What amount was paid toward invoice REC-00031?",
+        session_id="exact-header-paid-citation",
+        domain="pharmacy",
+        file_ids=["db_sales_tbl_22"],
+    )
+    result, sources = chat._exact_identifier_answer(request.question, request)
+    assert result["values"]["amount_paid"] == 300
+    assert [(source.source_file, source.source_row) for source in sources] == [("tbl_21", 31)]
+
+
+def test_roman_urdu_kitne_batch_question_preserves_count_intent():
+    from app.language.roman_urdu import normalize_roman_urdu_intent
+    assert "how many batches" in normalize_roman_urdu_intent("Rack-D3 mein kitne batches maujood hain?")
+
+
+def test_roman_urdu_stock_units_preserves_quantity_sum_intent():
+    from app.language.roman_urdu import normalize_roman_urdu_intent
+    normalized = normalize_roman_urdu_intent("Rack-C8 mein kitne stock units hain?")
+    assert "how many units" in normalized
+    assert "how much stock units" not in normalized
+
+
+def test_roman_urdu_count_before_unique_qualifier_preserves_distinct_intent():
+    from app.language.roman_urdu import normalize_roman_urdu_intent
+    normalized = normalize_roman_urdu_intent("Current inventory snapshot mein kitne unique product IDs hain?")
+    assert "how many unique product ids" in normalized
+
+
+def test_roman_urdu_kitna_record_hua_preserves_amount_not_row_count_intent():
+    from app.language.roman_urdu import normalize_roman_urdu_intent
+    normalized = normalize_roman_urdu_intent(
+        "REC-00002 ki payment ke baad customer balance kitna record hua?"
+    )
+    assert "how much was recorded" in normalized
+    assert "how many record" not in normalized
+    assert "rec-00002" in normalized
+
+
+def test_inventory_expiry_cutoff_does_not_use_sales_date_coverage():
+    assert RAGChat._uses_inventory_expiry_date(
+        "As of 2026-10-04, how many current batches have already expired with positive stock?"
+    )
+    assert not RAGChat._uses_inventory_expiry_date(
+        "How much sales revenue was recorded on 2026-10-04?"
+    )
+
+
 def test_supplied_roman_urdu_pharmacy_100_route_and_language_regression():
     """The supplied owner-question suite must reach data analysis in Roman Urdu."""
     from pathlib import Path
@@ -585,6 +738,77 @@ def test_analytics_citations_only_include_contributing_rows():
     assert chat._analytics_citations(records, [], "") == []
 
 
+def test_analytics_citations_disambiguate_colliding_row_numbers_by_query_role():
+    chat = RAGChat()
+    records = [
+        {"source_row": 5, "source_file": "sql://sales/tbl_22", "file_id": "db_sales_tbl_22", "table_name": "tbl_22", "txn_type": "sale", "product_id": "Lipiget"},
+        {"source_row": 5, "source_file": "sql://inventory/tbl_15", "file_id": "db_inventory_tbl_15", "table_name": "tbl_15", "txn_type": "inventory", "batch_no": "PO-BATCH-1-4"},
+        {"source_row": 5, "source_file": "sql://inventory/tbl_10", "file_id": "db_inventory_tbl_10", "table_name": "tbl_10", "txn_type": "inventory", "batch_no": "LOT-202601-003"},
+    ]
+
+    chunks = chat._analytics_citations(records, [5], "pharmacy", question="How many sales units were sold?")
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["source_file"] == "sql://sales/tbl_22"
+
+
+def test_analytics_citations_skip_non_finite_source_row_metadata():
+    chat = RAGChat()
+    records = [{"source_row": float("nan"), "source_file": "sales.xlsx", "product_id": "A"}]
+
+    assert chat._analytics_citations(records, [float("nan")], "") == []
+
+
+def test_analytics_citations_can_match_file_id_when_source_file_is_null():
+    chat = RAGChat()
+    records = [{
+        "file_id": "db_sales_tbl_21", "source_file": "sql://sales/tbl_22",
+        "source_row": 7, "invoice_id": "REC-00007", "payment_method": "Cash",
+    }]
+
+    chunks = chat._analytics_citations(records, [("db_sales_tbl_21", 7)], "")
+
+    assert len(chunks) == 1
+    source = chat._format_sources(chunks)[0]
+    assert source.source_file == "tbl_21"
+    assert source.source_row == 7
+
+
+def test_analytics_citations_use_joined_header_provenance_for_header_fields():
+    chat = RAGChat()
+    base = {
+        "file_id": "db_sales_tbl_22", "source_file": "sql://sales/tbl_22",
+        "source_row": 10, "transaction_id": "1", "product_id": "A",
+        "payment_method": "Cash", "_header_file_id": "db_sales_tbl_21",
+        "_header_source_file": "sql://sales/tbl_21", "_header_source_row": 11,
+        "_header_table_name": "tbl_21",
+    }
+    records = [base, {**base, "source_row": 11, "_header_source_row": 12, "product_id": "B"}]
+
+    chunks = chat._analytics_citations(records, [("sql://sales/tbl_21", 11)], "")
+
+    assert len(chunks) == 1
+    source = chat._format_sources(chunks)[0]
+    assert source.source_file == "tbl_21"
+    assert source.source_row == 11
+
+
+def test_purchase_header_citation_label_does_not_claim_joined_batch_grain():
+    chat = RAGChat()
+    records = [{
+        "file_id": "db_inventory_tbl_15", "database_name": "inventory",
+        "source_file": "sql://inventory/tbl_15", "source_row": 1,
+        "purchase_order_no": "1", "supplier_id": "28", "invoice_total": 28798.09,
+        "batch_no": "PO-BATCH-1-0", "_header_file_id": "db_inventory_tbl_14",
+        "_header_source_file": "sql://inventory/tbl_14", "_header_source_row": 1,
+        "_header_table_name": "tbl_14",
+    }]
+    chunks = chat._analytics_citations(records, [("sql://inventory/tbl_14", 1)], "")
+    source = chat._format_sources(chunks)[0]
+    assert source.source_file == "tbl_14"
+    assert source.label == "Purchase Order 1"
+
+
 def test_analytics_forecast_answer_uses_requested_metric_and_exact_band():
     chat = RAGChat()
     values = {
@@ -711,6 +935,41 @@ def test_rag_with_results(mock_kb_class, mock_session, mock_llm):
     assert resp.sources[1].label == "Product brufen"
     
     mock_llm.chat.assert_called_once()
+
+
+def test_source_labels_skip_null_invoice_ids():
+    chat = RAGChat.__new__(RAGChat)
+    chunk = RetrievedChunk(
+        text="inventory row", metadata={"invoice_id": float("nan"), "source_file": "sql://inventory/tbl_10", "source_row": 1}, score=1.0
+    )
+    sources = chat._format_sources([chunk])
+    assert sources[0].label == "Record 1"
+
+
+def test_selected_table_count_uses_active_scope_metadata():
+    chat = RAGChat.__new__(RAGChat)
+    question = "How many tables are selected in the Asan Pos consolidated scope?"
+    assert chat._is_data_source_inquiry(question)
+    with patch.object(chat, "_get_active_source_names", return_value=[
+        "inventory — tbl_14", "inventory — tbl_15", "sales — tbl_21"
+    ]):
+        answer = chat._format_data_source_response(file_ids=["a", "b", "c"], question=question)
+    assert answer == "3 tables are selected in the active scope (inventory, sales)."
+
+
+def test_inventory_source_labels_prefer_batch_identity_over_stock_group_invoice_id():
+    chat = RAGChat.__new__(RAGChat)
+    chunk = RetrievedChunk(
+        text="inventory batch row",
+        metadata={
+            "database_name": "inventory", "table_name": "tbl_15",
+            "invoice_id": "STK-01", "batch_no": "PO-BATCH-1-0",
+            "product_id": "76", "source_file": "sql://inventory/tbl_15", "source_row": 1,
+        },
+        score=1.0,
+    )
+    sources = chat._format_sources([chunk])
+    assert sources[0].label == "Batch PO-BATCH-1-0"
     
 def test_history_windowing():
     # Use real session manager to test bounded history
@@ -831,3 +1090,255 @@ def test_clean_roman_urdu_vocabulary():
     assert "dastyab" in cleaned
 
 
+
+
+def test_exact_prefixed_batch_lookup_cites_only_the_matching_table():
+    import pandas as pd
+
+    question = (
+        "A batch labeled PO-BATCH-35-0 is on the inventory side. "
+        "How many units are recorded for it, and what expiry date is shown?"
+    )
+    frame = pd.DataFrame([
+        {
+            "source_file": "sql://sales/tbl_22", "source_row": 156, "invoice_id": "REC-00049",
+            "quantity": 1, "table_name": "tbl_22", "file_id": "db_sales_tbl_22",
+        },
+        {
+            "source_file": "sql://inventory/tbl_15", "source_row": 156, "invoice_id": "STK-01",
+            "batch_no": "PO-BATCH-35-0", "product_id": "16", "quantity": 20.0,
+            "expiry_date": "2028-06-30", "table_name": "tbl_15", "file_id": "db_inventory_tbl_15",
+            "_header_source_file": float("nan"), "_header_source_row": float("nan"),
+        },
+        {
+            "source_file": "sql://inventory/tbl_10", "source_row": 156, "invoice_id": None,
+            "batch_no": "ANOTHER-BATCH-15-6", "product_id": "22", "quantity": 4.0,
+            "expiry_date": "2028-12-30", "table_name": "tbl_10", "file_id": "db_inventory_tbl_10",
+        },
+    ])
+    frame["stock_qty"] = [None, 20.0, 4.0]
+    chat = RAGChat()
+    request = ChatRequest(
+        question=question,
+        session_id="exact-batch-citation",
+        domain="pharmacy",
+        file_ids=["db_inventory_tbl_15", "db_inventory_tbl_10", "db_sales_tbl_22"],
+    )
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._exact_identifier_answer(question, request)
+
+    assert result is not None
+    answer, sources = result
+    assert answer["values"]["lookup_id"] == "PO-BATCH-35-0"
+    assert [(source.source_file, source.source_row) for source in sources] == [("tbl_15", 156)]
+
+
+def test_table_field_lookup_selects_sales_detail_grain_and_ignores_inventory_quantity():
+    import pandas as pd
+
+    question = "Which sales table stores the item-level quantity for each receipt?"
+    frame = pd.DataFrame([
+        {"database_name": "inventory", "table_name": "tbl_26", "quantity": 12,
+         "product_id": None, "transaction_id": None, "source_file": "sql://inventory/tbl_26",
+         "source_row": 1, "file_id": "db_inventory_tbl_26"},
+        {"database_name": "sales", "table_name": "tbl_21", "quantity": None,
+         "product_id": None, "transaction_id": "REC-1", "source_file": "sql://sales/tbl_21",
+         "source_row": 1, "file_id": "db_sales_tbl_21"},
+        {"database_name": "sales", "table_name": "tbl_22", "quantity": 2,
+         "product_id": "P-1", "transaction_id": "REC-1", "source_file": "sql://sales/tbl_22",
+         "source_row": 1, "file_id": "db_sales_tbl_22"},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="schema-lookup", domain="pharmacy")
+
+    assert chat._is_table_field_inquiry(question)
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._table_field_lookup(question, request)
+
+    assert result is not None
+    assert result["values"]["tables"] == [{"table": "tbl_22", "matching_rows": 1}]
+    assert result["source_rows"] == [("sql://sales/tbl_22", 1)]
+
+
+def test_table_field_lookup_rejects_non_schema_questions():
+    chat = RAGChat()
+    assert not chat._is_table_field_inquiry("How many units were sold last month?")
+
+
+def test_sales_key_relationship_is_verified_from_selected_rows():
+    import pandas as pd
+
+    question = "Which column on a sales detail line links it to its receipt header?"
+    frame = pd.DataFrame([
+        {"database_name": "sales", "table_name": "tbl_22", "source_file": "sql://sales/tbl_22", "source_row": 1,
+         "transaction_id": "1", "product_id": "Product A", "quantity": 2, "_extra.ID": 1},
+        {"database_name": "sales", "table_name": "tbl_22", "source_file": "sql://sales/tbl_22", "source_row": 2,
+         "transaction_id": "2", "product_id": "Product B", "quantity": 1, "_extra.ID": 2},
+        {"database_name": "sales", "table_name": "tbl_21", "source_file": "sql://sales/tbl_21", "source_row": 1,
+         "transaction_id": None, "product_id": None, "quantity": None, "invoice_id": "REC-1", "invoice_total": 200, "_extra.ID": 1.0},
+        {"database_name": "sales", "table_name": "tbl_21", "source_file": "sql://sales/tbl_21", "source_row": 2,
+         "transaction_id": None, "product_id": None, "quantity": None, "invoice_id": "REC-2", "invoice_total": 100, "_extra.ID": 2.0},
+        {"database_name": "inventory", "table_name": "tbl_10", "source_file": "sql://inventory/tbl_10", "source_row": 1,
+         "transaction_id": "1", "product_id": "Stock item", "quantity": 30, "_extra.ID": 99},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="sales-key-relationship", domain="pharmacy")
+    assert chat._is_sales_key_relationship_inquiry(question)
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._sales_key_relationship_lookup(question, request)
+    assert result is not None
+    assert result["values"]["detail_key"] == "transaction_id"
+    assert result["values"]["header_key"] == "_extra.ID"
+    assert result["values"]["matched_distinct_keys"] == 2
+    assert result["source_rows"] == [
+        ("sql://sales/tbl_22", 1), ("sql://sales/tbl_22", 2),
+        ("sql://sales/tbl_21", 1), ("sql://sales/tbl_21", 2),
+    ]
+
+
+def test_sales_key_relationship_declines_unmatched_keys():
+    import pandas as pd
+
+    question = "What field connects the sales detail line to its invoice header?"
+    frame = pd.DataFrame([
+        {"database_name": "sales", "table_name": "tbl_22", "source_file": "sql://sales/tbl_22", "source_row": 1,
+         "transaction_id": "1", "product_id": "Product A", "quantity": 2, "_extra.ID": 1},
+        {"database_name": "sales", "table_name": "tbl_21", "source_file": "sql://sales/tbl_21", "source_row": 1,
+         "invoice_id": "REC-1", "invoice_total": 200, "_extra.ID": 9},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="unmatched-sales-key", domain="pharmacy")
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        assert chat._sales_key_relationship_lookup(question, request) is None
+
+
+def test_sales_key_relationship_uses_selected_csv_excel_or_database_header_provenance():
+    import pandas as pd
+
+    question = "Which column on a sales detail line links it to its receipt header?"
+    frame = pd.DataFrame([
+        {"database_name": "PharmacyPOS", "table_name": "tbl_SalesDetails", "source_file": "sql://PharmacyPOS/tbl_SalesDetails", "source_row": 1,
+         "invoice_id": "495001", "product_id": "Product A", "quantity": 2,
+         "_header_source_file": "sql://PharmacyPOS/tbl_SalesHeader", "_header_source_row": 1, "_header_table_name": "tbl_SalesHeader"},
+        {"database_name": "PharmacyPOS", "table_name": "tbl_SalesDetails", "source_file": "sql://PharmacyPOS/tbl_SalesDetails", "source_row": 2,
+         "invoice_id": "495001", "product_id": "Product B", "quantity": 1,
+         "_header_source_file": "sql://PharmacyPOS/tbl_SalesHeader", "_header_source_row": 1, "_header_table_name": "tbl_SalesHeader"},
+        {"database_name": "PharmacyPOS", "table_name": "tbl_SalesDetails", "source_file": "sql://PharmacyPOS/tbl_SalesDetails", "source_row": 3,
+         "invoice_id": "495002", "product_id": "Product C", "quantity": 1,
+         "_header_source_file": "sql://PharmacyPOS/tbl_SalesHeader", "_header_source_row": 2, "_header_table_name": "tbl_SalesHeader"},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="pharmacy-pos-key-relationship", domain="pharmacy")
+    assert chat._is_sales_key_relationship_inquiry(question)
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._sales_key_relationship_lookup(question, request)
+    assert result is not None
+    assert result["values"]["detail_key"] == "invoice_id"
+    assert result["values"]["header_table"] == "tbl_SalesHeader"
+    assert result["values"]["matched_distinct_keys"] == 2
+    assert ("sql://PharmacyPOS/tbl_SalesHeader", 2.0) in result["source_rows"]
+
+
+def test_sales_key_relationship_uses_header_provenance_for_excel_and_csv_files():
+    import pandas as pd
+
+    question = "What field connects the sales detail line to its invoice header?"
+    frame = pd.DataFrame([
+        {"source_file": "sales_detail.xlsx", "source_row": 8, "invoice_id": "INV-1", "product_name": "A", "quantity": 2,
+         "_header_source_file": "invoice_headers.csv", "_header_source_row": 3, "_header_table_name": "invoice_headers"},
+        {"source_file": "sales_detail.xlsx", "source_row": 9, "invoice_id": "INV-1", "product_name": "B", "quantity": 1,
+         "_header_source_file": "invoice_headers.csv", "_header_source_row": 3, "_header_table_name": "invoice_headers"},
+        {"source_file": "sales_detail.xlsx", "source_row": 10, "invoice_id": "INV-2", "product_name": "C", "quantity": 4,
+         "_header_source_file": "invoice_headers.csv", "_header_source_row": 4, "_header_table_name": "invoice_headers"},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="file-key-relationship", domain="pharmacy")
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._sales_key_relationship_lookup(question, request)
+    assert result is not None
+    assert result["values"]["detail_key"] == "invoice_id"
+    assert result["values"]["header_table"] == "invoice_headers"
+    assert result["values"]["matched_distinct_keys"] == 2
+    assert ("invoice_headers.csv", 4) in result["source_rows"]
+
+
+def test_sales_key_relationship_joins_separate_csv_and_excel_sources_by_complete_key_set():
+    import pandas as pd
+
+    question = "What field connects the sales detail line to its invoice header?"
+    frame = pd.DataFrame([
+        {"source_file": "sales_lines.csv", "source_row": 2, "invoice_id": "INV-1", "product_name": "A", "quantity": 2},
+        {"source_file": "sales_lines.csv", "source_row": 3, "invoice_id": "INV-2", "product_name": "B", "quantity": 1},
+        {"source_file": "receipt_headers.xlsx", "source_row": 5, "invoice_id": "INV-1", "invoice_total": 20},
+        {"source_file": "receipt_headers.xlsx", "source_row": 6, "invoice_id": "INV-2", "invoice_total": 10},
+    ])
+    chat = RAGChat()
+    request = ChatRequest(question=question, session_id="separate-file-key-relationship", domain="pharmacy")
+    with patch.object(chat, "_get_records_for_analytics", return_value=(frame, [])):
+        result = chat._sales_key_relationship_lookup(question, request)
+    assert result is not None
+    assert result["values"]["detail_key"] == "invoice_id"
+    assert result["values"]["matched_distinct_keys"] == 2
+    assert ("sales_lines.csv", 2) in result["source_rows"]
+    assert ("receipt_headers.xlsx", 6) in result["source_rows"]
+
+
+def test_procedural_guard_recognizes_selected_csv_excel_and_database_sources():
+    from types import SimpleNamespace
+
+    chat = RAGChat()
+    request = ChatRequest(question="How do I void a receipt?", session_id="structured-scope", domain="pharmacy",
+                          file_ids=["csv-id", "excel-id", "database-id"])
+    records = {
+        "csv-id": SimpleNamespace(source_type="file", filename="sales.csv", file_path="C:/data/sales.csv"),
+        "excel-id": SimpleNamespace(source_type="file", filename="receipts.xlsx", file_path="C:/data/receipts.xlsx"),
+        "database-id": SimpleNamespace(source_type="database", filename="POS table", file_path="sql://POS/SalesHeader"),
+    }
+    with patch("app.ingestion.registry.file_registry.get_file_by_id", side_effect=lambda key: records.get(key)):
+        assert chat._selected_scope_is_structured_only(request)
+
+
+def test_procedural_guard_is_shared_by_streaming_chat():
+    import json
+    from types import SimpleNamespace
+
+    request = ChatRequest(question="How do I void a receipt?", session_id="structured-stream", domain="pharmacy",
+                          file_ids=["csv-id"])
+    with patch("app.ingestion.registry.file_registry.get_file_by_id", return_value=SimpleNamespace(
+        source_type="file", filename="sales.csv", file_path="C:/data/sales.csv"
+    )):
+        messages = [json.loads(line) for line in RAGChat().ask_stream(request)]
+    assert messages[0]["route"] == RouteType.RAG
+    assert "no workflow documentation" in messages[0]["chunk"]
+
+
+def test_procedural_guard_does_not_treat_selected_pdf_as_table_only():
+    from types import SimpleNamespace
+
+    chat = RAGChat()
+    request = ChatRequest(question="How do I void a receipt?", session_id="documentation-scope", domain="pharmacy",
+                          file_ids=["guide-id"])
+    with patch("app.ingestion.registry.file_registry.get_file_by_id", return_value=SimpleNamespace(
+        source_type="file", filename="user-guide.pdf", file_path="C:/docs/user-guide.pdf"
+    )):
+        assert not chat._selected_scope_is_structured_only(request)
+
+
+def test_analytics_citations_preserve_both_selected_detail_and_header_sources():
+    import pandas as pd
+
+    frame = pd.DataFrame([{
+        "source_file": "sales_detail.xlsx", "source_row": 8,
+        "_header_source_file": "receipt_headers.csv", "_header_source_row": 3,
+        "_header_file_id": "receipt-header-file", "_header_table_name": "receipt_headers",
+        "product_name": "Product A", "quantity": 2,
+    }])
+    sources = RAGChat()._analytics_citations(
+        frame,
+        [("sales_detail.xlsx", 8), ("receipt_headers.csv", 3)],
+        "pharmacy",
+        question="Which invoice key joins the sales detail to the receipt header?",
+    )
+    cited = {(source.metadata.get("source_file"), source.metadata.get("source_row")) for source in sources}
+    assert ("sales_detail.xlsx", 8) in cited
+    assert ("receipt_headers.csv", 3) in cited

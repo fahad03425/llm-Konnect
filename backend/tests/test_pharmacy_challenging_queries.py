@@ -130,10 +130,11 @@ class TestCategoryAndProductBreakdowns:
         assert len(result["breakdown"]) > 0
         
         # Verify supplier grouping
-        supp_totals = pharmacy_df.groupby("supplier_id")["amount"].sum().sort_values(ascending=False)
+        supplier_col = next(col for col in ("supplier_id", "supplier_name", "vendor_name") if col in pharmacy_df)
+        supp_totals = pharmacy_df.groupby(supplier_col)["amount"].sum().sort_values(ascending=False)
         highest_supp = supp_totals.index[0]
         highest_val = round(supp_totals.iloc[0], 2)
-        assert result["breakdown"][0]["supplier_id"] == highest_supp
+        assert result["breakdown"][0][supplier_col] == highest_supp
         assert result["breakdown"][0]["amount"] == highest_val
 
     def test_revenue_breakdown_by_month(self, router, pharmacy_df, records):

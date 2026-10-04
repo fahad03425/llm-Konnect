@@ -167,8 +167,8 @@ _MONEY_FIELDS = frozenset({
 # When a new domain pack adds numeric fields, extend _DOMAIN_MONEY_FIELDS.
 _DOMAIN_MONEY_FIELDS: Dict[str, frozenset] = {
     "pharmacy": frozenset({
-        "mrp", "reorder_level", "bonus_quantity", "net_payable", "tax_amount",
-        "original_price", "discounted_price",
+        "mrp", "reorder_level", "reorder_quantity", "safety_stock_qty", "bonus_quantity", "net_payable", "tax_amount",
+        "original_price", "discounted_price", "line_cost", "sub_items",
         "discount_amount", "tax_pct", "margin_pct", "discount_pct", "total_qty",
         "total_bonus", "total_items", "total_pack", "line_discount_amount",
         "line_tax_amount", "invoice_discount", "invoice_tax", "carriage_charges",
@@ -185,7 +185,7 @@ _DOMAIN_MONEY_FIELDS: Dict[str, frozenset] = {
 # Pack size is numeric but sometimes text ("10×10") — treat as text to be safe.
 # scheme is a text label ("3+1", "buy 2 get 1") — treat as text.
 
-_DATE_FIELDS = frozenset({"date", "expiry_date", "mfg_date"})
+_DATE_FIELDS = frozenset({"date", "expiry_date", "mfg_date", "customer_due_date", "supplier_payment_due_date", "last_sold_date"})
 _PERCENT_FIELDS = frozenset({"discount_pct", "tax_pct", "margin_pct", "invoice_tax_pct", "invoice_discount_pct"})
 _SKIP_COERCE = frozenset({"source_connector", "source_row"})
 
@@ -197,6 +197,42 @@ def _get_money_fields(domain: str) -> frozenset:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def validate_mapping(raw: pd.DataFrame, mapping: Dict[str, str], domain: Optional[str] = None) -> None:
+    from app.schema.mapper import get_canonical_fields
+    from app.schema.domain import get_domain_pack
+    pack = get_domain_pack(domain) if domain else None
+    allowed = set(get_canonical_fields(pack))
+    targets = set()
+    for source, target in mapping.items():
+        if source not in raw.columns:
+            raise ValueError(f"Mapping source column '{source}' does not exist")
+        if target not in allowed:
+            raise ValueError(f"Unknown canonical field '{target}'")
+        if target in targets:
+            raise ValueError(f"Multiple columns map to '{target}'. Choose one source column.")
+        targets.add(target)
+    if raw.columns.duplicated().any():
+        raise ValueError("Source has duplicate column names; rename them before mapping")
+    for target in targets:
+        if target in raw.columns and target not in mapping:
+            raise ValueError(f"Mapping would overwrite unmapped column '{target}'. Map or remove the conflict.")
+
+
+def _clean_ecommerce_date(value):
+    """E-commerce date handling; pharmacy's established parser stays unchanged."""
+    if pd.isna(value):
+        return pd.NaT
+    try:
+        number = float(value)
+        if 20000 <= number <= 100000:
+            return pd.Timestamp('1899-12-30') + pd.Timedelta(days=number)
+    except (ValueError, TypeError):
+        pass
+    parsed = _clean_date(value)
+    if pd.notna(parsed) and parsed.tzinfo is not None:
+        parsed = parsed.tz_convert('UTC').tz_localize(None)
+    return parsed
 
 def normalize(
     raw: pd.DataFrame,
@@ -223,6 +259,7 @@ def normalize(
         Canonical DataFrame.
     """
     # Work on a copy; never mutate the raw input
+    validate_mapping(raw, mapping, domain)
     df = raw.copy()
 
     # 1. Rename mapped columns
@@ -234,6 +271,17 @@ def normalize(
     for tc in ("source_connector", "source_row"):
         if tc in df.columns and tc not in keep_cols:
             keep_cols.append(tc)
+
+    # Preserve original reference keys even when a user maps them to another
+    # canonical name. Database reconciliation must use the actual primary key.
+    if keep_extras:
+        from app.schema.mapper import _normalize_header_string
+        for source in mapping:
+            if re.search(r"\b(?:id|code|number|no)\b", _normalize_header_string(source)):
+                extra = f"_extra.{source}"
+                if extra not in df.columns:
+                    df[extra] = raw[source]
+                keep_cols.append(extra)
 
     # 3. Handle extras — rename BEFORE column selection
     #    Iterate over ORIGINAL column names (pre-rename) to find unmapped ones.
@@ -255,17 +303,37 @@ def normalize(
 
     # 5. Coerce dtypes
     money_fields = _get_money_fields(domain)
+    failures = []
     for col in df.columns:
         if col in _SKIP_COERCE or col.startswith("_extra."):
             continue
-        if col in _DATE_FIELDS:
-            df[col] = df[col].apply(_clean_date)
+        original = df[col].copy()
+        is_date = col in _DATE_FIELDS or (domain == 'ecommerce' and col == 'order_date')
+        if is_date:
+            parser = _clean_ecommerce_date if domain == 'ecommerce' else _clean_date
+            df[col] = df[col].apply(parser)
         elif col in _PERCENT_FIELDS:
             df[col] = df[col].apply(_clean_percent)
         elif col in money_fields:
             df[col] = df[col].apply(_clean_money)
         else:
             df[col] = df[col].apply(_clean_text)
+        if is_date or col in money_fields or col in _PERCENT_FIELDS:
+            present = original.notna() & original.astype(str).str.strip().ne('')
+            for position in np.flatnonzero((present & df[col].isna()).to_numpy()):
+                reference = raw.iloc[position]['source_row'] if 'source_row' in raw.columns else position + 1
+                try:
+                    reference = int(reference)
+                except (TypeError, ValueError, OverflowError):
+                    reference = position + 1
+                failures.append({'field': col, 'source_row': reference, 'value': str(original.iloc[position]),
+                                 'code': 'UNPARSEABLE_DATE' if is_date else 'UNPARSEABLE_NUMBER'})
+    df.attrs['conversion_failures'] = failures
+    if domain == 'ecommerce':
+        # Keep domain names and add core aliases for shared RAG date filters/KPIs.
+        for alias, core in [('order_date', 'date'), ('sale_amount', 'amount')]:
+            if alias in df and core not in df:
+                df[core] = df[alias]
 
     # Some pharmaceutical price-list exports contain row-level column shifts:
     # the Availability status is stored in Pack_Size and the pack description
@@ -302,6 +370,9 @@ def normalize(
                 and any(col in df.columns for col in ("net_payable", "cost", "purchase_order_no"))
             )
             df["txn_type"] = "Purchase" if is_purchase_export else "Sale"
+
+    if "quantity" not in df.columns and "stock_qty" in df.columns:
+        df["quantity"] = pd.to_numeric(df["stock_qty"], errors="coerce")
 
     # A single-table export often calls its only transaction value "Total
     # Amount". Keep the explicit invoice_total field, and expose it as amount

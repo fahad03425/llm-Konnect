@@ -10,6 +10,7 @@ import os
 import re
 import io
 import sqlite3
+import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Any, List
 import pandas as pd
@@ -66,6 +67,10 @@ def parse_tally_xml(xml_content: str | bytes) -> pd.DataFrame:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as e:
         raise ValueError(f"Failed to parse Tally XML payload: {e}")
+
+    errors = [node.text for node in root.findall(".//LINEERROR") if node.text]
+    if errors:
+        raise ValueError("Tally export failed: " + "; ".join(errors))
 
     rows: List[Dict[str, Any]] = []
 
@@ -192,6 +197,7 @@ class TallyConnector(Connector):
     def __init__(self, path_or_url: str = "http://localhost:9000", timeout: int = 15):
         self.path_or_url = path_or_url.strip()
         self.timeout = timeout
+        self.is_odbc = self.path_or_url.startswith("tally+odbc://")
         self.is_http = self.path_or_url.startswith("http://") or \
                        self.path_or_url.startswith("https://") or \
                        self.path_or_url.startswith("tally://")
@@ -236,6 +242,8 @@ class TallyConnector(Connector):
             )
 
     def fetch(self, **kwargs) -> pd.DataFrame:
+        if self.is_odbc:
+            return self._fetch_odbc(kwargs.get("table_or_query"))
         if self.is_http:
             xml_bytes = self._fetch_from_http()
         else:
@@ -245,11 +253,36 @@ class TallyConnector(Connector):
 
         return parse_tally_xml(xml_bytes)
 
+    def _fetch_odbc(self, table_or_query: Optional[str] = None) -> pd.DataFrame:
+        """Read a Tally ODBC collection through an installed Tally DSN."""
+        import pyodbc
+        parsed = urllib.parse.urlsplit(self.path_or_url)
+        dsn = urllib.parse.unquote(parsed.netloc or parsed.path.lstrip("/"))
+        options = urllib.parse.parse_qs(parsed.query)
+        query = table_or_query or options.get("query", ["SELECT $Name, $ClosingBalance FROM Ledger"])[0]
+        if not dsn or not query.strip().upper().startswith("SELECT ") or ";" in query:
+            raise ValueError("Tally ODBC requires a DSN and one read-only SELECT query")
+        connection = pyodbc.connect("DSN={" + dsn.replace("}", "}}") + "}",
+                                    timeout=self.timeout, readonly=True)
+        try:
+            connection.timeout = self.timeout
+            cursor = connection.cursor()
+            cursor.execute(query)
+            columns = [column[0].lstrip("$") for column in cursor.description]
+            frame = pd.DataFrame.from_records([tuple(row) for row in cursor.fetchall()], columns=columns)
+            frame["source_connector"] = "tally_odbc"
+            frame["source_row"] = frame.index + 1
+            return frame
+        finally:
+            connection.close()
+
     def preview(self, n: int = 5, **kwargs) -> pd.DataFrame:
         df = self.fetch(**kwargs)
         return df.head(n)
 
     def describe(self) -> str:
+        if self.is_odbc:
+            return "TallyPrime ODBC connector (read-only collection query)"
         if self.is_http:
             return f"TallyPrime Live HTTP/XML Connector connecting to {self._get_http_url()}"
         enc_badge = " (Encrypted At Rest)" if is_encrypted_file(self.path_or_url) else ""

@@ -36,6 +36,15 @@ def normalize_roman_urdu_intent(question: str) -> str:
     q = re.sub(r"\b(?:bta|btao|btaye|batao|bataye|bata|btaen|btado|bta do|bta dein)\b", "tell", q)
     q = re.sub(r"\b(?:ktni|ktna|ktne|kitnay)\b", "kitna", q)
 
+    # In "kitna record hua" the word record is a verb phrase (how much was
+    # recorded), not a request to count database records. Preserve the amount
+    # intent before the countable-noun rule below runs.
+    q = re.sub(
+        r"\bkitna\s+(?:amount|balance|payment|paise|paisa|raqm)?\s*record\s+(?:hua|huwa|huwa hai|hua hai|howa|howa hai)\b",
+        "how much was recorded",
+        q,
+    )
+
     # Number word conversion
     num_words = {
         "ek": "1", "do": "2", "teen": "3", "chaar": "4", "char": "4",
@@ -50,10 +59,11 @@ def normalize_roman_urdu_intent(question: str) -> str:
     # Relative time phrases
     q = re.sub(r"\b(\d+)\s+din\s+pehle\b", r"\1 days ago", q)
     q = re.sub(r"\b(?:pichlay|pichle|guzishta|guzre|guzray|aakhri|akhri)\s+(\d{1,3})\s+(?:din|dino|dino'n|days?)\b", r"last \1 days", q)
+    q = re.sub(r"\b(?:aglay|agle|agley|aanay wale|anay wale)\s+(\d{1,3})\s+(?:din|dino|dino'n|days?)\b", r"next \1 days", q)
     q = re.sub(r"\b(?:pichlay|pichle|guzishta|guzre|guzray)\s+(\d{1,3})\s+(?:mahine|mahinay|mahina|maheene|months?)\b", r"last \1 months", q)
     q = re.sub(r"\b(?:pichlay|pichle|guzishta|guzre|guzray)\s+(?:mahine|mahinay|mahina|maheene|month)\b", "last month", q)
     q = re.sub(r"\b(?:is|iss|ye|iss)\s+(?:mahine|mahinay|mahina|maheene|month)\b", "this month", q)
-    q = re.sub(r"\b(?:aglay|agle|aanay wale|anay wale)\s+(?:mahine|mahinay|mahina|maheene|month)\b", "next month", q)
+    q = re.sub(r"\b(?:aglay|agle|agley|aanay wale|anay wale)\s+(?:mahine|mahinay|mahina|maheene|month)\b", "next month", q)
     q = re.sub(r"\b(?:pichlay|pichle|guzishta)\s+(?:haftay|hafte|hafta|week)\b", "last week", q)
     q = re.sub(r"\b(?:is|iss)\s+(?:haftay|hafte|hafta|week)\b", "this week", q)
     q = re.sub(r"\b(?:aaj|aj)\b", "today", q)
@@ -93,6 +103,13 @@ def normalize_roman_urdu_intent(question: str) -> str:
     q = re.sub(r"\b(?:expire ho chuki|expiry ho gai|expired)\b", "expired", q)
     q = re.sub(r"\b(?:supplier|suppliers|vendor|vendors)\b", "supplier", q)
     q = re.sub(r"\b(?:kitni|kitne|kitnay)\s+(?:dawaiyan|dawayian|dawayan|dawain|dawa|dawai|goliyan|units?|items?)\s+(?:bechi|bechee|bechhi|bechay|bechein|biki|bikii|bikay|bikain|sold)\b", "units sold", q)
+    q = re.sub(r"\b(?:kitne|kitnay|kitni)\s+(?:stock\s+)?units?\b", "how many units", q)
+    # "Kitne" asks for a count with countable nouns; preserve that intent
+    # before the general quantity normalization below maps kitna to how much.
+    q = re.sub(
+        r"\b(?:kitna|kitne|kitnay|kitni)\s+(?=(?:(?:distinct|unique|different|alag|alagh)\s+)?(?:batches?|lots?|records?|rows?|transactions?|invoices?|bills?|receipts?|products?|items?|suppliers?|customers?|patients?|doctors?|racks?|warehouses?)\b)",
+        "how many ", q,
+    )
     q = re.sub(r"\b(?:bikin|bikti|bikta|biktein|biktee|bik rahi|bik raha|bik rahe|bechi|bechee|bechhi|bechay|bechayen|bechein|biki|bikii|bikay|bikain|bikayi|bikaya|sell|sold)\b", "sold", q)
     q = re.sub(r"\b(?:sab se zyada bikne|sab se ziada bikne|ziada bikne|best selling|top selling)\b", "best-selling", q)
     q = re.sub(r"\b(?:sab se kam bikne|sab se kam|least selling)\b", "slowest-selling", q)

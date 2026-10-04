@@ -99,6 +99,8 @@ class ReportData:
     period: Optional[Any] = None
     filters: Dict[str, Any] = field(default_factory=dict)
     anomalies: Optional[List[Dict[str, Any]]] = None
+    source_data_complete: bool = True
+    source_data_warning: Optional[str] = None
     sections: List[str] = field(default_factory=list)
     generated_at: datetime = field(default_factory=datetime.now)
 
@@ -181,6 +183,29 @@ class ReportData:
             if len(cards) >= limit:
                 break
         return cards
+
+    def get_all_display_kpis(self) -> List[Tuple[str, str]]:
+        """Return every available computed KPI for domain-neutral report tables."""
+        rows: List[Tuple[str, str]] = []
+        for key, result in self.kpis.items():
+            value = getattr(result, "value", None) if not isinstance(result, dict) else result.get("value")
+            status = getattr(result, "status", "ok") if not isinstance(result, dict) else result.get("status", "ok")
+            if value is None or status != "ok":
+                continue
+            name = getattr(result, "name", key.replace("_", " ").title()) if not isinstance(result, dict) else result.get("name", key.replace("_", " ").title())
+            unit = getattr(result, "unit", "") if not isinstance(result, dict) else result.get("unit", "")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if unit in ("PKR", "USD", "EUR", "GBP"):
+                display = f"{unit} {number:,.2f}"
+            elif unit == "percent":
+                display = f"{number:.2f}%"
+            else:
+                display = f"{number:,.4g}" + (f" {unit}" if unit else "")
+            rows.append((str(name), display))
+        return rows
 
     def get_owner_insights(self, limit: int = 10) -> List[Dict[str, str]]:
         """Build actionable, source-grounded owner insights from computed results."""
@@ -512,6 +537,8 @@ class ReportData:
             "period": self.period.to_dict() if hasattr(self.period, "to_dict") else self.period,
             "filters": self.filters,
             "anomalies": self.anomalies,
+            "source_data_complete": self.source_data_complete,
+            "source_data_warning": self.source_data_warning,
             "sections": self.sections,
             "generated_at": self.generated_at.isoformat(),
             "kpi_count": len(self.kpis),

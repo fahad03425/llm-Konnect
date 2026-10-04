@@ -17,6 +17,7 @@ class PharmacyDomainPack(DomainPack):
             "schedule_flag", "scheme", "rack_location", "reorder_level", 
             "prescription_ref", "doctor_name", "mobile_number", "bonus_quantity",
             "branch", "cashier_name", "client_type", "customer_alias",
+            "reorder_quantity", "safety_stock_qty",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
             "opening_stock_qty", "closing_stock_qty", "status", "transaction_id",
             "time_of_day", "is_cancelled", "stock_qty",
@@ -29,6 +30,7 @@ class PharmacyDomainPack(DomainPack):
             "line_discount_amount", "line_tax_amount", "invoice_discount",
             "invoice_tax", "carriage_charges", "other_charges"
             , "original_price", "discounted_price", "availability"
+            , "pharmacist_name", "prescription_required", "purchase_order_no", "line_cost", "sub_items", "unit_name", "customer_due_date"
         ]
 
     @property
@@ -47,14 +49,17 @@ class PharmacyDomainPack(DomainPack):
             "invoice_total", "paid_amount", "customer_balance", "previous_balance",
             "invoice_tax_pct", "invoice_discount_pct", "sales_subtotal",
             "bonus_quantity", "pack_size", "rack_location", "stock_qty",
-            "original_price", "discounted_price", "discount_pct", "availability"
+            "original_price", "discounted_price", "discount_pct", "availability",
+            "pharmacist_name", "prescription_required"
         ]
 
     @property
     def filter_metadata_fields(self) -> List[str]:
         return [
+            "line_cost", "sub_items", "unit_name", "customer_due_date",
             "date", "txn_type", "payment_method", "transaction_id", "amount", "net_payable", "unit_price", "quantity",
             "product_id", "product_code", "supplier_id", "supplier_name", "customer_id", "invoice_id",
+            "purchase_order_no",
             "generic_name", "manufacturer", "batch_no", "expiry_date",
             "mrp", "drap_reg_no", "schedule_flag", "doctor_name", "discount", "cost",
             "category", "reorder_level", "time_of_day", "status", "is_cancelled",
@@ -66,7 +71,9 @@ class PharmacyDomainPack(DomainPack):
             "branch", "cashier_name", "client_type",
             "supplier_payable_amount", "supplier_payment_due_date", "last_sold_date",
             "opening_stock_qty", "closing_stock_qty"
-            , "warehouse", "original_price", "discounted_price", "availability"
+            , "warehouse", "original_price", "discounted_price", "availability",
+            "pharmacist_name", "prescription_required"
+            , "purchase_order_no"
         ]
 
     @property
@@ -112,6 +119,7 @@ class PharmacyDomainPack(DomainPack):
             ("purchase_order_no", "Purchase Order", ""),
             ("customer_id", "Customer", ""),
             ("doctor_name", "Doctor", ""),
+            ("pharmacist_name", "Pharmacist", ""),
             ("product_id", "Product", ""),
             ("medicine_name", "Product", ""),
             ("generic_name", "Generic", ""),
@@ -188,22 +196,19 @@ class PharmacyDomainPack(DomainPack):
 
     @property
     def header_synonyms(self) -> Dict[str, List[str]]:
-        import inspect
-        is_legacy_test = any(f.function == "test_closing_stock_maps_to_quantity" for f in inspect.stack()[:10])
-
         return {
             # --- Supplier credit / Accounts payable to distributors ---
             "supplier_payable_amount": [
-                "payable", "amount due", "outstanding to supplier", "credit amount",
+                "payable", "outstanding to supplier",
                 "udhaar", "balance payable", "supplier payable", "payable to supplier",
                 "vendor payable", "distributor payable", "supplier payable amount",
                 "supplier credit", "credit balance", "supplier balance", "udhar",
                 "balance payable to supplier", "distributor balance",
             ],
             "supplier_payment_due_date": [
-                "due date", "payment due", "credit due date", "supplier due date",
-                "payment due date", "bill due date", "supplier payment due date",
-                "distributor due date", "credit payment due", "due dt",
+                "supplier due date",
+                "supplier payment due date",
+                "distributor due date",
             ],
 
             # --- Stock movement & velocity ---
@@ -221,25 +226,37 @@ class PharmacyDomainPack(DomainPack):
                 "closing qty", "closing quantity", "closing stock qty",
                 "closing balance", "cl stock", "cl qty", "cl. stock", "cl. qty",
                 "closing units", "closing count", "ending stock", "ending qty",
-            ] + ([] if is_legacy_test else ["closing stock"]),
+            ] + ["closing stock"],
             "stock_qty": [
-                "stock qty", "stock quantity", "stock units", "stockunits",
-                "current stock units", "currentstockunits", "current stock",
-                "on hand units", "onhandunits", "available stock units",
+                "stock qty", "stock quantity",
+                "current stock", "current quantity", "current inventory",
+                "on hand", "on hand qty", "on hand quantity", "quantity on hand", "qty on hand",
+                "onhand qty", "onhand quantity", "available stock units", "available stock",
+                "available quantity", "available qty", "stock", "stock level", "stock on hand",
+                "inventory stock", "inventory quantity", "stock balance", "balance quantity",
+                "physical stock", "total stock",
             ],
             "reorder_level": [
                 "reorder", "reorder level", "min stock", "minimum stock",
-                "reorder qty", "reorder quantity", "reorder point", "rop",
-                "safety stock", "min level", "minimum level", "min stock level",
+                "reorder point", "rop", "min level", "minimum level", "min stock level",
+                "minimum stock quantity", "minimum inventory", "restock level", "restock point",
+                "reorder threshold", "reorder limit", "low stock threshold", "restock threshold",
+                "minimum inventory level", "stock minimum", "minimum on hand", "minimum on hand qty", "min qty on hand",
+                "minimum quantity on hand", "reorder at",
                 "minstocklevel", "minimumstocklevel",
             ],
+            "reorder_quantity": [
+                "reorder qty", "reorder quantity", "order qty", "order quantity",
+                "suggested order quantity", "replenishment quantity", "restock quantity",
+            ],
+            "safety_stock_qty": ["safety stock", "safety stock qty", "safety stock quantity"],
             "time_of_day": [
                 "time", "time of sale", "time of transaction", "transaction time",
                 "timeofsale", "transactiontime", "bill time", "billtime",
                 "invoice time", "invoicetime", "sale time", "timestamp time",
             ],
             "is_cancelled": ["is cancelled", "is canceled", "iscancelled", "iscanceled", "voided"],
-            "branch": ["branch", "branch name", "store branch", "store name"],
+            "branch": ["branch", "branch name", "store branch", "store name", "pharmacy branch"],
             "cashier_name": ["cashier", "cashier name", "cashier_name", "operator name"],
             "client_type": ["client type", "client_type", "customer type", "account type"],
             "customer_alias": ["customer alias", "customer alias name", "alias name"],
@@ -249,13 +266,22 @@ class PharmacyDomainPack(DomainPack):
                 "doctor", "doctor name", "doctor_name", "doctorname",
                 "dr name", "dr", "prescriber", "physician", "consultant",
                 "doctor id", "doctor_id",
+                "prescribing doctor", "prescribing physician", "prescribing doctor name",
+            ],
+            "pharmacist_name": [
+                "pharmacist", "pharmacist name", "attending pharmacist",
+                "attending pharmacist name", "dispensing pharmacist",
+            ],
+            "prescription_required": [
+                "prescription required", "prescription flag", "rx required",
+                "requires prescription",
             ],
             "mobile_number": [
                 "mobile", "mobile number", "mobile no", "mobile_number",
                 "mobilenumber", "mobileno", "phone", "phone number",
                 "contact", "cell", "customer mobile", "customer mobile number", "customer phone",
             ],
-            "bonus_quantity": [
+            "bonus_quantity": ["bonus units",
                 "bonus", "bon", "bon.", "bonus count", "bonus qty", "bonus quantity",
             ],
             "expiry_date": [
@@ -272,19 +298,22 @@ class PharmacyDomainPack(DomainPack):
             ],
             "generic_name": [
                 "generic", "formula", "salt", "molecule", "composition",
-                "generic name", "active ingredient", "ingredient", "product generic",
+                "generic name", "generic salt", "generic slash salt",
+                "active ingredient", "ingredient", "product generic",
             ],
             "mrp": [
                 "mrp", "retail price", "sale price", "max retail",
                 "maximum retail price", "retail", "selling price",
                 "s price", "s. price", "s price 1", "s. price 1", "sprice", "pricing retail price",
+                "max retail price usd", "maximum retail price usd", "mrp usd", "retail price usd",
             ],
             "barcode": ["barcode", "bar code", "ean", "ean13", "upc"],
-            "product_code": ["product code", "product_code", "item code", "medicine code", "sku", "stock keeping unit"],
-            "transaction_id": ["transaction no", "transaction number", "transaction #", "txn no", "txn number"],
-            "supplier_name": ["supplier name", "vendor name", "distributor name"],
+            "product_code": ["product code", "product_code", "code", "item code", "medicine code", "sku", "stock keeping unit"],
+            "transaction_id": ["transaction id", "transaction no", "transaction number", "transaction #", "txn no", "txn number", "sale id", "sales id", "sale number", "sales number", "sale no", "sales no", "sale #", "sales #"],
+            "purchase_order_no": ["porder id", "purchase order id", "purchase order no", "purchase id", "purchase number", "purchase no", "purchase #", "po number", "po no"],
+            "supplier_name": ["supplier", "supplier name", "vendor name", "distributor name"],
             "pack_size": [
-                "pack size", "packsize", "pack", "packing", "pack qty",
+                "pack size", "packsize", "pack", "packing", "pack qty", "items per unit",
                 "strip size", "tabs per strip",
             ],
             "drap_reg_no": [
@@ -295,16 +324,26 @@ class PharmacyDomainPack(DomainPack):
                 "schedule", "drug schedule", "schedule flag", "controlled",
             ],
             "rack_location": [
-                "rack", "location", "rack location", "rack no",
-                "shelf", "bin", "store location", "s.l.", "sl", "loc.", "loc",
-                "shelf location", "location code",
+                "rack", "location", "rack location", "rack no", "rack number", "rack_number", "rack #", "rack num",
+                "shelf", "shelf no", "shelf number", "shelf_number", "shelf #",
+                "bin", "bin no", "bin number", "bin_number", "bin #",
+                "store location", "s.l.", "sl", "loc.", "loc",
+                "shelf location", "location code", "stock location rack",
             ],
             "reorder_level": [
                 "reorder", "reorder level", "min stock", "minimum stock",
-                "reorder qty", "reorder quantity", "reorder point", "rop",
-                "safety stock", "min level", "minimum level", "min stock level",
+                "reorder point", "rop", "min level", "minimum level", "min stock level",
+                "minimum stock quantity", "minimum inventory", "restock level", "restock point",
+                "reorder threshold", "reorder limit", "low stock threshold", "restock threshold",
+                "minimum inventory level", "stock minimum", "minimum on hand", "minimum on hand qty", "min qty on hand",
+                "minimum quantity on hand", "reorder at",
                 "minstocklevel", "minimumstocklevel",
             ],
+            "reorder_quantity": [
+                "reorder qty", "reorder quantity", "order qty", "order quantity",
+                "suggested order quantity", "replenishment quantity", "restock quantity",
+            ],
+            "safety_stock_qty": ["safety stock", "safety stock qty", "safety stock quantity"],
             "prescription_ref": [
                 "prescription", "rx", "prescription no", "prescription ref",
                 "prescription number", "script",
@@ -313,13 +352,16 @@ class PharmacyDomainPack(DomainPack):
             "net_payable": ["net payable", "net payable amount", "nettotalamount"],
             "tax_amount": ["gst amount", "vat amount", "tax amount"],
             "invoice_total": ["invoice total", "bill total", "total amount", "grand total", "value including tax", "total amount including tax"],
-            "paid_amount": ["paid amount", "amount paid", "payment amount"],
+            "paid_amount": ["paid amount", "amount paid", "payment amount", "paid"],
+            "line_cost": ["purchase sub total", "purchase subtotal", "line cost", "line cogs", "total cogs"],
+            "sub_items": ["sub items"],
+            "unit_name": ["unit name", "unit"],
+            "customer_due_date": ["customer due date", "customer payment due date"],
             "customer_balance": ["customer balance", "balance due"],
             "previous_balance": ["previous balance", "prior balance"],
             "invoice_tax_pct": ["invoice gst percentage", "invoice gst percent", "invoice tax percentage"],
             "invoice_discount_pct": ["discount by percentage", "invoice discount percentage"],
-            "sales_subtotal": ["sales subtotal", "subtotal", "sub total"],
-            "other_charges": ["misc amount", "additional amount", "miscellaneous amount"],
+            "sales_subtotal": ["sales line subtotal"],
             "discount_amount": ["discount amount", "discount value"],
             "tax_pct": ["gst percent", "gst percentage", "tax percent", "vat percent"],
             "margin_pct": ["margin percent", "margin percentage", "profit margin percent"],
@@ -332,8 +374,8 @@ class PharmacyDomainPack(DomainPack):
             "line_tax_amount": ["item gst", "item tax", "item gst amount"],
             "invoice_discount": ["flat discount", "invoice discount"],
             "invoice_tax": ["flat gst", "invoice gst", "invoice tax"],
-            "carriage_charges": ["carriage charges", "carriage"],
-            "other_charges": ["other charges", "additional charges"],
+            "carriage_charges": ["carriage charges", "carriage", "carriage adda charges"],
+            "other_charges": ["other charges", "additional charges", "additional amount", "misc amount", "miscellaneous amount"],
 
             # --- Core fields: pharmacy-specific aliases ---
             "manufacturer": [
@@ -346,8 +388,7 @@ class PharmacyDomainPack(DomainPack):
                 "item", "product desc", "product_name", "item_name", "drug_name", "product title",
             ],
             "supplier_id": [
-                "supplier", "supplier id", "vendor", "vendor id", "distributor",
-                "distributor id", "party", "party id", "party name",
+                "supplier id", "vendor", "vendor id", "distributor id", "party", "party id", "party name",
             ],
             "customer_id": [
                 "patient name", "patient", "patientname", "customer",
@@ -364,11 +405,10 @@ class PharmacyDomainPack(DomainPack):
                 "therapeutic category", "specialty", "disease",
             ],
             "quantity": [
-                "qty", "quantity", "stock", "on hand", "units",
-                "available qty", "stock units", "stockunits", "current stock units",
-                "currentstockunits", "stock qty", "stock quantity", "current stock", "inventory stock",
-                "on hand units", "onhandunits",
-            ] + (["closing stock"] if is_legacy_test else []),
+                "qty", "quantity", "units", "stock units", "stockunits", "current stock units",
+                "currentstockunits", "on hand units", "onhandunits",
+                "quantity sold", "qty sold", "units sold", "sold quantity", "sales quantity",
+            ],
             "unit_price": [
                 "price", "rate", "unit price", "rate pkr",
                 "selling rate", "per unit",
@@ -383,13 +423,21 @@ class PharmacyDomainPack(DomainPack):
             ],
             "availability": ["availability", "available status", "stock availability", "product availability"],
             "amount": [
-                "amount", "line amount", "product amount", "line total",
-                "total", "net amount", "value", "net value",
+                "amount", "line amount", "product amount", "line total", "sales subtotal", "sub total",
+                "total", "net amount", "value", "net value", "sale amount", "sales amount",
+                "total transaction value", "total transaction value usd", "transaction value", "transaction value usd", "sales value", "sales value usd", "total sales value",
+                "gross amount", "subtotal",
             ],
             "cost": [
-                "trade price", "tp", "purchase price", "cost price",
+                "trade price", "tp", "purchase price", "cost price", "cost_price", "costprice",
                 "pp", "cost", "landed cost", "p price", "p. price", "pprice", "pricing cost price",
-                "unit cost", "purchase unit cost", "buying unit cost",
+                "unit cost", "unit_cost", "unitcost", "purchase unit cost", "buying unit cost",
+                "unit cost price", "unit cost usd", "unit cost price usd", "cost price usd",
+                "cogs", "purchase_cost", "purchase cost", "purchase_rate", "purchase rate",
+                "buying price", "buying_price", "buying rate", "buying_rate",
+                "purchase_rate_pkr", "item cost", "item_cost", "product cost", "product_cost",
+                "unit purchase price", "unit_purchase_price", "pur price", "pur_price", "pur rate", "pur_rate",
+                "pur cost", "pur_cost", "cost rate", "cost_rate", "cost val", "cost_val", "cost value", "cost_value",
             ],
             "date": [
                 "date", "txn date", "invoice date", "transaction date",
@@ -399,12 +447,20 @@ class PharmacyDomainPack(DomainPack):
                 "bill datetime", "bill_datetime",
                 "sale date", "sales date", "sales_date", "order date", "order_date",
                 "purchase date", "purchase_date", "purchased date",
-                "created at", "created_at", "timestamp", "receipt date", "receipt_date",
+                "created at", "created_at", "timestamp", "time stamp", "entry time date", "dated", "receipt date", "receipt_date",
             ],
             "invoice_id": [
-                "invoice", "bill no", "receipt no", "invoice no",
+                "invoice", "reference number", "bill no", "receipt no", "invoice no",
                 "invoice number", "bill number", "voucher no",
-                "challan no", "order no", "billno",
+                "challan no", "order no", "billno", "bill_no", "inv no", "inv_no",
+                "invoice_no", "invoice_id", "invoiceid", "bill_id", "billid",
+                "transaction_id", "transaction id", "transaction_no", "transaction no",
+                "trans_id", "trans id", "trans_no", "trans no",
+                "txn_id", "txn id", "txn_no", "txn no",
+                "sale_id", "sale id", "sale_no", "sale no", "saleno", "sales_id",
+                "order_id", "order id", "order_no", "orderno",
+                "receipt_id", "receipt id", "receipt_no", "receiptno",
+                "doc_no", "doc no", "document_no", "counter_sale_no", "billnum", "invoicenum",
             ],
             "discount": [
                 "discount", "disc", "disc%", "discount%",

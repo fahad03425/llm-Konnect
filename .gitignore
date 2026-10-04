@@ -3,6 +3,7 @@ _local_test_ui/
 __pycache__/
 *.pyc
 .venv/
+.venv-tests/
 .env
 .pytest_cache/
 .test-python313/
@@ -35,3 +36,4 @@ data/uploads/
 *.log
 .vault_key
 *.vault_key
+.pytest-*/

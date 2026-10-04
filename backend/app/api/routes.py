@@ -7,13 +7,14 @@ import shutil
 import pandas as pd
 
 from app.core.config import get_default_domain, set_default_domain
-from app.connectors.base import detect_connector
+from app.connectors.base import detect_connector, source_exists
 from app.ingestion.registry import file_registry
-from app.schema.mapper import map_headers, suggest_mapping
-from app.schema.normalize import normalize, apply_mapping
+from app.schema.mapper import map_headers, suggest_mapping, get_canonical_fields
+from app.schema.normalize import normalize, apply_mapping, validate_mapping
+from app.schema.source_domain import require_source_domain
 from app.schema.validate import validate, clean
 from app.schema.domain import get_domain_pack
-from app.schema.profile import find_profile, save_profile, source_signature
+from app.schema.profile import find_profile, save_profile, source_signature, source_identity, compatible_mapping, sql_signature, confirmed_mapping
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -115,7 +116,7 @@ class CleanRequest(BaseModel):
 
 @router.post("/preview")
 def preview_source(req: PreviewRequest):
-    if not os.path.exists(req.file_path):
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
@@ -138,14 +139,22 @@ def preview_source(req: PreviewRequest):
             kwargs['table_or_query'] = req.table_or_query
             
         df = connector.preview(n=req.n, **kwargs)
+        require_source_domain(df, req.domain)
         df = df.astype(object).where(pd.notnull(df), None)
         
         columns = list(df.columns)
         sample_rows = df.to_dict(orient="records")
         
         # Check for saved profile
-        sig = source_signature(columns, connector.__class__.__name__)
+        sig = source_signature(columns, connector.__class__.__name__, req.domain, source_identity(req.file_path, req.sheet_name, req.table_or_query))
         saved_profile = find_profile(sig)
+        if saved_profile:
+            try:
+                saved_profile = dict(saved_profile)
+                saved_profile['mapping'] = compatible_mapping(saved_profile['mapping'], columns)
+                validate_mapping(df, saved_profile['mapping'], req.domain)
+            except (ValueError, KeyError):
+                saved_profile = None
         
         domain_pack = None
         try:
@@ -165,11 +174,13 @@ def preview_source(req: PreviewRequest):
 
         return {
             "connector_description": connector.describe(),
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "columns": columns,
             "data": sample_rows,
             "total_rows": total_rows,
             "signature": sig,
             "saved_profile": saved_profile,
+            "canonical_fields": list(dict.fromkeys(get_canonical_fields(domain_pack))),
             "mapping_proposal": proposal.dict()
         }
     except Exception as e:
@@ -178,7 +189,7 @@ def preview_source(req: PreviewRequest):
 @router.post("/mapping/confirm")
 def confirm_mapping(req: MappingConfirmRequest):
     """Confirm a mapping, save profile, and return canonical preview."""
-    if not os.path.exists(req.file_path):
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
@@ -202,12 +213,17 @@ def confirm_mapping(req: MappingConfirmRequest):
         # Get preview for quick verification
         df = connector.preview(n=10, **kwargs)
         
-        if req.save_profile:
-            sig = source_signature(list(df.columns), connector.__class__.__name__)
-            label = f"{connector.__class__.__name__} - {os.path.basename(req.file_path)}"
-            save_profile(sig, req.mapping, label)
-            
+        require_source_domain(df, req.domain)
+        validate_mapping(df, req.mapping, req.domain)
         canonical_df = apply_mapping(df, req.mapping, req.domain, req.keep_extras)
+        if req.save_profile:
+            sig = source_signature(list(df.columns), connector.__class__.__name__, req.domain, source_identity(req.file_path, req.sheet_name, req.table_or_query))
+            source_label = source_identity(req.file_path).split('::')[0]
+            label = f"{connector.__class__.__name__} - {source_label}"
+            save_profile(sig, req.mapping, label)
+            from app.api.analytics import clear_analytics_cache
+            clear_analytics_cache()
+            
         canonical_df = canonical_df.astype(object).where(pd.notnull(canonical_df), None)
         
         return {
@@ -234,7 +250,7 @@ def list_sheets(file_path: str = Query(...)):
 @router.post("/normalize")
 def normalize_source(req: NormalizeRequest):
     """Legacy normalize endpoint."""
-    if not os.path.exists(req.file_path):
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
@@ -256,6 +272,7 @@ def normalize_source(req: NormalizeRequest):
             kwargs['table_or_query'] = req.table_or_query
             
         df = connector.fetch(**kwargs)
+        require_source_domain(df, req.domain)
         
         if df.empty:
             return {"columns": [], "data": [], "problems": []}
@@ -268,7 +285,7 @@ def normalize_source(req: NormalizeRequest):
             
         mapping = req.mapping
         if mapping is None:
-            mapping = map_headers(list(df.columns), domain_pack)
+            mapping = map_headers(list(df.columns), domain_pack, resolve_conflicts=True)
             
         norm_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=False)
         report = validate(norm_df, domain=req.domain)
@@ -276,6 +293,7 @@ def normalize_source(req: NormalizeRequest):
         norm_df = norm_df.astype(object).where(pd.notnull(norm_df), None)
         
         return {
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "mapped_columns": list(norm_df.columns),
             "mapping_used": mapping,
             "data_preview": norm_df.head(10).to_dict(orient="records"),
@@ -288,7 +306,7 @@ def normalize_source(req: NormalizeRequest):
 @router.post("/validate")
 def validate_source(req: ValidateRequest):
     """Run mapping + validation on a connected source file and return the ValidationReport."""
-    if not os.path.exists(req.file_path):
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     existing = file_registry.get_file_by_path(req.file_path)
@@ -315,6 +333,7 @@ def validate_source(req: ValidateRequest):
             kwargs["table_or_query"] = req.table_or_query
 
         df = connector.fetch(**kwargs)
+        require_source_domain(df, req.domain)
         if df.empty:
             from app.schema.validate import ValidationReport
             return ValidationReport(
@@ -329,11 +348,13 @@ def validate_source(req: ValidateRequest):
 
         mapping = req.mapping
         if mapping is None:
-            mapping = map_headers(list(df.columns), domain_pack)
+            mapping = map_headers(list(df.columns), domain_pack, resolve_conflicts=True)
 
         canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
         report = validate(canonical_df, domain=req.domain, table_kind=req.table_kind)
-        return report.to_dict()
+        result = report.to_dict()
+        result["connector_warnings"] = df.attrs.get("connector_warnings", [])
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -350,7 +371,7 @@ def validate_source(req: ValidateRequest):
 @router.post("/clean")
 def clean_source(req: CleanRequest):
     """Run opt-in cleaning pass on a connected source file."""
-    if not os.path.exists(req.file_path):
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
@@ -362,6 +383,7 @@ def clean_source(req: CleanRequest):
             kwargs["table_or_query"] = req.table_or_query
 
         df = connector.fetch(**kwargs)
+        require_source_domain(df, req.domain)
         domain_pack = None
         try:
             domain_pack = get_domain_pack(req.domain)
@@ -370,7 +392,7 @@ def clean_source(req: CleanRequest):
 
         mapping = req.mapping
         if mapping is None:
-            mapping = map_headers(list(df.columns), domain_pack)
+            mapping = map_headers(list(df.columns), domain_pack, resolve_conflicts=True)
 
         canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
         cleaned_df, summary = clean(canonical_df, options=req.options)
@@ -378,6 +400,7 @@ def clean_source(req: CleanRequest):
         cleaned_df = cleaned_df.astype(object).where(pd.notnull(cleaned_df), None)
 
         return {
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "cleaned_preview": cleaned_df.head(10).to_dict(orient="records"),
             "cleaning_summary": summary.to_dict()
         }
@@ -410,6 +433,14 @@ def list_available_domains():
         "domains": registry.available_domains(),
         "domain_details": registry.get_domain_details(),
     }
+
+
+@router.get('/schema')
+def source_schema(domain: str = Query(default_factory=get_default_domain)):
+    try:
+        return {'canonical_fields': list(dict.fromkeys(get_canonical_fields(get_domain_pack(domain))))}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.get("/domains/active")
 def get_active_domain():
@@ -447,7 +478,25 @@ class ShopifyTestRequest(BaseModel):
     shop_name: str
     access_token: str
     resource: str = "orders"
-    api_version: str = "2025-01"
+    api_version: str = "2026-07"
+    review_type: str = "review"
+
+
+@router.post("/shopify/connect")
+def connect_shopify_source(req: ShopifyTestRequest):
+    """Store the token encrypted locally; return a reusable source URI without secrets."""
+    from urllib.parse import urlencode
+    from app.connectors.shopify import ShopifyConnector
+    from app.connectors.credentials import save_shopify_token
+    try:
+        connector = ShopifyConnector(req.shop_name, req.access_token, req.api_version,
+                                     resource=req.resource, review_type=req.review_type)
+        identity = save_shopify_token(connector.shop_name, connector.access_token)
+        query = urlencode({"connection_id": identity, "resource": req.resource,
+                           "api_version": req.api_version, "review_type": req.review_type})
+        return {"file_path": f"shopify://{connector.shop_name}?{query}"}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.post("/tally/test")
 def test_tally_source(req: TallyTestRequest):
@@ -459,6 +508,7 @@ def test_tally_source(req: TallyTestRequest):
             "status": "success",
             "message": "Connected to Tally successfully",
             "total_preview_rows": len(df),
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "columns": list(df.columns) if not df.empty else [],
         }
     except Exception as e:
@@ -468,12 +518,14 @@ def test_tally_source(req: TallyTestRequest):
 def test_shopify_source(req: ShopifyTestRequest):
     try:
         from app.connectors.shopify import ShopifyConnector
-        connector = ShopifyConnector(shop_name=req.shop_name, access_token=req.access_token, api_version=req.api_version)
+        connector = ShopifyConnector(shop_name=req.shop_name, access_token=req.access_token, api_version=req.api_version,
+                                     resource=req.resource, review_type=req.review_type)
         df = connector.preview(resource=req.resource, n=5)
         return {
             "status": "success",
             "message": "Connected to Shopify successfully",
             "total_preview_rows": len(df),
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "columns": list(df.columns) if not df.empty else [],
         }
     except Exception as e:
@@ -498,6 +550,11 @@ def discover_sql_database(req: SQLDiscoverRequest):
                 try:
                     proposal = suggest_mapping(t["columns"], t["sample_rows"], domain_pack)
                     t["mapping_proposal"] = proposal.dict()
+                    t['canonical_fields'] = list(dict.fromkeys(get_canonical_fields(domain_pack)))
+                    sample = pd.DataFrame(t['sample_rows'])
+                    signature = sql_signature(t['columns'], connector.__class__.__name__, req.domain, req.connection_string, t['table_name'])
+                    mapping = confirmed_mapping(signature, sample, req.domain)
+                    t['saved_profile'] = {'mapping': mapping} if mapping is not None else None
                 except Exception:
                     t["mapping_proposal"] = {"suggestions": [], "confidence": 0.0}
             else:
@@ -528,9 +585,12 @@ def preview_sql_source(req: SQLConnectRequest):
         
         return {
             "connector_description": connector.describe(),
+            "connector_warnings": df.attrs.get("connector_warnings", []),
             "columns": columns,
             "data": sample_rows,
-            "mapping_proposal": proposal.dict()
+            "mapping_proposal": proposal.dict(),
+            "canonical_fields": list(dict.fromkeys(get_canonical_fields(domain_pack))),
+            "saved_profile": ({'mapping': saved} if (saved := confirmed_mapping(sql_signature(columns, connector.__class__.__name__, req.domain, req.connection_string, req.table_or_query), df, req.domain)) is not None else None)
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

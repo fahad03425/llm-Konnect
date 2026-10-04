@@ -10,7 +10,7 @@ interface Message {
     timing?: number;
 }
 
-export const MessageBubble: React.FC<{ msg: Message; isLatest: boolean }> = ({ msg, isLatest }) => {
+export const MessageBubble = React.memo<{ msg: Message; isLatest: boolean }>(({ msg, isLatest }) => {
     const [isSourcesOpen, setIsSourcesOpen] = useState(false);
     const hasSources = Boolean(msg.sources && msg.sources.length > 0);
 
@@ -153,4 +153,4 @@ export const MessageBubble: React.FC<{ msg: Message; isLatest: boolean }> = ({ m
             </div>
         </div>
     );
-};
+});

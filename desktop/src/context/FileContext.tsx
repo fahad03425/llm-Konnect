@@ -4,6 +4,9 @@ export type Verdict = 'usable' | 'usable_with_warnings' | 'not_usable';
 export type SourceType = 'file' | 'sql' | 'watcher' | 'tally' | 'shopify';
 
 export interface PreviewData {
+    canonical_fields?: string[];
+    mapping_confirmed?: boolean;
+    connector_warnings?: string[];
     columns: string[];
     sample_rows: (string | number | null)[][];
     total_rows: number;
@@ -20,6 +23,13 @@ export interface KBStats {
     collection_name: string;
 }
 
+export interface IngestProgress {
+    percent: number;
+    currentChunks: number;
+    totalChunks: number;
+    stepText: string;
+}
+
 export type StepState = { loading: boolean; error: string | null };
 export const idleStep = (): StepState => ({ loading: false, error: null });
 
@@ -28,6 +38,7 @@ export const KB_DATA_VERSION_KEY = 'llm_konnect_kb_updated';
 export function markDataChanged(): void {
     try {
         localStorage.setItem(KB_DATA_VERSION_KEY, Date.now().toString());
+        window.dispatchEvent(new CustomEvent('kb:sources-updated'));
     } catch {}
 }
 
@@ -46,7 +57,7 @@ interface FileContextType {
 
     // Connect Wizard Global Session (survives route navigation & tab switching)
     step: number;
-    setStep: (step: number) => void;
+    setStep: (step: number | ((prev: number) => number)) => void;
     file: File | null;
     setFile: (file: File | null) => void;
     fileName: string;
@@ -71,6 +82,10 @@ interface FileContextType {
     setIngestMsg: (msg: string) => void;
     kbStats: KBStats | null;
     setKbStats: (stats: KBStats | null) => void;
+
+    // Live Ingestion Progress (persists globally across all page navigations)
+    ingestProgress: IngestProgress | null;
+    setIngestProgress: (p: IngestProgress | null) => void;
 
     // Step loading/error states
     uploadSt: StepState;
@@ -154,12 +169,75 @@ export function FileProvider({ children }: { children: ReactNode }) {
     const [ingestMsg, setIngestMsg] = useState<string>(saved?.ingestMsg ?? '');
     const [kbStats, setKbStats] = useState<KBStats | null>(null);
 
+    const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(null);
+
     const [uploadSt, setUploadSt] = useState<StepState>(idleStep());
     const [previewSt, setPreviewSt] = useState<StepState>(idleStep());
     const [mappingSt, setMappingSt] = useState<StepState>(idleStep());
     const [normSt, setNormSt] = useState<StepState>(idleStep());
     const [valSt, setValSt] = useState<StepState>(idleStep());
     const [ingestSt, setIngestSt] = useState<StepState>(idleStep());
+
+    // ── Continuous background ingestion tracking (active across all pages) ────
+    useEffect(() => {
+        const activeFp = filePath || file?.name;
+        if (!activeFp) return;
+
+        let isMounted = true;
+        let isChecking = false;
+
+        const checkActiveIngest = async () => {
+            if (isChecking) return;
+            isChecking = true;
+            try {
+                const res = await fetch(`/api/kb/ingest-progress?file_path=${encodeURIComponent(activeFp)}`);
+                if (!res.ok) return;
+                const pData = await res.json();
+                if (!isMounted) return;
+
+                if (pData && pData.status === 'processing') {
+                    const stepStr = pData.step_text || '';
+                    const match = stepStr.match(/(\d+)\s*\/\s*(\d+)/);
+                    const tot = match ? parseInt(match[2], 10) : (previewData?.total_rows || 100);
+                    let pct = typeof pData.progress === 'number' && pData.progress > 0 ? pData.progress : 15;
+                    let cur = match ? parseInt(match[1], 10) : Math.round((pct / 100) * tot);
+
+                    setIngestSt({ loading: true, error: null });
+                    setStep(prevStep => (prevStep < 5 ? 5 : prevStep));
+                    setIngestProgress({
+                        percent: pct,
+                        currentChunks: cur,
+                        totalChunks: tot,
+                        stepText: stepStr || `Ingesting chunks: ${cur} / ${tot} (${Math.round(pct)}%)...`
+                    });
+                } else if (pData && pData.status === 'active' && (ingestSt.loading || ingestProgress)) {
+                    setIngestSt(idleStep());
+                    setIngestProgress(null);
+                    setStep(6);
+                    setIngestMsg(pData.step_text || 'Completed');
+                    markDataChanged();
+                    try {
+                        const sRes = await fetch('/api/kb/stats');
+                        if (sRes.ok) setKbStats(await sRes.json());
+                    } catch {}
+                } else if (pData && pData.status === 'failed' && ingestSt.loading) {
+                    setIngestSt({ loading: false, error: pData.error_message || 'Ingestion failed.' });
+                    setIngestProgress(null);
+                }
+            } catch {}
+            finally {
+                isChecking = false;
+            }
+        };
+
+        const pollInterval = (ingestSt.loading || ingestProgress || step === 5) ? 600 : 3000;
+        void checkActiveIngest();
+        const interval = setInterval(checkActiveIngest, pollInterval);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [filePath, file, step, ingestSt.loading, Boolean(ingestProgress), previewData?.total_rows]);
 
     // Sync serializable session state to sessionStorage
     useEffect(() => {
@@ -187,13 +265,13 @@ export function FileProvider({ children }: { children: ReactNode }) {
         setFileName('');
         setFilePath('');
         setSourceType(targetType || 'file');
-        // Keep autoProceed preference intact across file selection/resets
         setSheetName(null);
         setSheets([]);
         setMapping({});
         setPreviewData(null);
         setValidateResult(null);
         setIngestMsg('');
+        setIngestProgress(null);
         setUploadSt(idleStep());
         setPreviewSt(idleStep());
         setMappingSt(idleStep());
@@ -238,6 +316,8 @@ export function FileProvider({ children }: { children: ReactNode }) {
                 setIngestMsg,
                 kbStats,
                 setKbStats,
+                ingestProgress,
+                setIngestProgress,
                 uploadSt,
                 setUploadSt,
                 previewSt,

@@ -192,6 +192,30 @@
     color: #94a3b8; /* Crisp and clearly readable in dark mode */
 }
 
+.action-btn.btn-stop-generation {
+    background: rgba(239, 68, 68, 0.12) !important;
+    border-color: rgba(239, 68, 68, 0.4) !important;
+    color: #ef4444 !important;
+}
+
+.action-btn.btn-stop-generation:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.22) !important;
+    border-color: #ef4444 !important;
+    color: #dc2626 !important;
+}
+
+[data-theme="dark"] .action-btn.btn-stop-generation {
+    background: rgba(239, 68, 68, 0.18) !important;
+    border-color: rgba(239, 68, 68, 0.5) !important;
+    color: #f87171 !important;
+}
+
+[data-theme="dark"] .action-btn.btn-stop-generation:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.3) !important;
+    border-color: #f87171 !important;
+    color: #ffffff !important;
+}
+
 .chat-messages {
     flex: 1;
     min-height: 0;
@@ -581,6 +605,29 @@
     }
 }
 
+.btn-typing-stop {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-left: 0.25rem;
+}
+
+.btn-typing-stop:hover {
+    background: rgba(239, 68, 68, 0.16);
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.4);
+    transform: scale(1.02);
+}
+
 .chat-input-wrapper {
     padding: 1.25rem 1.75rem 0;
     background: var(--surface-bg);
@@ -655,6 +702,18 @@
 [data-theme="dark"] .send-btn:disabled {
     background: rgba(255, 255, 255, 0.08);
     color: #64748b;
+}
+
+.send-btn.stop-btn {
+    background: #ef4444 !important;
+    color: #ffffff !important;
+    box-shadow: 0 1px 3px rgba(239, 68, 68, 0.4);
+}
+
+.send-btn.stop-btn:hover {
+    background: #dc2626 !important;
+    transform: scale(1.05);
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.5);
 }
 
 .chat-footer {

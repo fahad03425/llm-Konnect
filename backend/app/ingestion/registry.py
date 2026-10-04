@@ -141,19 +141,40 @@ class FileRegistry:
     def normalize_path(file_path: str) -> str:
         if not file_path:
             return ""
+        from app.connectors.base import is_network_or_custom_source
+        if is_network_or_custom_source(file_path):
+            return file_path
+        clean_rel = file_path.replace("\\", "/")
         if not os.path.isabs(file_path):
             # Check if relative to project root or current dir
             proj_cand = os.path.join(PROJECT_ROOT, file_path)
-            clean_rel = file_path.replace("\\", "/")
             if os.path.exists(proj_cand):
                 file_path = proj_cand
             elif clean_rel.startswith("data/") or clean_rel.startswith("../data/"):
                 sub_path = clean_rel.split("data/", 1)[1]
                 file_path = os.path.join(PROJECT_ROOT, "data", sub_path)
+        elif not os.path.exists(file_path):
+            # Absolute path from previous workspace location or directory rename
+            if "/data/" in clean_rel:
+                sub_path = clean_rel.split("/data/", 1)[1]
+                cand = os.path.join(PROJECT_ROOT, "data", sub_path)
+                if os.path.exists(cand):
+                    file_path = cand
+            else:
+                fname = os.path.basename(file_path)
+                cand_up = os.path.join(PROJECT_ROOT, "data", "uploads", fname)
+                cand_samp = os.path.join(PROJECT_ROOT, "data", "samples", fname)
+                if os.path.exists(cand_up):
+                    file_path = cand_up
+                elif os.path.exists(cand_samp):
+                    file_path = cand_samp
         return os.path.abspath(file_path).replace("\\", "/")
 
     def calculate_hash(self, file_path: str) -> str:
         """Calculate SHA-256 hash of a file with persistent DB + memory caching."""
+        from app.connectors.base import is_network_or_custom_source
+        if is_network_or_custom_source(file_path):
+            return hashlib.sha256(file_path.encode()).hexdigest()
         if not os.path.exists(file_path):
             return ""
         norm_path = self.normalize_path(file_path)
@@ -288,19 +309,24 @@ class FileRegistry:
         return None
 
     def get_file_by_path(self, file_path: str) -> Optional[FileRecord]:
+        if not file_path:
+            return None
         normalized = self.normalize_path(file_path)
         raw_norm = file_path.replace("\\", "/")
-        fname = os.path.basename(file_path)
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                """SELECT * FROM file_registry 
-                   WHERE (LOWER(file_path) = LOWER(?) OR LOWER(file_path) = LOWER(?) OR LOWER(file_path) = LOWER(?) OR LOWER(filename) = LOWER(?)) 
-                   ORDER BY ingested_at DESC""", 
-                (normalized, file_path, raw_norm, fname)
-            )
-            row = cursor.fetchone()
+            row = conn.execute(
+                "SELECT * FROM file_registry WHERE LOWER(file_path) = LOWER(?) "
+                "OR LOWER(file_path) = LOWER(?) OR LOWER(file_path) = LOWER(?) "
+                "ORDER BY ingested_at DESC", (normalized, file_path, raw_norm)).fetchone()
             if row:
                 return FileRecord(**dict(row))
+            # Preserve unambiguous legacy filename lookups, but a different
+            # explicit path must never select a same-named registered source.
+            if "/" not in raw_norm:
+                matches = conn.execute("SELECT * FROM file_registry WHERE LOWER(filename) = LOWER(?)",
+                                       (file_path,)).fetchall()
+                if len(matches) == 1:
+                    return FileRecord(**dict(matches[0]))
         return None
 
     def list_files(self, domain: Optional[str] = None, status: Optional[str] = None, include_all: bool = False) -> List[FileRecord]:
@@ -444,8 +470,20 @@ class FileRegistry:
         return self.get_file_by_id(existing.file_id)
 
     def cleanup_stale_processing(self, active_keys: Optional[set] = None):
-        """Clean up orphaned tasks left in 'processing' state after restart or failure."""
+        """Clean up orphaned tasks left in 'processing' state after restart or failure, and normalize relocated workspace paths."""
         with self._get_connection() as conn:
+            # 1. Migrate any outdated file paths from directory renames
+            rows = conn.execute("SELECT file_id, filename, file_path FROM file_registry").fetchall()
+            for r in rows:
+                fpath = r["file_path"]
+                if fpath.startswith("sql://") or fpath.startswith("db://"):
+                    continue
+                if not os.path.exists(fpath):
+                    norm = self.normalize_path(fpath)
+                    if norm != fpath and os.path.exists(norm):
+                        conn.execute("UPDATE file_registry SET file_path = ? WHERE file_id = ?", (norm, r["file_id"]))
+
+            # 2. Clean up any stuck processing records
             cursor = conn.execute("SELECT * FROM file_registry WHERE status = 'processing'")
             rows = cursor.fetchall()
             for r in rows:
@@ -459,21 +497,27 @@ class FileRegistry:
             conn.commit()
 
     def delete_file(self, file_id: str) -> bool:
-        norm_path = self.normalize_path(file_id) if file_id else ""
-        raw_norm = file_id.replace("\\", "/") if file_id else ""
-        fname = os.path.basename(file_id) if file_id else ""
+        """Delete one exact file identity; ambiguous bare filenames require a path."""
+        if not file_id:
+            return False
+        norm_path = self.normalize_path(file_id)
+        raw_norm = file_id.replace("\\", "/")
         with self._get_connection() as conn:
             cursor = conn.execute(
-                """DELETE FROM file_registry 
-                   WHERE file_id = ? 
-                      OR file_path = ? 
-                      OR LOWER(file_path) = LOWER(?) 
-                      OR LOWER(file_path) = LOWER(?)
-                      OR (file_path != '' AND LOWER(filename) = LOWER(?))""",
-                (file_id, file_id, norm_path, raw_norm, fname)
-            )
+                "DELETE FROM file_registry WHERE file_id = ? OR file_path = ? "
+                "OR LOWER(file_path) = LOWER(?) OR LOWER(file_path) = LOWER(?)",
+                (file_id, file_id, norm_path, raw_norm))
+            deleted = cursor.rowcount > 0
+            if not deleted and "/" not in raw_norm:
+                matches = conn.execute("SELECT file_id FROM file_registry WHERE LOWER(filename) = LOWER(?)",
+                                       (file_id,)).fetchall()
+                if len(matches) > 1:
+                    raise ValueError("Multiple sources have this filename; use the exact file ID or path.")
+                if matches:
+                    conn.execute("DELETE FROM file_registry WHERE file_id = ?", (matches[0]["file_id"],))
+                    deleted = True
             conn.commit()
-            return cursor.rowcount > 0
+            return deleted
 
     def delete_group(self, group_name: str) -> int:
         """Delete all records belonging to a database group."""

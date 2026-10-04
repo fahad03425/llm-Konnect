@@ -36,3 +36,17 @@ def test_followup_keeps_entity_from_compact_group_answer(monkeypatch):
     assert "Glucometer Test Strips 50s" in rewritten
     assert "April 2026" in rewritten
 
+
+def test_followup_that_category_uses_leader_and_period_from_prior_ranking(monkeypatch):
+    history = [
+        {"role": "user", "content": "Which category had the most recorded sales revenue in September 2026?"},
+        {"role": "assistant", "content": "Categorys ranked by sales: Antidiabetic (33,785.00); Cardiovascular & Hypertension (14,575.00); Vitamins & Nutritional Supplements (12,230.00)."},
+    ]
+    monkeypatch.setattr("app.rag.chat.session_manager.get_history", lambda _sid: history)
+
+    rewritten = RAGChat._rewrite_follow_up("And how many units did that category sell?", "test-session")
+
+    assert "Relevant prior entities: Antidiabetic" in rewritten
+    assert "Cardiovascular" not in rewritten
+    assert "Relevant prior periods: September 2026" in rewritten
+

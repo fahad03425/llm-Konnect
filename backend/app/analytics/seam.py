@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from app.rag.intent import analytics_request_guard
 from app.language.roman_urdu import normalize_roman_urdu_intent
 from app.analytics.engine import KPIEngine, engine as default_engine
 from app.analytics.filters import KPIFilters
@@ -81,8 +82,7 @@ _INTENT_RULES: List[Tuple[Tuple[str, ...], Tuple[str, ...]]] = [
      ("total_revenue", "transaction_count")),
 ]
 
-# Used when nothing matches but the router already decided this is a numeric question.
-_DEFAULT_KEYS: Tuple[str, ...] = ("total_revenue", "transaction_count")
+# Unknown questions must not silently become sales totals.
 
 
 def _domain_rules(domain: str) -> List[Tuple[Tuple[str, ...], Tuple[str, ...]]]:
@@ -124,7 +124,7 @@ def select_kpi_keys(question: str, domain: str = "") -> List[str]:
     for keywords, keys in _INTENT_RULES:
         if any(word in q or word in raw_q for word in keywords):
             return list(keys)
-    return list(_DEFAULT_KEYS)
+    return []
 
 
 def infer_product_id(question: str, df: pd.DataFrame) -> Optional[str]:
@@ -209,6 +209,19 @@ def compute_for_question(
         if named:
             kpi_filters = replace(kpi_filters, product_id=named)
 
+    # Trend KPIs must honour an explicitly named product rather than silently
+    # reporting a whole-ledger change. Match complete canonical names only.
+    if set(keys) & {"revenue_trend", "units_trend"} and not kpi_filters.product_id and "product_id" in df:
+        named_products = [str(value) for value in df["product_id"].dropna().unique()
+                          if re.search(r"(?<!\w)" + re.escape(str(value).casefold()) + r"(?!\w)", question.casefold())]
+        if len(named_products) == 1:
+            kpi_filters = replace(kpi_filters, product_id=named_products[0])
+        elif len(named_products) > 1:
+            from app.analytics.models import unavailable, Provenance
+            result = unavailable("product_trend", "Product trend", "percent", "",
+                                 "Please request one product trend at a time, or use an explicit per-product time-series comparison.", Provenance())
+            return {result.key: result}, []
+
     results: Dict[str, KPIResult] = {}
     rows: set = set()
     for key in keys:
@@ -246,6 +259,8 @@ def results_to_payload(results: Dict[str, KPIResult]) -> Dict[str, Any]:
             entry["period"] = result.period.to_dict()
         if result.breakdown:
             entry["breakdown"] = result.breakdown
+        if result.series:
+            entry["series"] = result.series
         if result.method:
             entry["method"] = result.method
         if result.forecast:
@@ -306,6 +321,12 @@ class AnalyticsRouter:
             is nothing to compute over, matching the 6.5 contract so the chatbot
             replies "no records found" instead of guessing.
         """
+        guard = analytics_request_guard(question)
+        if guard is not None:
+            return {"query": {"name": "Requested analysis", "value": None,
+                              "status": guard["values"]["status"],
+                              "reason": guard["answer"]}}, []
+
         if kb_records is None:
             return None, []
         if isinstance(kb_records, pd.DataFrame):
@@ -323,6 +344,8 @@ class AnalyticsRouter:
             question, df, filters, domain=domain, kpi_engine=self.engine
         )
         if not results:
-            return None, []
+            return {"query": {"name": "Requested analysis", "value": None,
+                              "status": "unavailable",
+                              "reason": "I could not match this question to a supported calculation. Please specify the measure, grouping, and date range."}}, []
 
         return results_to_payload(results), source_rows

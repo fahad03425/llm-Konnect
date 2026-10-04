@@ -156,10 +156,21 @@ export default function Dashboard() {
     const [dbDatasets, setDbDatasets] = useState<DatasetOption[]>([]);
     const [fileDatasets, setFileDatasets] = useState<DatasetOption[]>([]);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [customGroupsVersion, setCustomGroupsVersion] = useState(0);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hasRetriedRef = useRef(false);
+
+    useEffect(() => {
+        const handleGroupsChanged = () => {
+            setCustomGroupsVersion(v => v + 1);
+        };
+        window.addEventListener('custom-db-groups-changed', handleGroupsChanged);
+        return () => {
+            window.removeEventListener('custom-db-groups-changed', handleGroupsChanged);
+        };
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -214,7 +225,17 @@ export default function Dashboard() {
                     };
                 });
 
-                const wholeDbEntries = uniqueDbNames.map((dbName: string) => ({
+                // Set of DB names that are grouped into at least one custom group
+                const groupedDbNamesSet = new Set(
+                    customGroups.flatMap((grp: CustomDbGroup) => grp.dbNames.map(d => d.toLowerCase().trim()))
+                );
+
+                // Individual DBs that are NOT part of any group (show separate DBs if not grouped)
+                const ungroupedDbNames = uniqueDbNames.filter(
+                    (dbName: string) => !groupedDbNamesSet.has(dbName.toLowerCase().trim())
+                );
+
+                const wholeDbEntries = ungroupedDbNames.map((dbName: string) => ({
                     name: `${dbName} (Whole Database)`,
                     path: `db://${dbName}`,
                     kind: 'whole_db' as const,
@@ -286,7 +307,7 @@ export default function Dashboard() {
             });
 
         return () => { isMounted = false; };
-    }, [user.domain]);
+    }, [user.domain, customGroupsVersion]);
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} Dashboard — LLM-KONNECT`;

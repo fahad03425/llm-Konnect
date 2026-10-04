@@ -30,6 +30,7 @@ interface ComposerProps {
     input: string;
     setInput: (val: string) => void;
     handleSend: (text?: string) => void;
+    handleStopGeneration?: () => void;
     isLoading: boolean;
     handleKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
     availableFiles?: ScopeFile[];
@@ -42,6 +43,7 @@ export const Composer = ({
     input,
     setInput,
     handleSend,
+    handleStopGeneration,
     isLoading,
     handleKeyDown,
     availableFiles = [],
@@ -478,8 +480,15 @@ export const Composer = ({
                                     </>
                                 )}
 
-                                {/* Individual Database Groups */}
-                                {Object.entries(groupedFiles.dbGroups).map(([groupName, files]) => {
+                                {/* Individual Database Groups (only show if not part of a custom consolidated group) */}
+                                {Object.entries(groupedFiles.dbGroups)
+                                    .filter(([groupName]) => {
+                                        const isGrouped = customDbGroups.some(grp =>
+                                            grp.dbNames.some(d => d.toLowerCase().trim() === groupName.toLowerCase().trim())
+                                        );
+                                        return !isGrouped;
+                                    })
+                                    .map(([groupName, files]) => {
                                     const ids = files.map(f => f.file_id);
                                     const allSelected = ids.length > 0 && ids.every(id => selectedFileIds.includes(id));
                                     const groupChunks = files.reduce((acc, curr) => acc + (curr.chunk_count || 0), 0);
@@ -741,13 +750,26 @@ export const Composer = ({
                     placeholder={inputPlaceholder}
                     disabled={isLoading}
                 />
-                <button
-                    className="send-btn"
-                    onClick={() => handleSend(input)}
-                    disabled={!input.trim() || isLoading}
-                >
-                    <Send size={16} />
-                </button>
+                {isLoading ? (
+                    <button
+                        type="button"
+                        className="send-btn stop-btn"
+                        onClick={handleStopGeneration}
+                        title="Stop generation"
+                    >
+                        <Square size={14} fill="currentColor" />
+                    </button>
+                ) : (
+                    <button
+                        type="button"
+                        className="send-btn"
+                        onClick={() => handleSend(input)}
+                        disabled={!input.trim()}
+                        title="Send message"
+                    >
+                        <Send size={16} />
+                    </button>
+                )}
             </div>
             <div className="chat-footer">
                 <div className="footer-item">

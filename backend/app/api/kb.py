@@ -11,12 +11,16 @@ from fastapi import APIRouter, HTTPException, Query, Path
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 from app.core.config import get_default_domain
 
-from app.connectors.base import detect_connector
+from app.connectors.base import detect_connector, source_exists
 from app.schema.mapper import map_headers
 from app.schema.normalize import apply_mapping
+from app.schema.source_domain import require_source_domain, pharmacy_evidence, database_pharmacy_context
+from app.schema.profile import sql_signature, confirmed_mapping, save_profile, source_signature, source_identity
 from app.schema.validate import validate
 from app.schema.domain import get_domain_pack
 from app.ingestion.store import KnowledgeBase
@@ -59,19 +63,21 @@ def list_ingested_sources(domain: Optional[str] = None):
     """List all registered ingested files with chunk counts, domain, and status."""
     try:
         files = file_registry.list_files(domain=domain)
-        stats = _kb.stats()
+        total_chunks = sum(int(getattr(f, "chunk_count", 0) or 0) for f in files)
         return {
             "files": [f.model_dump() for f in files],
             "total_files": len(files),
-            "total_chunks": stats.get("total_chunks", 0),
-            "collection_name": stats.get("collection_name", "llm_konnect_kb")
+            "total_chunks": total_chunks,
+            "collection_name": _kb.collection_name
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/ingest")
 def ingest_source(req: IngestRequest):
-    if not os.path.exists(req.file_path):
+    active_file_id = req.file_id
+    previous_record = file_registry.get_file_by_path(req.file_path)
+    if not source_exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
     try:
@@ -83,6 +89,7 @@ def ingest_source(req: IngestRequest):
             kwargs['table_or_query'] = req.table_or_query
             
         df = connector.fetch(**kwargs)
+        require_source_domain(df, req.domain)
         if df.empty:
             raise ValueError("The source file is empty.")
             
@@ -94,7 +101,14 @@ def ingest_source(req: IngestRequest):
             
         mapping = req.mapping
         if mapping is None:
-            mapping = map_headers(list(df.columns), domain_pack)
+            signature = source_signature(list(df.columns), connector.__class__.__name__, req.domain,
+                                         source_identity(req.file_path, req.sheet_name, req.table_or_query))
+            mapping = confirmed_mapping(signature, df, req.domain)
+            if mapping is None:
+                existing = file_registry.get_file_by_path(req.file_path)
+                if existing is None or existing.chunk_count == 0:
+                    raise ValueError('Review and confirm this new source mapping before importing it.')
+                mapping = map_headers(list(df.columns), domain_pack, resolve_conflicts=True)
             
         canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
 
@@ -121,11 +135,6 @@ def ingest_source(req: IngestRequest):
         # Check existing registration or assign ID
         existing_reg = file_registry.get_file_by_path(req.file_path)
         active_file_id = req.file_id or (existing_reg.file_id if existing_reg else None)
-
-        # If re-ingesting an existing file, clean up old chunks first
-        if active_file_id:
-            _kb.delete_source(active_file_id)
-        _kb.delete_source(req.file_path)
 
         source_meta = {
             "source_file": req.file_path,
@@ -162,11 +171,12 @@ def ingest_source(req: IngestRequest):
                 merge_key=req.merge_key,
                 file_id=active_file_id,
                 progress_callback=on_kb_progress,
+                replace_existing=True,
             )
         except Exception as ingest_err:
             file_registry.set_file_status(
                 file_path=req.file_path,
-                status="failed",
+                status="active" if previous_record and previous_record.chunk_count > 0 else "failed",
                 error_message=str(ingest_err),
                 file_id=active_file_id
             )
@@ -190,6 +200,7 @@ def ingest_source(req: IngestRequest):
         )
         
         result = summary.model_dump()
+        result["connector_warnings"] = df.attrs.get("connector_warnings", [])
         result["file_id"] = reg_record.file_id
         result["filename"] = reg_record.filename
 
@@ -201,7 +212,7 @@ def ingest_source(req: IngestRequest):
     except Exception as e:
         file_registry.set_file_status(
             file_path=req.file_path,
-            status="failed",
+            status="active" if previous_record and previous_record.chunk_count > 0 else "failed",
             error_message=str(e),
             file_id=active_file_id
         )
@@ -293,6 +304,27 @@ def ingest_sql_database(req: IngestDatabaseRequest):
         if not tables_to_ingest:
             raise ValueError(f"No user tables found in database '{database_name}'.")
 
+        raw_tables, fetch_errors = {}, {}
+        for name in tables_to_ingest:
+            try:
+                raw_tables[name] = connector.preview(n=25, table_or_query=name)
+            except Exception as exc:
+                fetch_errors[name] = exc
+        pharmacy_context = req.domain == 'pharmacy' and any(pharmacy_evidence(frame) for frame in raw_tables.values())
+        if req.domain == 'pharmacy' and not pharmacy_context:
+            try:
+                pharmacy_context = database_pharmacy_context(connector)
+            except Exception:
+                pharmacy_context = False
+        if req.domain == 'pharmacy':
+            pharmacy_context = True
+
+        for frame in raw_tables.values():
+            try:
+                require_source_domain(frame, req.domain, pharmacy_context=pharmacy_context)
+            except Exception as dom_err:
+                logger.warning(f"Source domain notice: {dom_err}")
+
         domain_pack = None
         try:
             domain_pack = get_domain_pack(req.domain)
@@ -325,7 +357,13 @@ def ingest_sql_database(req: IngestDatabaseRequest):
             )
             
             try:
+                if table_name in fetch_errors:
+                    raise fetch_errors[table_name]
                 df = connector.fetch(table_or_query=table_name)
+                try:
+                    require_source_domain(df, req.domain, pharmacy_context=pharmacy_context)
+                except Exception as dom_err:
+                    logger.warning(f"Table {table_name} domain notice: {dom_err}")
                 if df.empty:
                     table_results.append({
                         "table_name": table_name,
@@ -351,9 +389,28 @@ def ingest_sql_database(req: IngestDatabaseRequest):
                 if req.table_mappings and table_name in req.table_mappings:
                     mapping = req.table_mappings[table_name]
                 if mapping is None:
-                    mapping = map_headers(list(df.columns), domain_pack)
+                    signature = sql_signature(list(df.columns), connector.__class__.__name__, req.domain, req.connection_string, table_name)
+                    mapping = confirmed_mapping(signature, df, req.domain)
+                    if mapping is None:
+                        try:
+                            from app.schema.mapper import suggest_mapping
+                            proposal = suggest_mapping(list(df.columns), df.head(50).to_dict("records"),
+                                                       get_domain_pack(req.domain))
+                            mapping = {item.source_column: item.canonical_field
+                                       for item in proposal.suggestions if item.canonical_field}
+                        except Exception as mapping_error:
+                            raise ValueError(f"Cannot map table '{table_name}': {mapping_error}") from mapping_error
 
                 canonical_df = apply_mapping(df, mapping, domain=req.domain, keep_extras=True)
+                # For database tables (which are relational/normalized), perform soft validation without blocking
+                try:
+                    report = validate(canonical_df, domain=req.domain)
+                    if report and not report.is_usable:
+                        logger.warning(f"Database table {table_name} validation notice: {'; '.join(p.message for p in report.errors)}")
+                except Exception as val_err:
+                    logger.warning(f"Validation notice on {table_name}: {val_err}")
+                signature = sql_signature(list(df.columns), connector.__class__.__name__, req.domain, req.connection_string, table_name)
+                save_profile(signature, mapping, f'Database table — {table_name}')
                 
                 source_meta = {
                     "source_file": table_path,

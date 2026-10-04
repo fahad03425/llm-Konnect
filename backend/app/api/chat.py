@@ -1,3 +1,5 @@
+import json
+import logging
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -9,6 +11,7 @@ from app.rag.history import session_manager
 from app.core.llm import llm
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 class SelectModelRequest(BaseModel):
     model: str = Field(..., description="Name of local model to activate")
@@ -27,9 +30,10 @@ def list_chat_models():
     """List all installed local models and the currently active model."""
     try:
         models = llm.list_installed_models()
-        return {"models": models, "active_model": llm.model}
+        return {"models": models, "active_model": llm.model, "ollama": llm.get_status(installed=models)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"models": [], "active_model": llm.model,
+                "ollama": {"available": False, "resolved_model": None, "error": str(e)}}
 
 @router.post("/models/select")
 def select_chat_model(payload: SelectModelRequest):
@@ -37,6 +41,8 @@ def select_chat_model(payload: SelectModelRequest):
     try:
         active = llm.set_active_model(payload.model)
         return {"status": "ok", "active_model": active}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -54,9 +60,18 @@ def chat(request: ChatRequest):
 @router.post("/stream")
 def chat_stream(request: ChatRequest):
     """Streaming chat endpoint for interactive UI."""
+    def stream_events():
+        try:
+            yield from rag_chat.ask_stream(request)
+        except GeneratorExit:
+            raise
+        except Exception as exc:
+            logger.exception("chat_stream failed for session %s", request.session_id)
+            yield json.dumps({"error": str(exc), "code": "stream_error"}) + "\n"
+
     try:
         return StreamingResponse(
-            rag_chat.ask_stream(request), 
+            stream_events(),
             media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-cache, no-transform",

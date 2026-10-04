@@ -173,6 +173,26 @@ def test_canonical_header_join_keeps_invoice_totals_at_header_grain():
     assert details["date"].dropna().unique().tolist() == ["2026-09-29"]
 
 
+def test_canonical_sales_header_join_preserves_invoice_tax_once():
+    raw = pd.DataFrame([
+        {"table_name": "tbl_SalesDetails", "source_file": "sql://sales/tbl_SalesDetails", "source_row": 10,
+         "transaction_id": "INV-1", "product_id": "Drug A", "quantity": 1, "amount": 100},
+        {"table_name": "tbl_SalesDetails", "source_file": "sql://sales/tbl_SalesDetails", "source_row": 11,
+         "transaction_id": "INV-1", "product_id": "Drug B", "quantity": 2, "amount": 50},
+        {"table_name": "tbl_SalesHeader", "source_file": "sql://sales/tbl_SalesHeader", "source_row": 90,
+         "transaction_id": "INV-1", "invoice_tax": 7.5, "invoice_discount": 25.0, "date": "2026-09-29"},
+    ])
+    canonical = _build_canonical_database(raw)
+    details = canonical[canonical["table_name"] == "tbl_SalesDetails"]
+
+    assert len(details) == 2
+    assert pd.to_numeric(details["invoice_tax"], errors="coerce").sum() == 7.5
+    assert details["invoice_tax"].notna().sum() == 1
+    assert pd.to_numeric(details["invoice_discount"], errors="coerce").sum() == 25.0
+    assert details["invoice_discount"].notna().sum() == 1
+    assert details["_header_source_row"].dropna().unique().tolist() == [90]
+
+
 def test_whole_database_analytics_refuses_a_registry_index_gap(monkeypatch):
     records = [
         SimpleNamespace(file_id="indexed", group_name="IncompletePOS", status="active",

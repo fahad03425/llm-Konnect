@@ -60,7 +60,7 @@ def detect_connector(path: str) -> Connector:
     elif path.startswith("shopify://"):
         from app.connectors.shopify import ShopifyConnector
         return ShopifyConnector.from_url(path)
-    elif ext == '.xml' or path.startswith("tally://") or path.startswith("http://") or path.startswith("https://"):
+    elif ext == '.xml' or path.startswith("tally://") or path.startswith("tally+odbc://") or path.startswith("http://") or path.startswith("https://"):
         from app.connectors.tally import TallyConnector
         return TallyConnector(path)
     else:
@@ -75,6 +75,7 @@ def is_network_or_custom_source(path_or_url: str) -> bool:
         path_or_url.startswith("http://")
         or path_or_url.startswith("https://")
         or path_or_url.startswith("tally://")
+        or path_or_url.startswith("tally+odbc://")
         or path_or_url.startswith("shopify://")
         or path_or_url.startswith("sql://")
         or path_or_url.startswith("db://")

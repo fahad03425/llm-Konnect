@@ -55,6 +55,7 @@ class ReportResult:
     narrative: str
     verification: VerificationReport
     verification_passed: bool
+    source_data_complete: bool = True
     regenerated: bool = False
     html_path: Optional[str] = None
     pdf_path: Optional[str] = None
@@ -67,6 +68,7 @@ class ReportResult:
             "narrative": self.narrative,
             "verification": self.verification.to_dict(),
             "verification_passed": self.verification_passed,
+            "source_data_complete": self.source_data_complete,
             "regenerated": self.regenerated,
             "html_path": self.html_path,
             "pdf_path": self.pdf_path,
@@ -553,6 +555,11 @@ def gather_report_data(
     em.source_filename = source_label
     period_label = f"Week ending {comparison['current_end']}" if comparison.get("current_end") else em.reporting_period
     report_title = f"{effective_name} | {source_label} | {period_label} Performance & Growth Report"
+    source_data_complete = not bool((source_df is not None and source_df.attrs.get("incomplete_source")) or (raw_df is not None and raw_df.attrs.get("incomplete_source")))
+    source_data_warning = None if source_data_complete else (
+        "This report was calculated from available embedded records, but the knowledge base marked the selected source as incomplete. "
+        "Treat all KPIs, trends, and anomaly results as partial until complete structured rows are available."
+    )
 
     return ReportData(
         kpis=computed_kpis,
@@ -563,6 +570,8 @@ def gather_report_data(
         period=period,
         filters=filters.as_dict() if filters and hasattr(filters, "as_dict") else {},
         anomalies=anomalies,
+        source_data_complete=source_data_complete,
+        source_data_warning=source_data_warning,
         sections=sections,
         generated_at=datetime.now(),
         executive_metrics=em,
@@ -727,6 +736,8 @@ def _render_weekly_html_document(
           <p style="font-size: 0.88rem; color: #7f1d1d;">The narrative did not pass numeric verification, so it is excluded. The insights below are computed from the selected POS data.</p>
         </div>
         """
+    if report_data.source_data_warning:
+        warn_banner += f'<div class="callout callout-warn banner-warn"><h4>Incomplete source data</h4><p>{escape(report_data.source_data_warning)}</p></div>'
 
     sections_html = []
 
@@ -980,6 +991,89 @@ def _render_weekly_html_document(
 
 
 def _render_html_document(
+    report_data: ReportData,
+    narrative: str,
+    verification: VerificationReport,
+    charts: Dict[str, Path],
+) -> str:
+    if report_data.domain == "pharmacy" and "weekly_report" in report_data.sections:
+        return _render_weekly_html_document(report_data, narrative, verification, charts)
+    return _render_source_driven_html_document(report_data, narrative, verification, charts)
+
+
+def _render_source_driven_html_document(
+    report_data: ReportData,
+    narrative: str,
+    verification: VerificationReport,
+    charts: Dict[str, Path],
+) -> str:
+    """Render a schema/domain-neutral report using only supplied computed data."""
+    kpi_rows = []
+    for label, value in report_data.get_all_display_kpis():
+        kpi_rows.append(f"<tr><th>{escape(str(label))}</th><td>{escape(str(value))}</td></tr>")
+    comparison_rows = []
+    for key, metric in report_data.period_comparison.items():
+        if not isinstance(metric, dict) or metric.get("current") is None or metric.get("previous") is None:
+            continue
+        comparison_rows.append(
+            f"<tr><th>{escape(str(key).replace('_', ' ').title())}</th>"
+            f"<td>{float(metric['current']):,.2f}</td><td>{float(metric['previous']):,.2f}</td>"
+            f"<td>{float(metric['change_pct']):+.2f}%</td></tr>" if metric.get("change_pct") is not None else
+            f"<tr><th>{escape(str(key).replace('_', ' ').title())}</th><td>{float(metric['current']):,.2f}</td><td>{float(metric['previous']):,.2f}</td><td>Unavailable</td></tr>"
+        )
+    chart_blocks = []
+    chart_titles = {"monthly_trend": "Revenue Trends", "trend": "Revenue Trends", "branch_performance": "Branch Performance", "payment_mix": "Payment Mix", "top_products": "Top Products", "daily_traffic": "Daily Activity", "hourly_traffic": "Hourly Activity"}
+    chart_order = {"monthly_trend": 1, "trend": 1, "branch_performance": 2, "payment_mix": 3, "top_products": 4, "slow_products": 5, "hourly_traffic": 6, "daily_traffic": 7}
+    for index, (key, path) in enumerate(charts.items(), start=1):
+        image_data = _image_to_base64(path)
+        if image_data:
+            heading = chart_titles.get(key, str(key).replace("_", " ").title())
+            section_no = chart_order.get(key, index + 1)
+            chart_blocks.append(
+                f'<h3>{section_no}. {escape(heading)}</h3><figure><img src="{image_data}" alt="{escape(str(key))}" />'
+                f'<figcaption>{escape(heading)}</figcaption></figure>'
+            )
+    if report_data.domain == "pharmacy" and "branch_performance" not in charts:
+        chart_blocks.append("<h3>2. Branch Performance</h3><p>Not available from source data.</p>")
+    anomaly_rows = []
+    for anomaly in (report_data.anomalies or []):
+        if hasattr(anomaly, "model_dump"):
+            anomaly = anomaly.model_dump()
+        elif hasattr(anomaly, "dict"):
+            anomaly = anomaly.dict()
+        elif hasattr(anomaly, "to_dict"):
+            anomaly = anomaly.to_dict()
+        if not isinstance(anomaly, dict):
+            continue
+        anomaly_rows.append(
+            "<tr>" + "".join(f"<td>{escape(str(anomaly.get(k, '')))}</td>" for k in
+            ("anomaly_type", "severity", "metric_name", "observed_value", "source_file", "source_row")) + "</tr>"
+        )
+    claims = ""
+    if verification.claims:
+        claims = "<details><summary>Numeric claim verification</summary><ul>" + "".join(
+            f"<li>{escape(c.status)}: {escape(c.matched_text)} — expected {escape(str(c.expected_value))}</li>"
+            for c in verification.claims
+        ) + "</ul></details>"
+    status = "Passed" if narrative and verification.all_verified else ("Failed; narrative withheld" if narrative else "Not run")
+    warn_banner = "<p class=\"status banner-warn\"><b>Verification Warning:</b> Numeric claims failed verification and were withheld.</p>" if verification.claims and not verification.all_verified else ""
+    if report_data.source_data_warning:
+        warn_banner += f'<p class="status banner-warn"><b>Incomplete source data:</b> {escape(report_data.source_data_warning)}</p>'
+    narrative_html = f"<p>{escape(narrative).replace(chr(10), '<br>')}</p>" if narrative else "<p>No verified narrative is available.</p>"
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>{escape(report_data.report_title)}</title><style>
+body{{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#172033}}h1,h2{{color:#17365d}}table{{border-collapse:collapse;width:100%;margin:1rem 0}}td,th{{border:1px solid #d8dee8;padding:.55rem;text-align:left}}th{{background:#f1f5f9}}figure{{margin:1rem 0;page-break-inside:avoid}}img{{max-width:100%;height:auto}}figcaption{{color:#64748b}}.status{{padding:.7rem;background:#f1f5f9}}@media print{{body{{margin:0}}}}
+</style><body><h1>{escape(report_data.report_title)}</h1><p>{escape(report_data.business_name)} · {escape(report_data.domain)} · {escape(str(report_data.generated_at))}</p>
+<p>Period: {escape(str(report_data.period) if report_data.period is not None else 'Not available from source data')}</p>
+<h2>Executive Summary</h2>{warn_banner}{narrative_html}<p class="status">Narrative verification: {status}</p><p class="status">Source data completeness: {"Complete" if report_data.source_data_complete else "Incomplete; results are partial"}</p>{claims}
+<h2>Computed KPIs</h2>{'<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>'+''.join(kpi_rows)+'</tbody></table>' if kpi_rows else '<p>No available KPI values for this dataset.</p>'}
+{'<h2>Period comparison</h2><table><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>'+''.join(comparison_rows)+'</tbody></table>' if comparison_rows else ''}
+<h2>Business insights and charts</h2>{''.join(chart_blocks) if chart_blocks else '<p>No charts could be computed from the available fields.</p>'}
+<h2>Flagged anomalies</h2>{'<table><thead><tr><th>Type</th><th>Severity</th><th>Metric</th><th>Observed</th><th>Source</th><th>Row</th></tr></thead><tbody>'+''.join(anomaly_rows)+'</tbody></table>' if anomaly_rows else '<p>No anomalies were flagged or no anomaly data was supplied.</p>'}
+</body></html>"""
+
+
+def _render_legacy_standard_html_document(
     report_data: ReportData,
     narrative: str,
     verification: VerificationReport,
@@ -1263,6 +1357,8 @@ def generate_report(
     )
     if progress_callback:
         progress_callback(50, "Metrics calculated; preparing charts")
+    if report_data.source_data_warning:
+        warnings.append(report_data.source_data_warning)
 
     # 2. Render all charts
     charts = render_charts(
@@ -1272,11 +1368,13 @@ def generate_report(
 
     # 3. LLM Narrative & Verification
     narrative_text = ""
+    narrative_generation_succeeded = False
     vr = VerificationReport()
     try:
         if progress_callback:
             progress_callback(76, "Writing grounded business insights")
         narrative_text = generate_narrative(report_data, domain=domain, business_name=business_name, report_type=report_type)
+        narrative_generation_succeeded = True
         if progress_callback:
             progress_callback(84, "Checking every numeric claim against calculated metrics")
         vr = verify(narrative_text, report_data)
@@ -1303,13 +1401,11 @@ def generate_report(
 
     except Exception as exc:
         warnings.append(f"AI narrative unavailable (Ollama offline/fallback): {exc}")
-        narrative_text = (
-            "Executive narrative generated from deterministic ledger analytics. "
-            "All computed KPI metrics and dimensional charts are detailed below."
-        )
+        narrative_text = ""
+        narrative_generation_succeeded = False
         vr = VerificationReport(claims=[])
 
-    verification_passed = vr.all_verified if vr.claims else True
+    verification_passed = narrative_generation_succeeded and vr.all_verified and report_data.source_data_complete
     if vr.claims and not vr.all_verified:
         warnings.append("UNVERIFIED: AI narrative contains numbers not verified against the ledger; narrative withheld.")
         narrative_text = ""
@@ -1334,6 +1430,7 @@ def generate_report(
         narrative=narrative_text,
         verification=vr,
         verification_passed=verification_passed,
+        source_data_complete=report_data.source_data_complete,
         regenerated=regenerated,
         html_path=html_path,
         pdf_path=pdf_path,

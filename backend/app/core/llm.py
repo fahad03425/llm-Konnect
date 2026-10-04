@@ -5,18 +5,136 @@ and provides a single internal model-agnostic inference interface.
 """
 
 import os
+import csv
+import io
 import re
 import subprocess
+import json
+import tempfile
+import threading
+import sys
+import logging
+from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMService:
     def __init__(self):
         # Local model defaults from config
-        self.model = settings.llm_model
+        self.model = self._read_saved_model() or settings.llm_model
+        settings.llm_model = self.model
         self.host = settings.ollama_host
         self._cached_hw: Optional[Dict[str, Any]] = None
+        self._model_lock = threading.Lock()
+
+    @staticmethod
+    def _model_settings_path() -> Path:
+        base = Path(settings.storage_dir)
+        if not base.is_absolute():
+            base = Path(__file__).resolve().parents[3] / base
+        return base / "model_settings.json"
+
+    @classmethod
+    def _read_saved_model(cls) -> Optional[str]:
+        try:
+            value = json.loads(cls._model_settings_path().read_text(encoding="utf-8")).get("active_model")
+            return value.strip() if isinstance(value, str) and value.strip() else None
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    @classmethod
+    def find_ollama_executable(cls) -> Optional[str]:
+        """Find path to local Ollama executable if installed."""
+        import shutil
+        found = shutil.which("ollama")
+        if found and Path(found).is_file():
+            return str(found)
+
+        candidates = []
+        if sys.platform == "win32":
+            local_appdata = os.environ.get("LOCALAPPDATA", "")
+            prog_files = os.environ.get("ProgramFiles", "")
+            prog_files_x86 = os.environ.get("ProgramFiles(x86)", "")
+            user_profile = os.environ.get("USERPROFILE", "")
+
+            candidates.extend([
+                Path(local_appdata) / "Programs" / "Ollama" / "ollama.exe" if local_appdata else None,
+                Path(prog_files) / "Ollama" / "ollama.exe" if prog_files else None,
+                Path(prog_files_x86) / "Ollama" / "ollama.exe" if prog_files_x86 else None,
+                Path(user_profile) / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe" if user_profile else None,
+            ])
+        else:
+            candidates.extend([
+                Path("/usr/local/bin/ollama"),
+                Path("/usr/bin/ollama"),
+                Path(Path.home() / ".ollama" / "bin" / "ollama"),
+            ])
+
+        for c in candidates:
+            if c and c.is_file():
+                return str(c)
+        return None
+
+    def is_ollama_alive(self, timeout: float = 1.0) -> bool:
+        """Check if Ollama server responds on configured host."""
+        import urllib.request
+        try:
+            url = self.host.rstrip("/") + "/api/tags"
+            req = urllib.request.Request(url, headers={"User-Agent": "LLM-Konnect"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def ensure_ollama_running(self, wait_timeout: float = 6.0) -> bool:
+        """
+        Check if Ollama is running. If not, attempt to launch it as a background process
+        and wait until it is ready.
+        """
+        if self.is_ollama_alive(timeout=0.8):
+            return True
+
+        # Only auto-launch if host points to localhost / loopback
+        parsed_host = self.host.lower()
+        if not ("127.0.0.1" in parsed_host or "localhost" in parsed_host or "::1" in parsed_host):
+            return False
+
+        ollama_exe = self.find_ollama_executable()
+        if not ollama_exe:
+            print("[Ollama] Autostart notice: ollama executable not found in PATH or standard installation paths.")
+            return False
+
+        try:
+            print(f"[Ollama] Starting local Ollama server from {ollama_exe}...")
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0x08000000
+
+            subprocess.Popen(
+                [ollama_exe, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                close_fds=True if sys.platform != "win32" else False,
+            )
+        except Exception as e:
+            print(f"[Ollama] Failed to launch Ollama process: {e}")
+            return False
+
+        # Poll until responsive or timeout
+        import time
+        start_time = time.time()
+        while time.time() - start_time < wait_timeout:
+            time.sleep(0.5)
+            if self.is_ollama_alive(timeout=0.5):
+                print("[Ollama] Local Ollama server is now running and responsive.")
+                return True
+
+        return self.is_ollama_alive(timeout=0.5)
 
     def _get_client(self):
         try:
@@ -58,6 +176,15 @@ class LLMService:
         except Exception:
             pass
 
+        # Metal uses unified memory; keep recommendations in the small-model tier.
+        if not hw_info["gpu_available"] and sys.platform == "darwin":
+            try:
+                if torch.backends.mps.is_available():
+                    hw_info["gpu_available"] = True
+                    hw_info["gpu_name"] = "Apple Metal (unified memory)"
+            except (NameError, AttributeError):
+                pass
+
         # 2. Try nvidia-smi if torch CUDA wasn't available
         if not hw_info["gpu_available"]:
             try:
@@ -67,12 +194,39 @@ class LLMService:
                     timeout=2,
                     stderr=subprocess.DEVNULL
                 )
-                parts = [p.strip() for p in out.strip().split(",")]
-                if len(parts) >= 2:
+                devices = [(row[0].strip(), int(row[1].strip()))
+                           for row in csv.reader(io.StringIO(out)) if len(row) >= 2]
+                if devices:
+                    name, memory = max(devices, key=lambda device: device[1])
                     hw_info["gpu_available"] = True
-                    hw_info["gpu_name"] = parts[0]
-                    hw_info["vram_mb"] = int(parts[1])
+                    hw_info["gpu_name"] = name
+                    hw_info["vram_mb"] = memory
             except Exception:
+                pass
+
+        # Windows AMD/Intel adapters may be usable by Ollama without PyTorch CUDA.
+        # AdapterRAM is advisory and can be capped by Windows; never use it to
+        # promote a model to a larger tier than the reported capacity.
+        if not hw_info["gpu_available"] and sys.platform == "win32":
+            try:
+                output = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-Command",
+                     "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json -Compress"],
+                    text=True, timeout=2, stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                adapters = json.loads(output)
+                if isinstance(adapters, dict):
+                    adapters = [adapters]
+                adapters = [adapter for adapter in adapters
+                            if any(vendor in adapter.get("Name", "").lower()
+                                   for vendor in ("amd", "radeon", "intel", "nvidia"))]
+                if adapters:
+                    adapter = max(adapters, key=lambda item: item.get("AdapterRAM") or 0)
+                    hw_info["gpu_available"] = True
+                    hw_info["gpu_name"] = adapter["Name"]
+                    hw_info["vram_mb"] = int((adapter.get("AdapterRAM") or 0) / (1024 * 1024))
+            except (OSError, ValueError, TypeError, subprocess.SubprocessError):
                 pass
 
         # Determine recommendations based on VRAM / device type
@@ -93,53 +247,93 @@ class LLMService:
             hw_info["recommended_profile"] = "cpu_lightweight"
             hw_info["recommended_models"] = ["phi4-mini", "phi3:mini", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:1.5b"]
 
+        # Resource readings are advisory; Ollama controls actual device offloading.
+        hw_info["ram_mb"] = None
+        hw_info["available_ram_mb"] = None
+        hw_info["available_vram_mb"] = None
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            hw_info["ram_mb"] = int(memory.total / (1024 * 1024))
+            hw_info["available_ram_mb"] = int(memory.available / (1024 * 1024))
+        except (ImportError, OSError):
+            pass
+        if hw_info["gpu_available"]:
+            try:
+                rows = csv.reader(io.StringIO(subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=name,memory.free", "--format=csv,noheader,nounits"],
+                    text=True, timeout=2, stderr=subprocess.DEVNULL)))
+                hw_info["available_vram_mb"] = next(
+                    int(row[1].strip()) for row in rows
+                    if len(row) >= 2 and row[0].strip() == hw_info["gpu_name"])
+            except (OSError, ValueError, StopIteration, subprocess.SubprocessError):
+                pass
+        hw_info["recommendations_advisory"] = True
         self._cached_hw = hw_info
         return hw_info
 
     # =========================================================================
     # Model Resolution & Discovery
     # =========================================================================
-    def _resolve_model(self, client, override_model: Optional[str] = None) -> str:
-        """Resolve the best available local model from Ollama."""
-        target_model = override_model or self.model
+    @staticmethod
+    def _installed_names(client) -> List[str]:
+        response = client.list()
+        models = response.models if hasattr(response, "models") else response.get("models", [])
+        return [name for item in models
+                if (name := (item.get("model") or item.get("name") if isinstance(item, dict)
+                             else getattr(item, "model", None) or getattr(item, "name", None)))]
+
+    @staticmethod
+    def _match_model(target: str, installed: List[str]) -> Optional[str]:
+        """Respect tags; an untagged name uses Ollama's :latest alias only."""
+        canonical = target if ":" in target else target + ":latest"
+        for name in installed:
+            if name == target or name == canonical:
+                return name
+        # A size tag may have an explicit quantization/instruct suffix.
+        if ":" in target:
+            return next((name for name in installed if name.startswith(target + "-")), None)
+        return None
+
+    def _resolve_model(self, client, override_model: Optional[str] = None, *, installed: Optional[List[str]] = None) -> str:
+        target = override_model or self.model
+        if installed is None:
+            installed = self._installed_names(client)
+        matched = self._match_model(target, installed)
+        if matched:
+            return matched
+        if override_model:
+            raise ValueError(f"Model '{target}' is not installed. Download it first.")
+        # Only fallback to recommended tags, never to an arbitrary larger family member.
+        for preference in self.detect_hardware().get("recommended_models", []):
+            matched = self._match_model(preference, installed)
+            if matched:
+                return matched
+        raise ValueError(f"Model '{target}' is not installed and no recommended model is available. Download a suggested model.")
+
+    def resolve_chat_model(self, language: Optional[str] = None) -> str:
+        """Keep language policy here and use the selected model when the preference is absent."""
+        client = self._get_client()
+        installed = self._installed_names(client)
+        if language in ("roman_urdu", "urdu_script"):
+            preferred = self._match_model("llama3.2:3b", installed)
+            if preferred:
+                return preferred
+        return self._resolve_model(client, installed=installed)
+
+    def get_status(self, installed: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Connectivity is independent of whether any models have been downloaded."""
         try:
-            res = client.list()
-            installed = []
-            if hasattr(res, "models"):
-                installed = [getattr(m, "model", None) or getattr(m, "name", "") for m in res.models]
-            elif isinstance(res, dict) and "models" in res:
-                installed = [m.get("model") or m.get("name") for m in res["models"]]
-
-            if not installed:
-                return target_model
-
-            # 1. Exact match
-            if target_model in installed:
-                return target_model
-
-            # 2. Base name match (e.g. llama3.2 matches llama3.2:3b)
-            base_model = target_model.split(":")[0].lower()
-            for m in installed:
-                if m.split(":")[0].lower() == base_model:
-                    return m
-
-            # 3. Dynamic preference hierarchy matching hardware recommendation
-            hw = self.detect_hardware()
-            for pref in hw.get("recommended_models", []):
-                pref_base = pref.split(":")[0].lower()
-                for m in installed:
-                    if pref_base in m.lower():
-                        return m
-
-            # 4. General fallback hierarchy (ordered by speed, low-end efficiency, and accuracy)
-            for pref in ["qwen2.5:1.5b", "qwen2.5:0.5b", "qwen2.5", "llama3.2:1b", "gemma3:1b", "llama3.2", "phi4-mini", "llama", "mistral"]:
-                for m in installed:
-                    if pref in m.lower():
-                        return m
-
-            return installed[0]
-        except Exception:
-            return target_model
+            client = self._get_client()
+            if installed is None:
+                installed = self._installed_names(client)
+            try:
+                resolved = self._resolve_model(client, installed=installed)
+            except ValueError:
+                resolved = None
+            return {"available": True, "resolved_model": resolved, "error": None}
+        except Exception as exc:
+            return {"available": False, "resolved_model": None, "error": str(exc)}
 
     @staticmethod
     def _clean_output(text: str) -> str:
@@ -168,22 +362,31 @@ class LLMService:
             opts.update(custom_opts)
         return opts
 
+    @staticmethod
+    def _log_inference_timing(operation: str, model: str, response: Any) -> None:
+        """Log Ollama's own load, prompt-evaluation, and generation timings."""
+        def metric(name: str) -> Optional[float]:
+            value = response.get(name) if isinstance(response, dict) else getattr(response, name, None)
+            return round(float(value) / 1_000_000_000, 3) if isinstance(value, (int, float)) else None
+
+        logger.info(
+            "ollama_inference_timing operation=%s model=%s total_s=%s load_s=%s prompt_eval_s=%s "
+            "generation_s=%s prompt_tokens=%s output_tokens=%s",
+            operation, model, metric("total_duration"), metric("load_duration"),
+            metric("prompt_eval_duration"), metric("eval_duration"),
+            response.get("prompt_eval_count") if isinstance(response, dict) else getattr(response, "prompt_eval_count", None),
+            response.get("eval_count") if isinstance(response, dict) else getattr(response, "eval_count", None),
+        )
+
     # =========================================================================
     # Model Management (List, Detailed Info, Active Model, Delete)
     # =========================================================================
     def list_installed_models(self) -> List[str]:
         """List all installed local model names in Ollama."""
         try:
-            client = self._get_client()
-            res = client.list()
-            installed = []
-            if hasattr(res, "models"):
-                installed = [getattr(m, "model", None) or getattr(m, "name", "") for m in res.models]
-            elif isinstance(res, dict) and "models" in res:
-                installed = [m.get("model") or m.get("name") for m in res["models"]]
-            return [m for m in installed if m]
-        except Exception:
-            return [self.model]
+            return self._installed_names(self._get_client())
+        except Exception as exc:
+            raise RuntimeError(f"Cannot list Ollama models: {exc}") from exc
 
     def list_installed_models_detailed(self) -> List[Dict[str, Any]]:
         """List installed models with size, parameter count, family, and quantization details."""
@@ -216,14 +419,39 @@ class LLMService:
                     "is_active": name == self.model
                 })
             return items
-        except Exception:
-            return [{"name": self.model, "size_bytes": 0, "size_gb": 0, "is_active": True}]
+        except Exception as exc:
+            raise RuntimeError(f"Cannot list Ollama models: {exc}") from exc
 
     def set_active_model(self, model_name: str) -> str:
         """Set the active LLM model."""
-        self.model = model_name
-        settings.llm_model = model_name
-        return self.model
+        model_name = model_name.strip()
+        if not model_name:
+            raise ValueError("Model name is required")
+        client = self._get_client()
+        installed = self._installed_names(client)
+        matched = self._match_model(model_name, installed)
+        if not matched:
+            raise ValueError(f"Model '{model_name}' is not installed. Download it first.")
+        info = client.show(matched)
+        capabilities = info.get("capabilities") if isinstance(info, dict) else getattr(info, "capabilities", None)
+        if capabilities and "completion" not in capabilities:
+            raise ValueError(f"Model '{matched}' does not support text completion.")
+        model_name = matched
+        with self._model_lock:
+            path = self._model_settings_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix="model_settings_", suffix=".tmp", delete=False) as handle:
+                    temporary = Path(handle.name)
+                    json.dump({"active_model": model_name}, handle)
+                temporary.replace(path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+            self.model = model_name
+            settings.llm_model = model_name
+            return self.model
 
     def get_model_info(self, model_name: Optional[str] = None) -> Dict[str, Any]:
         """Fetch model parameters and details from Ollama."""
@@ -262,8 +490,8 @@ class LLMService:
 
     def pull_model_stream(self, model_name: str) -> Generator[Dict[str, Any], None, None]:
         """Pull a model from Ollama library yielding progress updates."""
-        client = self._get_client()
         try:
+            client = self._get_client()
             stream = client.pull(model=model_name, stream=True)
             for chunk in stream:
                 if isinstance(chunk, dict):
@@ -317,7 +545,7 @@ class LLMService:
         Explicitly evict/unload a model from VRAM/RAM immediately (releases resources).
         """
         client = self._get_client()
-        target_model = model_name or self.model
+        target_model = model_name or self._resolve_model(client)
         try:
             # Passing keep_alive=0 tells Ollama to immediately unload the model from memory
             client.generate(model=target_model, prompt="", keep_alive=0)
@@ -350,8 +578,8 @@ class LLMService:
                     })
                 return items
             return []
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError(f"Cannot inspect running Ollama models: {exc}") from exc
 
     # =========================================================================
     # Model-Agnostic Inference Core (Preserved & Enhanced)
@@ -383,6 +611,7 @@ class LLMService:
 
         try:
             response = client.chat(**kwargs)
+            self._log_inference_timing("chat", active_model, response)
             content = response["message"]["content"]
             return self._clean_output(content)
         except Exception as e:
@@ -394,6 +623,7 @@ class LLMService:
         keep_alive: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
+        format: Optional[Any] = None,
     ) -> str:
         """Non-streaming fast chat."""
         client = self._get_client()
@@ -406,6 +636,8 @@ class LLMService:
             "options": opts,
             "keep_alive": keep_alive or settings.llm_keep_alive_chat,
         }
+        if format is not None:
+            kwargs["format"] = format
 
         try:
             response = client.chat(**kwargs)
@@ -436,20 +668,43 @@ class LLMService:
 
         try:
             stream = client.chat(**kwargs)
-            inside_think = False
-            for chunk in stream:
-                if "message" in chunk and "content" in chunk["message"]:
-                    token = chunk["message"]["content"]
-                    if "<think>" in token:
-                        inside_think = True
-                        continue
-                    if "</think>" in token:
-                        inside_think = False
-                        continue
-                    if not inside_think:
-                        yield token
+            def content_chunks():
+                for chunk in stream:
+                    if chunk.get("done"):
+                        self._log_inference_timing("chat_stream", active_model, chunk)
+                    if "message" in chunk and "content" in chunk["message"]:
+                        yield chunk["message"]["content"]
+
+            yield from self._filter_stream(content_chunks())
         except Exception as e:
             raise RuntimeError(f"Ollama chat failed: {str(e)}")
+
+    @staticmethod
+    def _filter_stream(tokens) -> Generator[str, None, None]:
+        """Buffer only possible tag prefixes; preserve ordinary streaming latency."""
+        pending = ""
+        inside = False
+        tags = ("<think>", "</think>")
+        for token in tokens:
+            pending += token
+            while pending:
+                matches = [(pending.find(tag), tag) for tag in tags if tag in pending]
+                if matches:
+                    position, tag = min(matches)
+                    if position and not inside:
+                        yield pending[:position]
+                    inside = tag == "<think>"
+                    pending = pending[position + len(tag):]
+                    continue
+                held = max((length for length in range(1, min(len(pending), 7) + 1)
+                            if any(tag.startswith(pending[-length:]) for tag in tags)), default=0)
+                ready = pending[:-held] if held else pending
+                if ready and not inside:
+                    yield ready
+                pending = pending[-held:] if held else ""
+                break
+        if pending and not inside:
+            yield pending
 
 
 llm = LLMService()

@@ -580,6 +580,103 @@ def build_pdf_report(
     """
     Assemble and render the publication-ready executive PDF report.
     """
+    if report_data.domain == "pharmacy" and "weekly_report" in report_data.sections:
+        return _legacy_build_pdf_report(report_data, narrative, verification, charts, output_path)
+    return _build_source_driven_pdf(report_data, narrative, verification, charts, output_path)
+
+
+def _build_source_driven_pdf(
+    report_data: ReportData,
+    narrative: str,
+    verification: VerificationReport,
+    charts: Dict[str, Path],
+    output_path: Path,
+) -> Path:
+    """Build a domain-neutral PDF from metrics and artifacts present in ReportData."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(output_path), pagesize=letter, leftMargin=40, rightMargin=40, topMargin=42, bottomMargin=38)
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("ReportTitle", parent=styles["Title"], textColor=colors.HexColor("#17365d"), spaceAfter=8)
+    heading = ParagraphStyle("ReportHeading", parent=styles["Heading2"], textColor=colors.HexColor("#17365d"), spaceBefore=14, spaceAfter=6)
+    body = styles["BodyText"]
+    story = [
+        Paragraph(escape(report_data.report_title or "Business Performance Report"), title),
+        Paragraph(f"{escape(report_data.business_name)} | {escape(report_data.domain)}", body),
+        Paragraph(f"Generated {escape(report_data.generated_at.strftime('%Y-%m-%d %H:%M'))} | Period: {escape(str(report_data.period) if report_data.period is not None else 'Not available from source data')}", body),
+        Paragraph("Computed KPIs", heading),
+    ]
+    if report_data.source_data_warning:
+        story.insert(3, Paragraph(f"Incomplete source data: {escape(report_data.source_data_warning)}", body))
+    kpis = report_data.get_all_display_kpis()
+    if kpis:
+        table = Table([["Metric", "Value"], *[[str(label), str(value)] for label, value in kpis]], colWidths=[doc.width * .58, doc.width * .42], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#cbd5e1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+            ("PADDING", (0, 0), (-1, -1), 6), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(table)
+    else:
+        story.append(Paragraph("No available KPI values for this dataset.", body))
+    comparisons = [["Metric", "Current", "Previous", "Change"]]
+    for key, metric in report_data.period_comparison.items():
+        if isinstance(metric, dict) and metric.get("current") is not None and metric.get("previous") is not None:
+            change = metric.get("change_pct")
+            comparisons.append([str(key).replace("_", " ").title(), f"{float(metric['current']):,.2f}", f"{float(metric['previous']):,.2f}", f"{float(change):+.2f}%" if change is not None else "Unavailable"])
+    if len(comparisons) > 1:
+        story.append(Paragraph("Period comparison", heading))
+        comparison_table = Table(comparisons, colWidths=[doc.width * .34, doc.width * .22, doc.width * .22, doc.width * .22], repeatRows=1)
+        comparison_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#cbd5e1")), ("PADDING", (0, 0), (-1, -1), 5)]))
+        story.append(comparison_table)
+    verification_status = "Passed" if narrative and verification.all_verified else ("Failed; narrative withheld" if narrative else "Not run")
+    story.extend([Paragraph("Business insights", heading), Paragraph(escape(narrative or "No verified narrative is available."), body),
+                  Paragraph(f"Narrative verification: {verification_status}", body)])
+    if verification.claims:
+        story.append(Paragraph("Numeric claim audit", heading))
+        audit_rows = [["Status", "Claim", "Expected"]] + [[c.status, c.matched_text, "" if c.expected_value is None else str(c.expected_value)] for c in verification.claims]
+        audit = Table(audit_rows, colWidths=[doc.width * .15, doc.width * .55, doc.width * .3], repeatRows=1)
+        audit.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#cbd5e1")), ("PADDING", (0, 0), (-1, -1), 5)]))
+        story.append(audit)
+    if charts:
+        story.append(Paragraph("Charts", heading))
+        for key, path in charts.items():
+            if not Path(path).is_file():
+                continue
+            story.append(Paragraph(escape(str(key).replace("_", " ").title()), styles["Heading3"]))
+            try:
+                img = Image(str(path))
+                img._restrictSize(doc.width, 4.7 * inch)
+                story.extend([img, Spacer(1, 8)])
+            except Exception:
+                continue
+    anomalies = report_data.anomalies or []
+    if anomalies:
+        story.append(Paragraph("Flagged anomalies", heading))
+        rows = [["Type", "Severity", "Metric", "Observed", "Source", "Row"]]
+        for item in anomalies:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump()
+            elif hasattr(item, "dict"):
+                item = item.dict()
+            elif hasattr(item, "to_dict"):
+                item = item.to_dict()
+            if isinstance(item, dict):
+                rows.append([str(item.get(k, "")) for k in ("anomaly_type", "severity", "metric_name", "observed_value", "source_file", "source_row")])
+        if len(rows) > 1:
+            anomaly_table = Table(rows, colWidths=[doc.width * x for x in (.20, .12, .19, .15, .22, .12)], repeatRows=1)
+            anomaly_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#cbd5e1")), ("FONTSIZE", (0, 0), (-1, -1), 7), ("PADDING", (0, 0), (-1, -1), 4)]))
+            story.append(anomaly_table)
+    doc.build(story)
+    return output_path
+
+
+def _legacy_build_pdf_report(
+    report_data: ReportData,
+    narrative: str,
+    verification: VerificationReport,
+    charts: Dict[str, Path],
+    output_path: Path,
+) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(
         str(output_path),
@@ -732,6 +829,8 @@ def build_pdf_report(
     # ══════════════════════════════════════════════════════════════════════════
     story.append(Spacer(1, 2.2 * inch))
     story.append(Paragraph("PHARMACY SALES", cover_title_style))
+    if report_data.source_data_warning:
+        story.append(Paragraph(f"Incomplete source data: {escape(report_data.source_data_warning)}", styles["BodyText"]))
     story.append(Paragraph("PERFORMANCE REPORT", cover_subtitle_style))
 
     branches_str = " | ".join(em.branches_list) if em.branches_list else report_data.business_name
@@ -759,6 +858,8 @@ def build_pdf_report(
         f"The goal is to surface what is driving revenue, where money is being left on the table, and which operational levers deserve attention."
     )
     story.append(Paragraph(exec_intro, body_style))
+    if report_data.source_data_warning:
+        story.append(Paragraph(f"Incomplete source data: {escape(report_data.source_data_warning)}", body_style))
     story.append(Spacer(1, 6))
 
     # 8-Box KPI Stat Grid (4 rows x 2 cols)

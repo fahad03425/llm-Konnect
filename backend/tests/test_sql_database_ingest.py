@@ -175,7 +175,18 @@ def test_sql_connector_description_never_discloses_credentials():
     assert "pharmacy" in connector.describe()
     assert "very-secret-password" not in connector.describe()
 
-def test_api_sql_discover_and_ingest(temp_pharmacy_db):
+def test_api_sql_discover_and_ingest(temp_pharmacy_db, tmp_path, monkeypatch):
+    # Real retrieval integration runs against isolated storage, never the user's KB.
+    import sys
+    from app.api import kb, routes
+    from app.core.config import settings
+    from app.ingestion.store import KnowledgeBase
+    registry = FileRegistry(str(tmp_path / 'registry.db'))
+    monkeypatch.setattr(settings, 'storage_dir', str(tmp_path / 'storage'))
+    monkeypatch.setattr(kb, 'file_registry', registry)
+    monkeypatch.setattr(routes, 'file_registry', registry)
+    monkeypatch.setattr(sys.modules[__name__], 'file_registry', registry)
+    monkeypatch.setattr(kb, '_kb', KnowledgeBase(chroma_dir=str(tmp_path / 'chroma'), collection_name='schema_sql_test'))
     client = TestClient(app)
     # Clean up any leftover records from prior aborted runs
     try:
@@ -194,13 +205,17 @@ def test_api_sql_discover_and_ingest(temp_pharmacy_db):
         data = res.json()
         assert data["database_name"] == "MockTestPOS"
         assert data["total_tables"] == 3
+        table_mappings = {table['table_name']: {suggestion['source_column']: suggestion['canonical_field']
+                         for suggestion in table['mapping_proposal']['suggestions'] if suggestion['canonical_field']}
+                         for table in data['tables']}
         
         # 2. Ingest database endpoint (all tables in 1 step)
         ingest_res = client.post("/api/kb/ingest-database", json={
             "connection_string": f"sqlite:///{temp_pharmacy_db}",
             "db_type": "sqlite",
             "domain": "pharmacy",
-            "strategy": "row"
+            "strategy": "row",
+            "table_mappings": table_mappings
         })
         assert ingest_res.status_code == 200
         ingest_data = ingest_res.json()

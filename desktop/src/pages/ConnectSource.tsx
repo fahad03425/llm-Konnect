@@ -34,6 +34,8 @@ interface DiscoveredTable {
     columns: string[];
     sample_rows: Record<string, any>[];
     mapping_proposal?: any;
+    canonical_fields?: string[];
+    saved_profile?: { mapping: Record<string, string> } | null;
     error?: string;
 }
 
@@ -154,12 +156,23 @@ function ConnectSourceContent() {
         normSt, setNormSt,
         valSt, setValSt,
         ingestSt, setIngestSt,
+        ingestProgress, setIngestProgress,
         resetConnectSession,
         setActivePath
     } = useConnectSession();
 
     const { user } = useUser();
     const domain = user.domain;
+    const [canonicalFields, setCanonicalFields] = useState<string[]>([]);
+    useEffect(() => {
+        let active = true;
+        setCanonicalFields([]);
+        fetch(`/api/sources/schema?domain=${encodeURIComponent(domain)}`)
+            .then(response => response.ok ? response.json() : null)
+            .then(data => { if (active && data) setCanonicalFields(data.canonical_fields || []); })
+            .catch(() => { /* Preview metadata remains available when this lookup fails. */ });
+        return () => { active = false; };
+    }, [domain]);
 
     // ── SQL Connection State (local to SQL panel) ──────────────────
     const [dbType, setDbType] = useState('sqlite');
@@ -168,6 +181,7 @@ function ConnectSourceContent() {
     const [sqlMode, setSqlMode] = useState<'all_tables' | 'custom_query'>('all_tables');
     const [discoveredDb, setDiscoveredDb] = useState<DatabaseDiscoveryResult | null>(null);
     const [selectedTables, setSelectedTables] = useState<string[]>([]);
+    const [tableMappings, setTableMappings] = useState<Record<string, Record<string, string>>>({});
     const [isDiscovering, setIsDiscovering] = useState(false);
     const [isIngestingDb, setIsIngestingDb] = useState(false);
     const [dbIngestProgress, setDbIngestProgress] = useState<{ current: number; total: number; currentTable: string } | null>(null);
@@ -207,12 +221,7 @@ function ConnectSourceContent() {
     const [shopifyTestMsg, setShopifyTestMsg] = useState<{ status: string; text: string } | null>(null);
     const [isTestingShopify, setIsTestingShopify] = useState(false);
 
-    const [ingestProgress, setIngestProgress] = useState<{
-        percent: number;
-        currentChunks: number;
-        totalChunks: number;
-        stepText: string;
-    } | null>(null);
+
 
     // ── Load KB stats and local databases on mount ────────────────
     useEffect(() => {
@@ -403,6 +412,11 @@ function ConnectSourceContent() {
             }
             const data: DatabaseDiscoveryResult = await res.json();
             setDiscoveredDb(data);
+            const initial: Record<string, Record<string, string>> = {};
+            data.tables.forEach(table => {
+                initial[table.table_name] = table.saved_profile?.mapping || Object.fromEntries((table.mapping_proposal?.suggestions || []).filter((suggestion: any) => suggestion.canonical_field).map((suggestion: any) => [suggestion.source_column, suggestion.canonical_field]));
+            });
+            setTableMappings(initial);
             const valid = data.tables.filter(t => !t.error).map(t => t.table_name);
             setSelectedTables(valid);
             setUploadSt(idle());
@@ -428,6 +442,7 @@ function ConnectSourceContent() {
                     db_type: dbType,
                     domain: domain,
                     tables: selectedTables,
+                    table_mappings: tableMappings,
                     strategy: 'row'
                 })
             });
@@ -487,7 +502,9 @@ function ConnectSourceContent() {
             setPreviewData({
                 columns: data.columns || [],
                 sample_rows: data.data ? data.data.map((r: any) => (data.columns || []).map((c: string) => r[c])) : [],
-                total_rows: data.total_rows || (data.data ? data.data.length : 0)
+                total_rows: data.total_rows || (data.data ? data.data.length : 0),
+                canonical_fields: data.canonical_fields || [],
+                mapping_confirmed: Boolean(data.saved_profile)
             });
 
             const proposedMap: Record<string, string> = {};
@@ -496,21 +513,23 @@ function ConnectSourceContent() {
                     if (s.canonical_field) proposedMap[s.source_column] = s.canonical_field;
                 });
             }
-            if (Object.keys(proposedMap).length > 0) setMapping(proposedMap);
+            const selectedMap = data.saved_profile?.mapping || proposedMap;
+            setMapping(selectedMap);
 
             setUploadSt(idle());
             setStep(1);
 
             if (isAuto) {
                 await delay(400);
-                await doIngestSingleSqlTable();
+                if (data.saved_profile) await doIngestSingleSqlTable(selectedMap);
+                else setStep(2);
             }
         } catch (e: unknown) {
             setUploadSt({ loading: false, error: String((e as Error).message ?? 'SQL connection failed.') });
         }
     };
 
-    const doIngestSingleSqlTable = async () => {
+    const doIngestSingleSqlTable = async (confirmedMap?: Record<string, string>) => {
         if (!connString || !sqlQuery) return;
         let tName = sqlQuery.trim();
         const m = tName.match(/from\s+\[?([a-zA-Z0-9_#]+)\]?/i);
@@ -527,6 +546,7 @@ function ConnectSourceContent() {
                     db_type: dbType,
                     domain: domain,
                     tables: [tName],
+                    table_mappings: { [tName]: confirmedMap || mapping },
                     strategy: 'row'
                 })
             });
@@ -621,6 +641,11 @@ function ConnectSourceContent() {
             }
             const data: DatabaseDiscoveryResult = await res.json();
             setDiscoveredDb(data);
+            const initial: Record<string, Record<string, string>> = {};
+            data.tables.forEach(table => {
+                initial[table.table_name] = table.saved_profile?.mapping || Object.fromEntries((table.mapping_proposal?.suggestions || []).filter((suggestion: any) => suggestion.canonical_field).map((suggestion: any) => [suggestion.source_column, suggestion.canonical_field]));
+            });
+            setTableMappings(initial);
             const valid = data.tables.filter(t => !t.error).map(t => t.table_name);
             setSelectedTables(valid);
             setUploadSt(idle());
@@ -701,11 +726,17 @@ function ConnectSourceContent() {
         }
         const isAuto = overrideAuto ?? autoProceed;
         const cleanStore = shopifyStore.replace('.myshopify.com', '').trim();
-        const shopifyUri = `shopify://${cleanStore}?access_token=${encodeURIComponent(shopifyToken.trim())}&resource=${shopifyResource}`;
-        setFilePath(shopifyUri);
-        setFileName(`Shopify_${cleanStore}_${shopifyResource}`);
         setUploadSt({ loading: true, error: null });
         try {
+            const response = await fetch('/api/sources/shopify/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shop_name: cleanStore, access_token: shopifyToken.trim(), resource: shopifyResource })
+            });
+            if (!response.ok) throw new Error(await response.text());
+            const { file_path: shopifyUri } = await response.json();
+            setFilePath(shopifyUri);
+            setFileName(`Shopify_${cleanStore}_${shopifyResource}`);
             await doPreview(shopifyUri, null, isAuto);
             setUploadSt(idle());
         } catch (err: any) {
@@ -736,7 +767,10 @@ function ConnectSourceContent() {
             setPreviewData({
                 columns: data.columns || [],
                 sample_rows: sampleRows,
-                total_rows: data.total_rows || (data.data ? data.data.length : 0)
+                total_rows: data.total_rows || (data.data ? data.data.length : 0),
+                connector_warnings: data.connector_warnings || [],
+                canonical_fields: data.canonical_fields || [],
+                mapping_confirmed: Boolean(data.saved_profile)
             });
 
             const proposedMap: Record<string, string> = {};
@@ -745,15 +779,15 @@ function ConnectSourceContent() {
                     if (s.canonical_field) proposedMap[s.source_column] = s.canonical_field;
                 });
             }
-            if (Object.keys(proposedMap).length > 0) {
-                setMapping(proposedMap);
-            }
+            const selectedMap = data.saved_profile?.mapping || proposedMap;
+            setMapping(selectedMap);
 
             setPreviewSt(idle());
 
             if (isAuto) {
                 await delay(400);
-                await doMapping(currentFp, proposedMap, currentSheet, isAuto);
+                if (data.saved_profile) await doMapping(currentFp, selectedMap, currentSheet, isAuto);
+                else setStep(2);
             }
         } catch (e: unknown) {
             setPreviewSt({ loading: false, error: String((e as Error).message ?? 'Preview failed.') });
@@ -769,6 +803,10 @@ function ConnectSourceContent() {
         const currentMap = targetMap || mapping;
         const currentSheet = targetSheet !== undefined ? targetSheet : sheetName;
 
+        if (sourceType === 'sql') {
+            await doIngestSingleSqlTable(currentMap);
+            return;
+        }
         setMappingSt({ loading: true, error: null });
         setStep(2);
         try {
@@ -983,7 +1021,6 @@ function ConnectSourceContent() {
             setIngestSt({ loading: false, error: String((e as Error).message ?? 'Ingest failed.') });
         } finally {
             clearInterval(pollInterval);
-            setIngestProgress(null);
         }
     };
     const handleStartChatting = () => {
@@ -1369,6 +1406,13 @@ function ConnectSourceContent() {
                                                 </div>
                                             </div>
 
+                                            {discoveredDb.tables.filter(t => selectedTables.includes(t.table_name) && !t.error).map(table => (
+                                                <details key={table.table_name} style={{ marginBottom: '1rem' }}>
+                                                    <summary>Review mapping: {table.table_name}</summary>
+                                                    <MappingTable columns={table.columns} fields={canonicalFields.length ? canonicalFields : table.canonical_fields} mapping={tableMappings[table.table_name] || {}} onChange={next => setTableMappings(previous => ({ ...previous, [table.table_name]: next }))} />
+                                                </details>
+                                            ))}
+                                            <p>Review the selected table mappings before confirming this import.</p>
                                             <div className="db-tables-grid">
                                                 {discoveredDb.tables.map(t => {
                                                     const isChecked = selectedTables.includes(t.table_name);
@@ -1431,7 +1475,7 @@ function ConnectSourceContent() {
                                                     {isIngestingDb ? (
                                                         <><span className="spinner" /> Ingesting Entire Database…</>
                                                     ) : (
-                                                        <><Zap size={16} /> ⚡ Ingest Entire Database ({selectedTables.length} Tables)</>
+                                                        <><Zap size={16} /> Confirm Mappings &amp; Import ({selectedTables.length} Tables)</>
                                                     )}
                                                 </button>
                                             </div>
@@ -1782,6 +1826,9 @@ function ConnectSourceContent() {
                         <div className="wizard-card-title"><Eye size={16} /> Step 2 — Preview Data</div>
 
                         {previewSt.error && <ErrorCard msg={previewSt.error} onRetry={() => doPreview()} />}
+                        {previewData?.connector_warnings?.map((warning, index) => (
+                            <p key={index} role="status">{warning}</p>
+                        ))}
 
                         {!previewData && !previewSt.loading && step === 1 && (
                             <div className="btn-actions">
@@ -1816,14 +1863,14 @@ function ConnectSourceContent() {
                                     {sourceType === 'sql' ? (
                                         <button
                                             className="btn-primary"
-                                            onClick={doIngestSingleSqlTable}
+                                            onClick={() => setStep(2)}
                                             disabled={isIngestingDb}
                                         >
-                                            {isIngestingDb ? <><span className="spinner" /> Ingesting Table…</> : <><Zap size={15} /> ⚡ Ingest Table into KnowledgeBase</>}
+                                            {isIngestingDb ? <><span className="spinner" /> Ingesting Table…</> : <><GitMerge size={15} /> Review Column Mapping</>}
                                         </button>
                                     ) : (
-                                        <button className="btn-primary" onClick={() => doMapping(filePath, mapping, sheetName, autoProceed)}>
-                                            {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Confirm Preview &amp; Load Mapping
+                                        <button className="btn-primary" onClick={() => setStep(2)}>
+                                            {autoProceed ? <Zap size={15} /> : <ArrowRight size={15} />} Review Column Mapping
                                         </button>
                                     )}
                                     <button
@@ -1848,7 +1895,7 @@ function ConnectSourceContent() {
 
                         {step >= 2 && (
                             <div className="info-card">
-                                <CheckCircle size={16} /> Preview confirmed. Schema mapping loaded.
+                                <CheckCircle size={16} /> Preview loaded. Review the column mapping below.
                             </div>
                         )}
                     </div>
@@ -1869,12 +1916,21 @@ function ConnectSourceContent() {
 
                         {mappingSt.error && <ErrorCard msg={mappingSt.error} onRetry={() => doMapping()} />}
 
-                        {!mappingSt.loading && Object.keys(mapping).length > 0 && (
+                        {!mappingSt.loading && Boolean(previewData) && (
                             <>
                                 <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
                                     Review detected column mapping before proceeding.
                                 </p>
-                                <MappingTable mapping={mapping} />
+                                <MappingTable mapping={mapping} columns={previewData?.columns} fields={canonicalFields.length ? canonicalFields : previewData?.canonical_fields || Object.values(mapping)} onChange={next => {
+                                    setMapping(next);
+                                    setValidateResult(null);
+                                    setStep(2);
+                                }} />
+                                {step === 2 && <div className="btn-actions">
+                                    <button className="btn-primary" disabled={mappingSt.loading || Object.keys(mapping).length === 0} onClick={() => doMapping(filePath, mapping, sheetName, autoProceed)}>
+                                        Confirm &amp; Save Mapping
+                                    </button>
+                                </div>}
 
                                 {step === 3 && (
                                     <div className="btn-actions">
@@ -1882,8 +1938,8 @@ function ConnectSourceContent() {
                                             {normSt.loading
                                                 ? <><span className="spinner" /> Normalizing…</>
                                                 : autoProceed
-                                                    ? <><Zap size={15} /> Confirm Mapping &amp; Auto Process</>
-                                                    : <><ArrowRight size={15} /> Confirm Mapping &amp; Normalize</>}
+                                                    ? <><Zap size={15} /> Normalize &amp; Auto Process</>
+                                                    : <><ArrowRight size={15} /> Normalize Data</>}
                                         </button>
                                         <button
                                             type="button"

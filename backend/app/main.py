@@ -20,6 +20,20 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_prewarm, daemon=True).start()
 
+    # Automatically ensure local Ollama AI engine is running and pre-warm default model
+    def _start_ollama():
+        try:
+            from app.core.llm import llm
+            if llm.ensure_ollama_running(wait_timeout=6.0):
+                target_model = llm.model or "qwen2.5:1.5b"
+                print(f"[Startup] Pre-loading model '{target_model}' into memory...")
+                llm.load_model(model_name=target_model, keep_alive=settings.llm_keep_alive_chat)
+                print(f"[Startup] Model '{target_model}' pre-loaded and ready.")
+        except Exception as e:
+            print(f"[Startup] Ollama auto-start / model pre-warm notice: {e}")
+
+    threading.Thread(target=_start_ollama, daemon=True).start()
+
     # Clean up any stale processing tasks left behind by previous crashes or server reloads
     try:
         from app.ingestion.registry import file_registry

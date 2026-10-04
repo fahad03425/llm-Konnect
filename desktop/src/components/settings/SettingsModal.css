@@ -241,6 +241,343 @@
     box-shadow: 0 0 0 3px var(--brand-green-subtle);
 }
 
+.settings-model-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+}
+
+.settings-model-row .settings-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-model-action {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--surface-container);
+    color: var(--text-primary);
+    padding: 0.6rem 0.85rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: all 0.15s ease;
+}
+
+.settings-model-action:hover:not(:disabled) {
+    border-color: var(--brand-green);
+    background: var(--surface-container-high);
+}
+
+.settings-model-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.settings-download-btn {
+    background: var(--brand-green-container);
+    border-color: var(--brand-green-border);
+    color: var(--brand-green-text);
+    font-weight: 600;
+}
+
+.settings-download-btn:hover:not(:disabled) {
+    background: var(--brand-green);
+    color: #ffffff;
+    border-color: var(--brand-green);
+}
+
+.settings-model-download-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding-top: 0.4rem;
+    border-top: 1px dashed var(--border-color);
+}
+
+.settings-model-download-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.settings-model-link-btn {
+    background: none;
+    border: none;
+    color: var(--brand-green);
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.settings-model-link-btn:hover {
+    color: var(--brand-green-hover);
+}
+
+/* Installed Models List with Delete Action */
+.settings-installed-models-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding-top: 0.4rem;
+    border-top: 1px dashed var(--border-color);
+}
+
+.settings-installed-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.settings-models-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 180px;
+    overflow-y: auto;
+    padding-right: 0.2rem;
+}
+
+.settings-model-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface-container);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.5rem 0.75rem;
+    transition: all 0.15s ease;
+}
+
+.settings-model-item:hover {
+    background: var(--surface-container-high);
+    border-color: var(--outline-variant);
+}
+
+.settings-model-item.active-model-item {
+    border-color: var(--brand-green);
+    background: var(--brand-green-container);
+}
+
+.settings-model-item-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.settings-model-item-name {
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-model-active-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--brand-green-text);
+    background: rgba(16, 185, 129, 0.15);
+    padding: 0.15rem 0.45rem;
+    border-radius: 9999px;
+}
+
+.settings-model-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.settings-model-mini-btn {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.76rem;
+    font-weight: 500;
+    border-radius: 6px;
+    background: var(--surface-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.settings-model-mini-btn:hover:not(:disabled) {
+    background: var(--surface-container-high);
+    border-color: var(--brand-green);
+    color: var(--brand-green);
+}
+
+.settings-model-delete-btn {
+    padding: 0.25rem 0.55rem;
+    font-size: 0.74rem;
+    font-weight: 500;
+    border-radius: 6px;
+    background: var(--google-red-container, rgba(239, 68, 68, 0.08));
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    color: var(--google-red, #ef4444);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    transition: all 0.15s ease;
+}
+
+.settings-model-delete-btn:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #dc2626;
+    transform: translateY(-1px);
+}
+
+.settings-model-delete-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.settings-model-empty {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    background: var(--surface-container);
+    border: 1px dashed var(--border-color);
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+}
+
+.settings-model-note, .settings-model-status, .settings-model-error {
+    font-size: 0.78rem;
+    line-height: 1.4;
+    margin: 0;
+}
+
+.settings-model-note { color: var(--text-secondary); }
+.settings-model-status { color: var(--brand-green); font-weight: 500; }
+.settings-model-error { color: var(--google-red, #dc2626); }
+
+/* Header Actions & Refresh Button */
+.settings-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.settings-refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--surface-container-high, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.settings-refresh-btn:hover:not(:disabled) {
+    background: var(--surface-container-highest, rgba(255, 255, 255, 0.15));
+    color: var(--brand-green);
+    border-color: var(--brand-green);
+}
+
+.settings-refresh-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Download Progress Bar & Meta Counter */
+.settings-download-progress-container {
+    margin-top: 0.75rem;
+    background: var(--surface-container-low, rgba(0, 0, 0, 0.2));
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.settings-download-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.settings-download-progress-status {
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.settings-download-progress-meta {
+    color: var(--brand-green);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.settings-progress-track {
+    width: 100%;
+    height: 7px;
+    background: var(--surface-container-highest, rgba(255, 255, 255, 0.1));
+    border-radius: 9999px;
+    overflow: hidden;
+}
+
+.settings-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #10b981, #059669);
+    border-radius: 9999px;
+    transition: width 0.25s ease;
+}
+
+.settings-progress-fill.indeterminate {
+    width: 35%;
+    animation: indeterminateProgress 1.6s infinite ease-in-out;
+}
+
+@keyframes indeterminateProgress {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(350%);
+    }
+}
+
 /* Domain Selection Cards */
 .settings-domain-grid {
     display: grid;

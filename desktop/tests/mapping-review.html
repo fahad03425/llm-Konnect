@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mapping editor test fixture</title></head>
+<body><main id="root" style="max-width:900px;margin:32px auto;padding:16px"></main>
+<script type="module">
+import React, { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { MappingTable } from '/src/components/connect/MappingTable.tsx';
+import '/src/index.css';
+import '/src/Connect.css';
+function Fixture() {
+    const [mapping, setMapping] = useState({ Medicine_Name: 'product_id', Total: 'amount' });
+    return React.createElement(React.Fragment, null,
+        React.createElement('h1', null, 'Review column mapping'),
+        React.createElement('p', null, 'Isolated UI fixture: changes here are not saved or imported.'),
+        React.createElement(MappingTable, {
+            mapping, onChange: setMapping,
+            columns: ['Medicine_Name', 'Total', 'Quantity_Not_Detected', 'Unmapped_extra_column_with_a_long_source_name'],
+            fields: ['product_id', 'amount', 'quantity', 'date', 'expiry_date', 'description']
+        }),
+        React.createElement('pre', { 'aria-label': 'Current mapping' }, JSON.stringify(mapping, null, 2)));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+</script></body></html>

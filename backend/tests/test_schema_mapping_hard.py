@@ -80,7 +80,7 @@ class TestDeceptiveHeaders:
     def test_unrelated_headers_are_not_forced_into_numeric_fields(self):
         mapping = map_headers(["Province", "Total_Tax"], _pharm())
         assert mapping.get("Province") is None
-        assert mapping.get("Total_Tax") is None
+        assert mapping.get("Total_Tax") == "invoice_tax"
 
     def test_wht_maps_to_tax(self):
         """WHT = Withholding Tax, a Pakistani tax term."""
@@ -89,8 +89,8 @@ class TestDeceptiveHeaders:
     def test_gst_maps_to_tax(self):
         assert _field("GST", pack=_pharm()) == "tax"
 
-    def test_closing_stock_maps_to_quantity(self):
-        assert _field("Closing Stock", pack=_pharm()) == "quantity"
+    def test_closing_stock_maps_to_closing_stock_qty(self):
+        assert _field("Closing Stock", pack=_pharm()) == "closing_stock_qty"
 
     def test_party_name_maps_to_supplier(self):
         """'Party Name' is standard Pakistani accounting term for supplier."""
@@ -102,6 +102,9 @@ class TestDeceptiveHeaders:
     def test_salt_maps_to_generic(self):
         """'Salt' = active ingredient = generic_name in Pakistani pharmacy context."""
         assert _field("Salt", pack=_pharm()) == "generic_name"
+
+    def test_composite_generic_salt_header_maps_to_generic(self):
+        assert _field("Generic / Salt", pack=_pharm()) == "generic_name"
 
     def test_column_named_value_is_ambiguous(self):
         """'Value' is in amount synonyms — should map without crashing."""
@@ -429,9 +432,8 @@ class TestApplyMappingAdversarial:
         """Mapping references a column that doesn't exist in the DataFrame → must not crash."""
         df = pd.DataFrame({"A": [1, 2]})
         mapping = {"B": "amount"}  # 'B' not in df
-        result = apply_mapping(df, mapping, keep_extras=False)
-        # 'amount' column simply won't appear (graceful)
-        assert "amount" not in result.columns or result.empty
+        with pytest.raises(ValueError, match="does not exist"):
+            apply_mapping(df, mapping, keep_extras=False)
 
     def test_empty_dataframe(self):
         """Applying mapping to a 0-row DataFrame must not crash."""
@@ -459,9 +461,8 @@ class TestApplyMappingAdversarial:
         must not crash, and result must have the 'amount' column."""
         df = pd.DataFrame({"ColA": [100.0], "ColB": [200.0]})
         mapping = {"ColA": "amount", "ColB": "amount"}
-        # This is a user error; must not crash
-        result = apply_mapping(df, mapping, keep_extras=False)
-        assert "amount" in result.columns
+        with pytest.raises(ValueError, match="Multiple columns"):
+            apply_mapping(df, mapping, keep_extras=False)
 
     def test_mapping_empty_dict(self):
         """Empty mapping: with keep_extras=False, result has only traceability cols."""
@@ -675,7 +676,7 @@ class TestProfileAdversarial:
         mapping_with_extra = {"X": "amount"}
         save_profile(sig, mapping_with_extra, "test")
         loaded = find_profile(sig)
-        allowed_keys = {"signature", "label", "mapping"}
+        allowed_keys = {"signature", "label", "mapping", "mapping_version"}
         assert set(loaded.keys()) <= allowed_keys
         delete_profile(sig)
 

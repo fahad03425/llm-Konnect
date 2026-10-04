@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useUser, DOMAIN_METAS } from '../../context/UserContext';
 import type { DomainType } from '../../context/UserContext';
 import { X, Check, CheckCircle2, RotateCcw, Sparkles, Sun, Moon } from 'lucide-react';
 import './SettingsModal.css';
+import ModelSettings from './ModelSettings';
 
 export default function SettingsModal() {
     const { user, setDomain, updateProfile, resetProfile, isSettingsOpen, closeSettings, theme, setTheme } = useUser();
@@ -13,7 +14,14 @@ export default function SettingsModal() {
     const [activeDomain, setActiveDomain] = useState<DomainType>(user.domain);
     const [savedMsg, setSavedMsg] = useState(false);
 
-    if (!isSettingsOpen) return null;
+    useEffect(() => {
+        if (isSettingsOpen) {
+            setAccountName(user.accountName);
+            setOrganization(user.organization);
+            setEmail(user.email);
+            setActiveDomain(user.domain);
+        }
+    }, [isSettingsOpen, user.accountName, user.organization, user.email, user.domain]);
 
     const handleSave = () => {
         updateProfile({
@@ -38,7 +46,7 @@ export default function SettingsModal() {
     };
 
     return (
-        <div className="settings-overlay">
+        <div className="settings-overlay" style={{ display: isSettingsOpen ? 'flex' : 'none' }}>
             <div className="settings-card">
                 {/* Header */}
                 <div className="settings-header">
@@ -61,6 +69,7 @@ export default function SettingsModal() {
 
                 {/* Body */}
                 <div className="settings-body">
+                    <ModelSettings />
                     {/* Appearance / Theme Selector */}
                     <div className="settings-section">
                         <div className="settings-section-header">

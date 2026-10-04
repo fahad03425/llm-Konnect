@@ -9,6 +9,7 @@ from app.core.config import settings, get_default_domain
 class SessionManager:
     def __init__(self):
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._meta_cache: Optional[List[Dict[str, Any]]] = None
         self.max_history_size = settings.llm_chat_history_size
         self.storage_path = os.path.join(settings.storage_dir, "sessions")
         os.makedirs(self.storage_path, exist_ok=True)
@@ -67,6 +68,7 @@ class SessionManager:
             to_write = encrypt_bytes(raw_bytes) if getattr(settings, "encryption_enabled", True) else raw_bytes
             with open(path, "wb") as f:
                 f.write(to_write)
+            self._meta_cache = None
         except Exception:
             pass
 
@@ -76,6 +78,11 @@ class SessionManager:
         return self._sessions[session_id]
 
     def list_sessions(self, domain: Optional[str] = None) -> List[Dict[str, Any]]:
+        if self._meta_cache is not None:
+            if domain:
+                return [s for s in self._meta_cache if not s.get("domain") or s.get("domain") == domain]
+            return list(self._meta_cache)
+
         sessions_meta = []
         if not os.path.exists(self.storage_path):
             return []
@@ -84,11 +91,8 @@ class SessionManager:
             if not fname.endswith(".json"):
                 continue
             session_id = fname[:-5]
-            data = self._load_session_data(session_id)
+            data = self._sessions.get(session_id) or self._load_session_data(session_id)
             if not data or not data.get("messages"):
-                continue
-            
-            if domain and data.get("domain") and data.get("domain") != domain:
                 continue
 
             msgs = data.get("messages", [])
@@ -108,6 +112,9 @@ class SessionManager:
 
         # Sort by updated_at descending
         sessions_meta.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        self._meta_cache = sessions_meta
+        if domain:
+            return [s for s in sessions_meta if not s.get("domain") or s.get("domain") == domain]
         return sessions_meta
 
     def save_session(
@@ -213,6 +220,7 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         if session_id in self._sessions:
             del self._sessions[session_id]
+        self._meta_cache = None
         path = self._get_file_path(session_id)
         if os.path.exists(path):
             try:
@@ -224,6 +232,7 @@ class SessionManager:
 
     def clear_all_sessions(self) -> int:
         self._sessions.clear()
+        self._meta_cache = None
         count = 0
         if os.path.exists(self.storage_path):
             for fname in os.listdir(self.storage_path):

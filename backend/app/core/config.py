@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     ollama_host: str = "http://127.0.0.1:11434"
     llm_model: str = "qwen2.5:1.5b"
     llm_keep_alive: str = "5m"  # automatically unloads from RAM after 5m idle
-    llm_keep_alive_chat: str = "5m"  # automatically unloads after 5m idle
+    llm_keep_alive_chat: str = "30m"  # keep the chat model warm between user questions
     llm_num_predict: int = 256
     llm_chat_history_size: int = 3
     llm_temperature: float = 0.2

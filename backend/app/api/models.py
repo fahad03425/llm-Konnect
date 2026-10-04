@@ -41,10 +41,13 @@ def list_models(detailed: bool = Query(False, description="Include detailed mode
         return {
             "active_model": llm.model,
             "models": models,
-            "hardware": llm.detect_hardware()
+            "hardware": llm.detect_hardware(),
+            "ollama": llm.get_status(installed=[item["name"] for item in models] if detailed else models)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"active_model": llm.model, "models": [],
+                "hardware": llm.detect_hardware(),
+                "ollama": {"available": False, "resolved_model": None, "error": str(e)}}
 
 
 @router.get("/hardware")
@@ -67,6 +70,7 @@ def list_running_models():
         running = llm.get_running_models()
         return {
             "running_models": running,
+            "ollama": llm.get_status(),
             "count": len(running)
         }
     except Exception as e:
@@ -92,6 +96,8 @@ def select_model(payload: SelectModelRequest):
             "active_model": active,
             "message": f"Active model successfully switched to '{active}'"
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

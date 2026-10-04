@@ -9,6 +9,8 @@ import time
 import queue
 import threading
 import hashlib
+import json
+import uuid
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -17,7 +19,9 @@ import pandas as pd
 from app.ingestion.store import KnowledgeBase
 from app.ingestion.registry import file_registry
 from app.schema.domain import get_domain_pack
-from app.core.config import get_default_domain
+from app.core.config import get_default_domain, settings
+from app.ingestion.safety import token_windows, publish_delta, collection_lock
+from app.security.crypto import encrypt_string
 
 
 class ChangeEvent(BaseModel):
@@ -38,14 +42,14 @@ class SyncWorker:
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
         self._kb = KnowledgeBase()
-        
+
         # Database auto-sync poller settings (<2ms DMV check)
         self.db_poll_interval_sec = db_poll_interval_sec
         self._last_db_poll_time = 0.0
         self._known_table_stats: Dict[str, Dict[str, int]] = {}
         self._is_polling_db = False
         self.total_db_syncs = 0
-        
+
         # Performance & telemetry statistics
         self.stats_lock = threading.Lock()
         self.total_received = 0
@@ -154,7 +158,7 @@ class SyncWorker:
         """Check all registered databases for row count changes via fast DMV metadata (<2ms)."""
         if self._is_polling_db:
             return {"status": "in_progress"}
-        
+
         self._is_polling_db = True
         synced_tables = []
         try:
@@ -168,7 +172,7 @@ class SyncWorker:
                 try:
                     connector = SQLConnector(conn_rec.connection_string, db_type=conn_rec.db_type)
                     engine = connector._get_engine()
-                    
+
                     # 1. Ultra-fast metadata row count query (<2ms, no locks)
                     row_counts: Dict[str, int] = {}
                     if conn_rec.db_type == "mssql":
@@ -197,10 +201,10 @@ class SyncWorker:
                         total_db_rows += cnt
                         file_id = f"db_{db_name}_{tbl}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
                         existing_reg = file_registry.get_file_by_id(file_id)
-                        
+
                         reg_chunk_count = existing_reg.chunk_count if existing_reg else None
                         last_known_cnt = known.get(tbl)
-                        
+
                         needs_sync = False
                         if last_known_cnt is not None and cnt != last_known_cnt:
                             needs_sync = True
@@ -255,12 +259,12 @@ class SyncWorker:
         effective_domain = domain or get_default_domain()
         table_path = f"sql://{database_name}/{table_name}"
         file_id = f"db_{database_name}_{table_name}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
-        
+
         try:
             df = connector.fetch(table_or_query=table_name)
             if df.empty:
                 return 0
-            
+
             try:
                 domain_pack = get_domain_pack(effective_domain)
             except ValueError:
@@ -268,8 +272,22 @@ class SyncWorker:
 
             from app.schema.mapper import map_headers
             from app.schema.normalize import apply_mapping
-            mapping = map_headers(list(df.columns), domain_pack)
-            canonical_df = apply_mapping(df, mapping, domain=domain, keep_extras=True)
+            from app.schema.source_domain import require_source_domain, database_pharmacy_context
+            from app.schema.profile import sql_signature, confirmed_mapping
+            require_source_domain(df, effective_domain, pharmacy_context=effective_domain == 'pharmacy' and database_pharmacy_context(connector))
+            signature = sql_signature(list(df.columns), connector.__class__.__name__, effective_domain, connector.raw_connection_string, table_name)
+            mapping = confirmed_mapping(signature, df, effective_domain)
+            if mapping is None:
+                existing = file_registry.get_file_by_id(file_id)
+                if existing is None or existing.chunk_count == 0:
+                    raise ValueError('Review this new table mapping before automatic synchronization.')
+                mapping = map_headers(list(df.columns), domain_pack, resolve_conflicts=True)
+            canonical_df = apply_mapping(df, mapping, domain=effective_domain, keep_extras=True)
+            from app.schema.validate import validate
+            if any(field in canonical_df for field in ('date', 'amount', 'order_date', 'sale_amount', 'product_id', 'generic_name', 'product_name')):
+                report = validate(canonical_df, effective_domain)
+                if not report.is_usable:
+                    raise ValueError('; '.join(problem.message for problem in report.errors))
 
             source_meta = {
                 "source_file": table_path,
@@ -390,7 +408,6 @@ class SyncWorker:
         for evt in batch:
             action = evt.action.strip().lower()
             chunk_id = self._generate_chunk_id(evt.database_name, evt.table_name, evt.row_id)
-            affected_tables.add((evt.database_name, evt.table_name, evt.domain))
 
             if action == "delete":
                 delete_ids.append(chunk_id)
@@ -406,7 +423,17 @@ class SyncWorker:
         # 1. Execute deletions
         if delete_ids:
             try:
-                collection.delete(ids=delete_ids)
+                with collection_lock(self._kb):
+                    for event in batch:
+                        if event.action.strip().lower() == "delete":
+                            path = f"sql://{event.database_name}/{event.table_name}"
+                            collection.delete(where={"$and": [{"source_file": path}, {"domain": event.domain}, {"row_id": str(event.row_id)}]})
+                    collection.delete(ids=delete_ids)
+                for event in batch:
+                    if event.action.strip().lower() == 'delete':
+                        identity = f"db_{event.database_name}_{event.table_name}".replace(' ', '_').replace('-', '_').replace('.', '_').lower()
+                        if file_registry.get_file_by_id(identity):
+                            affected_tables.add((event.database_name, event.table_name, event.domain))
                 with self.stats_lock:
                     self.total_deleted += len(delete_ids)
                     self.total_processed += len(delete_ids)
@@ -423,83 +450,119 @@ class SyncWorker:
                 ids = []
                 metadatas = []
 
+                pending_tables = set()
+                stale_ids = set()
                 for item in upsert_items:
-                    evt: ChangeEvent = item["event"]
-                    chunk_id = item["chunk_id"]
-                    
                     try:
-                        domain_pack = get_domain_pack(evt.domain)
-                    except ValueError:
-                        domain_pack = get_domain_pack("pharmacy")
+                        evt: ChangeEvent = item["event"]
+                        chunk_id = item["chunk_id"]
 
-                    row_dict = evt.data or {}
-                    # Auto-map synonyms to canonical headers
-                    from app.schema.mapper import map_headers
-                    mapping = map_headers(list(row_dict.keys()), domain_pack)
-                    canonical_row = {}
-                    for raw_col, val in row_dict.items():
-                        canon_col = mapping.get(raw_col, raw_col)
-                        canonical_row[canon_col] = val
-                    # Preserve original keys too
-                    for raw_col, val in row_dict.items():
-                        if raw_col not in canonical_row:
-                            canonical_row[raw_col] = val
+                        try:
+                            domain_pack = get_domain_pack(evt.domain)
+                        except ValueError:
+                            domain_pack = get_domain_pack("pharmacy")
 
-                    # Build canonical row text using domain pack formatter
-                    doc_text = domain_pack.row_to_text(canonical_row)
-                    if not doc_text or doc_text.strip() in ("", "Empty record", "Empty record."):
-                        doc_text = f"Table {evt.table_name}: " + ", ".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None and v != "")
+                        row_dict = evt.data or {}
+                        # Auto-map synonyms to canonical headers
+                        from app.schema.mapper import map_headers
+                        from app.schema.source_domain import require_source_domain
+                        from app.schema.profile import sql_signature, confirmed_mapping
+                        from app.schema.normalize import apply_mapping
+                        from app.schema.validate import validate
+                        raw_frame = pd.DataFrame([row_dict])
+                        connection = file_registry.get_db_connection(evt.database_name)
+                        file_identity = f"db_{evt.database_name}_{evt.table_name}".replace(' ', '_').replace('-', '_').replace('.', '_').lower()
+                        registered = file_registry.get_file_by_id(file_identity)
+                        require_source_domain(raw_frame, evt.domain, pharmacy_context=bool(registered and registered.domain == 'pharmacy' and registered.chunk_count > 0))
+                        mapping = None
+                        if connection:
+                            signature = sql_signature(list(raw_frame.columns), 'SQLConnector', evt.domain, connection.connection_string, evt.table_name)
+                            mapping = confirmed_mapping(signature, raw_frame, evt.domain)
+                        if mapping is None:
+                            if not registered or registered.chunk_count == 0:
+                                raise ValueError('Review this new table mapping before live synchronization.')
+                            mapping = map_headers(list(row_dict.keys()), domain_pack, resolve_conflicts=True)
+                        normalized = apply_mapping(raw_frame, mapping, evt.domain, keep_extras=True)
+                        if any(field in normalized for field in ('date', 'amount', 'order_date', 'sale_amount', 'product_id', 'generic_name', 'product_name')):
+                            report = validate(normalized, evt.domain)
+                            if not report.is_usable:
+                                raise ValueError('; '.join(problem.message for problem in report.errors))
+                        canonical_row = normalized.iloc[0].to_dict()
+                        # Keep original values for fallback text; mapped values remain normalized.
+                        for raw_col, val in row_dict.items():
+                            if raw_col not in canonical_row and raw_col not in mapping:
+                                canonical_row[raw_col] = val
+                        # Build canonical row text using domain pack formatter
+                        doc_text = domain_pack.row_to_text(canonical_row)
+                        if not doc_text or doc_text.strip() in ("", "Empty record", "Empty record."):
+                            doc_text = f"Table {evt.table_name}: " + ", ".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None and v != "")
 
-                    table_path = f"sql://{evt.database_name}/{evt.table_name}"
-                    file_id = f"db_{evt.database_name}_{evt.table_name}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
+                        table_path = f"sql://{evt.database_name}/{evt.table_name}"
+                        file_id = f"db_{evt.database_name}_{evt.table_name}".replace(" ", "_").replace("-", "_").replace(".", "_").lower()
 
-                    meta = {
-                        "source_file": table_path,
-                        "filename": f"{evt.database_name} — {evt.table_name}",
-                        "file_id": file_id,
-                        "source_connector": "sql_realtime",
-                        "database_name": evt.database_name,
-                        "table_name": evt.table_name,
-                        "group_name": evt.database_name,
-                        "source_type": "database",
-                        "domain": evt.domain,
-                        "row_id": str(evt.row_id),
-                        "ingested_at": evt.timestamp or datetime.now().isoformat()
-                    }
+                        meta = {
+                            "source_file": table_path,
+                            "filename": f"{evt.database_name} — {evt.table_name}",
+                            "file_id": file_id,
+                            "source_connector": "sql_realtime",
+                            "database_name": evt.database_name,
+                            "table_name": evt.table_name,
+                            "group_name": evt.database_name,
+                            "source_type": "database",
+                            "domain": evt.domain,
+                            "row_id": str(evt.row_id),
+                            "ingested_at": evt.timestamp or datetime.now().isoformat()
+                        }
 
-                    # Add filterable domain metadata if available
-                    for f in domain_pack.filter_metadata_fields:
-                        if f in canonical_row and canonical_row[f] is not None and canonical_row[f] != "":
-                            meta[f] = canonical_row[f]
+                        # Add filterable domain metadata if available
+                        for f in domain_pack.filter_metadata_fields:
+                            if f in canonical_row and canonical_row[f] is not None and canonical_row[f] != "":
+                                meta[f] = canonical_row[f]
 
 
-                    sanitized_meta = self._kb._sanitize_metadata(meta)
-
-                    ids.append(chunk_id)
-                    texts.append(self._kb.passage_prefix + doc_text)
-                    metadatas.append(sanitized_meta)
+                        meta["record_json"] = encrypt_string(json.dumps(canonical_row, ensure_ascii=False,
+                            default=lambda value: value.item() if hasattr(value, "item") else str(value)))
+                        existing = collection.get(where={"$and": [{"source_file": table_path},
+                            {"domain": evt.domain}, {"row_id": str(evt.row_id)}]}, include=[])
+                        stale_ids.update(existing["ids"])
+                        windows = token_windows(doc_text, embedder, self._kb.passage_prefix,
+                                                settings.chunk_size, settings.chunk_overlap)
+                        for index, window in enumerate(windows):
+                            window_id = chunk_id if index == 0 else f"{chunk_id}_window_{index}"
+                            ids.append(window_id)
+                            texts.append(self._kb.passage_prefix + window)
+                            metadatas.append(self._kb._sanitize_metadata({**meta, "chunk_id": window_id,
+                                "chunk_index": index}))
+                        pending_tables.add((evt.database_name, evt.table_name, evt.domain))
+                    except (ValueError, TypeError, KeyError) as event_error:
+                        with self.stats_lock:
+                            self.total_failed += 1
+                            self.last_error = f"Row rejected: {event_error}"
+                        continue
 
                 if ids:
-                    embeddings = embedder.encode(
-                        texts,
-                        batch_size=len(texts),
-                        show_progress_bar=False,
-                        normalize_embeddings=True
-                    ).tolist()
+                    for start in range(0, len(ids), 64):
+                        end = start + 64
+                        embeddings = embedder.encode(texts[start:end], batch_size=64,
+                            show_progress_bar=False, normalize_embeddings=True).tolist()
+                        documents = [encrypt_string(text) for text in texts[start:end]] if getattr(settings, "encryption_enabled", True) else texts[start:end]
+                        collection.upsert(ids=ids[start:end], embeddings=embeddings, documents=documents,
+                                          metadatas=metadatas[start:end])
+                    if stale_ids:
+                        to_delete = list(stale_ids - set(ids))
+                        if to_delete:
+                            try:
+                                collection.delete(ids=to_delete)
+                            except Exception:
+                                pass
 
-                    collection.upsert(
-                        ids=ids,
-                        embeddings=embeddings,
-                        documents=texts,
-                        metadatas=metadatas
-                    )
-
+                    affected_tables.update(pending_tables)
                     with self.stats_lock:
                         self.total_upserted += len(ids)
                         self.total_processed += len(ids)
             except Exception as e:
                 with self.stats_lock:
-                    self.total_failed += len(upsert_items)
+                    self.total_failed += len(ids)
                     self.last_error = f"Upsert error: {str(e)}"
                 print(f"[KBSyncWorker] Failed to upsert batch: {e}")
 

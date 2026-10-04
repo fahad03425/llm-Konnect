@@ -14,7 +14,8 @@ def test_mapper():
     assert mapping["batch no"] == "batch_no"
     assert mapping["mrp"] == "mrp"
     assert mapping["tp"] == "cost"
-    assert mapping["میعاد"] == "expiry_date"
+    assert list(mapping.values()).count("expiry_date") == 1
+    assert map_headers(["میعاد"], PharmacyDomainPack())["میعاد"] == "expiry_date"
 
 def test_normalize():
     raw_data = pd.DataFrame([

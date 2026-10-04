@@ -37,6 +37,20 @@ def pharm():
 # ---------------------------------------------------------------------------
 
 class TestSynonymMapping:
+    def test_reorder_threshold_is_distinct_from_order_quantity_and_safety_stock(self, pharm):
+        proposal = suggest_mapping(
+            ["Minimum Stock Level", "Current Quantity", "Reorder Quantity", "Safety Stock"], [], pharm
+        )
+        mapped = {item.source_column: item.canonical_field for item in proposal.suggestions}
+        assert mapped == {
+            "Minimum Stock Level": "reorder_level",
+            "Current Quantity": "stock_qty",
+            "Reorder Quantity": "reorder_quantity",
+            "Safety Stock": "safety_stock_qty",
+        }
+        minimum_inventory = suggest_mapping(["Minimum Inventory Level"], [], pharm)
+        assert minimum_inventory.suggestions[0].canonical_field == "reorder_level"
+
     def test_basic_synonyms(self, pharm):
         """Common pharmacy column headers map to the right canonical fields."""
         columns = ["Date", "Item Name", "Qty", "Price", "Total",
@@ -148,25 +162,25 @@ class TestFuzzyMapping:
 # ---------------------------------------------------------------------------
 
 class TestValueInference:
-    def test_mmyy_infers_expiry(self, pharm):
-        """Columns of mm/yy values should infer as expiry_date."""
+    def test_opaque_dates_require_review(self, pharm):
+        """Date shape does not distinguish transaction dates from expiry dates."""
         columns = ["ColA"]
         rows = [{"ColA": "01/25"}, {"ColA": "12/26"}, {"ColA": "11-24"}]
         proposal = suggest_mapping(columns, rows, pharm)
-        assert proposal.suggestions[0].canonical_field == "expiry_date"
+        assert proposal.suggestions[0].canonical_field is None  # Opaque dates require review.
 
-    def test_small_ints_infer_quantity(self, pharm):
+    def test_opaque_small_integers_require_review(self, pharm):
         columns = ["ColB"]
         rows = [{"ColB": "10"}, {"ColB": "5"}, {"ColB": "200"}]
         proposal = suggest_mapping(columns, rows, pharm)
-        assert proposal.suggestions[0].canonical_field == "quantity"
+        assert proposal.suggestions[0].canonical_field is None  # IDs and quantities share a value type.
 
-    def test_alphanumeric_id_infers_invoice(self, pharm):
-        """Columns of long mixed alphanumeric values → invoice_id."""
+    def test_opaque_alphanumeric_values_require_review(self, pharm):
+        """Product codes and invoice IDs cannot be distinguished by value shape."""
         columns = ["ColC"]
         rows = [{"ColC": "INV2024001"}, {"ColC": "B2C3D4E5F6"}, {"ColC": "X9Y8Z7A1B2"}]
         proposal = suggest_mapping(columns, rows, pharm)
-        assert proposal.suggestions[0].canonical_field == "invoice_id"
+        assert proposal.suggestions[0].canonical_field is None  # Value shape cannot distinguish product and invoice IDs.
 
     def test_no_false_positive_for_pure_numbers(self, pharm):
         """Pure integers with no alpha chars must NOT match invoice_id."""

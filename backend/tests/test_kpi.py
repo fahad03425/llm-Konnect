@@ -622,6 +622,8 @@ def _canonical_from_sample(filename: str) -> pd.DataFrame:
     import app.schema  # noqa: F401  (registers domain packs)
 
     path = os.path.abspath(os.path.join(SAMPLES_DIR, filename))
+    if not os.path.exists(path):
+        path = os.path.join(os.path.dirname(__file__), "fixtures", "source_samples", filename)
     raw = detect_connector(path).fetch()
     mapping = map_headers(list(raw.columns), get_domain_pack("pharmacy"))
     return apply_mapping(raw, mapping, domain="pharmacy", keep_extras=False)

@@ -104,7 +104,7 @@ from types import ModuleType
 # Mock chromadb at import time so store.py never touches the real library
 mock_chromadb = ModuleType("chromadb")
 mock_chromadb.PersistentClient = lambda path: FakeChromaClient()
-sys.modules["chromadb"] = mock_chromadb
+
 
 # Mock tiktoken
 class FakeEncoding:
@@ -115,11 +115,13 @@ class FakeEncoding:
 
 mock_tiktoken = ModuleType("tiktoken")
 mock_tiktoken.get_encoding = lambda name: FakeEncoding()
-sys.modules["tiktoken"] = mock_tiktoken
+
 
 
 @pytest.fixture
 def fake_kb(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "chromadb", mock_chromadb)
+    monkeypatch.setitem(sys.modules, "tiktoken", mock_tiktoken)
     test_chroma_dir = str(tmp_path / "test_chroma")
     monkeypatch.setattr(settings, "chroma_dir", test_chroma_dir)
     monkeypatch.setattr(
@@ -297,6 +299,7 @@ def test_e5_prefix_applied_correctly(monkeypatch, tmp_path):
                 vecs.append(v / norm if norm > 0 else v)
             return np.array(vecs)
 
+    monkeypatch.setitem(sys.modules, "chromadb", mock_chromadb)
     capturing_embedder = CapturingEmbedder()
     monkeypatch.setattr(
         KnowledgeBase, "_get_embedder",

@@ -20,13 +20,25 @@ from app.main import app
 from app.core.llm import LLMService
 
 
+@pytest.fixture(autouse=True)
+def preserve_active_model(monkeypatch, tmp_path):
+    from app.core.llm import llm
+    from app.core.config import settings
+    monkeypatch.setattr(llm, "model", llm.model)
+    monkeypatch.setattr(settings, "llm_model", settings.llm_model)
+    monkeypatch.setattr(LLMService, "_model_settings_path", staticmethod(lambda: tmp_path / "model_settings.json"))
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
 
 
 @pytest.fixture
-def llm_service():
+def llm_service(tmp_path, monkeypatch):
+    monkeypatch.setattr(LLMService, "_model_settings_path", staticmethod(lambda: tmp_path / "model_settings.json"))
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "llm_model", "qwen2.5:1.5b")
     return LLMService()
 
 
@@ -117,7 +129,11 @@ class TestHardwareDetection:
 class TestModelSwitchingAndResolution:
     def test_explicit_switch(self, llm_service):
         """Switching active model updates instance and config settings."""
-        active = llm_service.set_active_model("mistral:7b-instruct")
+        mock_client = MagicMock()
+        mock_client.list.return_value = {"models": [{"name": "mistral:7b-instruct"}]}
+        mock_client.show.return_value = {"capabilities": ["completion"]}
+        with patch.object(llm_service, "_get_client", return_value=mock_client):
+            active = llm_service.set_active_model("mistral:7b-instruct")
         assert active == "mistral:7b-instruct"
         assert llm_service.model == "mistral:7b-instruct"
 
@@ -131,10 +147,10 @@ class TestModelSwitchingAndResolution:
         assert resolved == "mistral:7b-instruct"
 
     def test_resolve_base_name_match(self, llm_service):
-        """Base name match (e.g. qwen2.5 matches qwen2.5:7b-q4)."""
+        """A size tag accepts the same size with a quantization suffix."""
         mock_client = MagicMock()
         mock_client.list.return_value = {"models": [{"name": "qwen2.5:7b-q4_K_M"}]}
-        llm_service.model = "qwen2.5"
+        llm_service.model = "qwen2.5:7b"
         
         resolved = llm_service._resolve_model(mock_client)
         assert resolved == "qwen2.5:7b-q4_K_M"
@@ -152,13 +168,13 @@ class TestModelSwitchingAndResolution:
             assert resolved == "phi4-mini:latest"
 
     def test_resolve_offline_error_handling(self, llm_service):
-        """When Ollama list throws an exception, _resolve_model safely returns default model."""
+        """Offline resolution exposes the connection failure rather than inventing a model."""
         mock_client = MagicMock()
         mock_client.list.side_effect = ConnectionError("Ollama offline")
         llm_service.model = "phi4-mini"
         
-        resolved = llm_service._resolve_model(mock_client)
-        assert resolved == "phi4-mini"
+        with pytest.raises(ConnectionError):
+            llm_service._resolve_model(mock_client)
 
     def test_list_installed_models_detailed(self, llm_service):
         """Detailed listing parses family, parameter count, quantization, and sizes."""
@@ -380,8 +396,11 @@ class TestApiEndpoints:
             data = res.json()
             assert data["models"][0]["name"] == "phi4-mini"
 
-    def test_select_model_endpoint(self, client):
-        res = client.post("/api/models/select", json={"model": "mistral:7b"})
+    def test_select_model_endpoint(self, client, llm_service):
+        with patch.object(LLMService, "_installed_names", return_value=["mistral:7b"]), \
+             patch.object(LLMService, "_get_client") as factory:
+            factory.return_value.show.return_value = {"capabilities": ["completion"]}
+            res = client.post("/api/models/select", json={"model": "mistral:7b"})
         assert res.status_code == 200
         assert res.json()["active_model"] == "mistral:7b"
 
@@ -428,6 +447,7 @@ class TestConcurrencyAndThreadSafety:
         mock_client = MagicMock()
         mock_client.list.return_value = {"models": [{"name": "phi4-mini"}, {"name": "qwen2.5:7b"}]}
         mock_client.chat.return_value = {"message": {"content": "Answer"}}
+        mock_client.show.return_value = {"capabilities": ["completion"]}
 
         with patch.object(llm_service, "_get_client", return_value=mock_client):
             def switch_worker(name):

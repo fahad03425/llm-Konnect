@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
-import { Bot, Download, Plus, History, ArrowDown } from 'lucide-react';
+import { Bot, Download, Plus, History, ArrowDown, RefreshCw } from 'lucide-react';
 import { MessageBubble } from '../components/chat/MessageBubble';
 import { TypingIndicator } from '../components/chat/TypingIndicator';
 import { SuggestionChips } from '../components/chat/SuggestionChips';
@@ -17,6 +17,7 @@ export default function Chatbot() {
         input,
         setInput,
         isLoading,
+        isGenerating,
         availableFiles,
         selectedFileIds,
         setSelectedFileIds,
@@ -31,8 +32,16 @@ export default function Chatbot() {
         handleDeleteSession,
         handleClearAllSessions,
         handleExportChat,
-        handleSend
+        handleSend,
+        handleStopGeneration,
+        handleRefreshCurrentChat,
+        fetchSources
     } = useChat();
+
+    // Only show typing indicator for the session that is actually generating
+    // and hasn't yet received the first assistant response chunk
+    const lastMessage = messages[messages.length - 1];
+    const showTypingIndicator = isLoading && (!lastMessage || lastMessage.role === 'user');
 
     const location = useLocation();
     const [searchParams] = useSearchParams();
@@ -59,11 +68,12 @@ export default function Chatbot() {
 
     useEffect(() => {
         document.title = `${activeDomainMeta.name} RAG Chatbot — LLM-KONNECT`;
+        fetchSources();
     }, [activeDomainMeta.name]);
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages, isLoading]);
+    }, [messages, showTypingIndicator]);
 
     // Handle navigation from "Chat" or "Start Chatting" button from UploadedFiles or ConnectSource
     useEffect(() => {
@@ -170,6 +180,23 @@ export default function Chatbot() {
                         </select>
                     </div>
                     <div className="chat-actions">
+                        {isGenerating ? (
+                            <button 
+                                className="action-btn btn-stop-generation"
+                                onClick={() => handleStopGeneration()}
+                                title="Stop generation and refresh chat"
+                            >
+                                <RefreshCw size={14} className="animate-spin" /> Stop Generation
+                            </button>
+                        ) : (
+                            <button 
+                                className="action-btn" 
+                                onClick={handleRefreshCurrentChat}
+                                title="Refresh current conversation"
+                            >
+                                <RefreshCw size={14} /> Refresh
+                            </button>
+                        )}
                         <button 
                             className="btn-new-chat-primary"
                             onClick={onNewChatClick}
@@ -214,13 +241,14 @@ export default function Chatbot() {
                         ))
                     )}
 
-                    {isLoading && <TypingIndicator />}
+                    {showTypingIndicator && <TypingIndicator onStop={handleStopGeneration} />}
                 </div>
 
                 <Composer
                     input={input}
                     setInput={setInput}
                     handleSend={handleSend}
+                    handleStopGeneration={handleStopGeneration}
                     isLoading={isLoading}
                     handleKeyDown={handleKeyDown}
                     availableFiles={availableFiles}

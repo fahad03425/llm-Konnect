@@ -40,9 +40,12 @@ def _sniff_csv_format_from_bytes(raw_bytes: bytes) -> Tuple[str, str, int, str]:
         delimiter = dialect.delimiter
     except csv.Error:
         delimiter = ','
+    if len(delimiter) != 1 or delimiter in "\r\n":
+        delimiter = ','
 
     header_idx = 0
     max_cols = 0
+    candidates = []
 
     reader = csv.reader(lines[:20], delimiter=delimiter, skipinitialspace=True)
     for i, cols in enumerate(reader):
@@ -50,9 +53,20 @@ def _sniff_csv_format_from_bytes(raw_bytes: bytes) -> Tuple[str, str, int, str]:
             continue
         cols = [c.strip() for c in cols]
         non_empty = len([c for c in cols if c])
+        def is_numeric(value):
+            try:
+                float(value.replace(',', ''))
+                return True
+            except ValueError:
+                return False
+        if non_empty >= 2 and not any(is_numeric(c) for c in cols if c):
+            candidates.append((non_empty, i))
         if non_empty > max_cols:
             max_cols = non_empty
             header_idx = i
+
+    if candidates:
+        header_idx = max(candidates, key=lambda candidate: candidate[0])[1]
 
     return encoding, delimiter, header_idx, text
 
@@ -63,31 +77,55 @@ class CSVConnector(Connector):
         self._bytes = _get_file_bytes(file_path)
         self.encoding, self.delimiter, self.header_idx, self._text = _sniff_csv_format_from_bytes(self._bytes)
 
-    def fetch(self, **kwargs) -> pd.DataFrame:
-        df = pd.read_csv(
-            io.StringIO(self._text),
+    def _read_csv(self, nrows: Optional[int] = None) -> pd.DataFrame:
+        options = dict(
             encoding=self.encoding,
             sep=self.delimiter,
             skiprows=self.header_idx,
             skip_blank_lines=True,
             skipinitialspace=True,
-            on_bad_lines='skip'
+            on_bad_lines='error',
         )
+        try:
+            return pd.read_csv(io.StringIO(self._text), nrows=nrows, **options)
+        except pd.errors.ParserError:
+            # Some exports leave commas unquoted in a trailing notes/review
+            # field. Recover only when the schema explicitly identifies that
+            # final column as free text; all other malformed rows remain errors.
+            lines = self._text.splitlines()
+            header = next(csv.reader(lines[self.header_idx:self.header_idx + 1], delimiter=self.delimiter), [])
+            if not header or not any(
+                token in str(header[-1]).strip().casefold()
+                for token in ("review", "comment", "description", "notes", "remarks", "message", "memo", "feedback")
+            ):
+                raise
+            expected_columns = len(header)
+
+            def repair_trailing_text(fields):
+                if len(fields) <= expected_columns:
+                    return fields
+                return fields[:expected_columns - 1] + [self.delimiter.join(fields[expected_columns - 1:])]
+
+            return pd.read_csv(
+                io.StringIO(self._text),
+                encoding=self.encoding,
+                sep=self.delimiter,
+                skiprows=self.header_idx,
+                skip_blank_lines=True,
+                skipinitialspace=False,
+                engine="python",
+                on_bad_lines=repair_trailing_text,
+                nrows=nrows,
+            )
+
+    def fetch(self, **kwargs) -> pd.DataFrame:
+        df = self._read_csv()
         df['source_connector'] = "csv"
         df['source_row'] = df.index + self.header_idx + 2
         return df
 
     def preview(self, n: int = 5, **kwargs) -> pd.DataFrame:
-        df = pd.read_csv(
-            io.StringIO(self._text),
-            encoding=self.encoding,
-            sep=self.delimiter,
-            skiprows=self.header_idx,
-            skip_blank_lines=True,
-            skipinitialspace=True,
-            on_bad_lines='skip',
-            nrows=n
-        )
+        df = self._read_csv(nrows=n)
         df['source_connector'] = "csv"
         df['source_row'] = df.index + self.header_idx + 2
         return df
@@ -131,7 +169,7 @@ class ExcelConnector(Connector):
         if sheet_name:
             sheets = self.list_sheets()
             if sheet_name not in sheets:
-                target_sheet = sheets[0] if sheets else 0
+                raise ValueError(f"Excel sheet '{sheet_name}' does not exist. Available sheets: {', '.join(sheets)}")
 
         # First read a chunk to find header
         preview_df = pd.read_excel(self._get_stream(), sheet_name=target_sheet, nrows=30, header=None)
@@ -172,7 +210,7 @@ class ExcelConnector(Connector):
             if sheet_name:
                 sheets = self.list_sheets()
                 if sheet_name not in sheets:
-                    target_sheet = sheets[0] if sheets else 0
+                    raise ValueError(f"Excel sheet '{sheet_name}' does not exist. Available sheets: {', '.join(sheets)}")
             df = pd.read_excel(self._get_stream(), sheet_name=target_sheet, usecols=[0])
             return len(df)
         except Exception:

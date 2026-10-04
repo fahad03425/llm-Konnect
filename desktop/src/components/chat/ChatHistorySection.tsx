@@ -23,7 +23,7 @@ interface ChatHistorySectionProps {
     isLoadingSessions?: boolean;
 }
 
-export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
+export const ChatHistorySection = React.memo<ChatHistorySectionProps>(({
     sessions,
     activeSessionId,
     currentDomain,
@@ -246,4 +246,5 @@ export const ChatHistorySection: React.FC<ChatHistorySectionProps> = ({
             )}
         </section>
     );
-};
+});
+

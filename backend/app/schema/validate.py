@@ -20,6 +20,11 @@ def validate(
         raise ValueError("canonical_df must be a pandas DataFrame")
 
     problems: List[Problem] = []
+    for failure in canonical_df.attrs.get('conversion_failures', []):
+        problems.append(Problem(severity='error' if failure['code'] == 'UNPARSEABLE_DATE' else 'warning',
+                                code=failure['code'], field=failure['field'],
+                                message=f"Original value could not be converted: {failure['value']}",
+                                row_refs=[failure['source_row']], sample=[failure['value']]))
 
     # Get active domain pack
     try:
@@ -28,7 +33,15 @@ def validate(
         domain_pack = None
 
     # 1. Core rules
-    core_problems = validate_core_dataframe(canonical_df, table_kind=table_kind)
+    core_frame = canonical_df
+    if domain == 'ecommerce':
+        core_frame = canonical_df.copy()
+        for alias, core in [('order_date', 'date'), ('sale_amount', 'amount'), ('product_sku', 'product_id'), ('product_name', 'description')]:
+            if core not in core_frame and alias in core_frame:
+                core_frame[core] = core_frame[alias]
+        if table_kind == 'auto' and any(c in canonical_df for c in ('order_date', 'order_id', 'sale_amount', 'amount')):
+            table_kind = 'transactions'
+    core_problems = validate_core_dataframe(core_frame, table_kind=table_kind)
     problems.extend(core_problems)
 
     # 2. Domain pack rules
@@ -63,7 +76,7 @@ def validate(
     # not_usable: empty dataset OR more than 20% of rows have errors
     # usable_with_warnings: any warnings (or up to 20% error rows)
     # usable: no problems at all
-    if total_rows == 0:
+    if total_rows == 0 or any(p.severity == 'error' and not p.row_refs for p in problems):
         verdict = "not_usable"
     elif error_rows > 0 and (error_rows / total_rows) > 0.20:
         verdict = "not_usable"

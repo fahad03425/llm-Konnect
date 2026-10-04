@@ -1,0 +1,531 @@
+{
+  "source_report": "LLM-KONNECT_Advanced_RAG_Benchmark.docx",
+  "case_count": 75,
+  "cases": [
+    {
+      "id": "D1-Q1",
+      "dataset": "sales",
+      "question": "What customer is associated with SALE-11308?",
+      "expected_answer": "Junaid Wani",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q2",
+      "dataset": "sales",
+      "question": "What product was sold in SALE-11008, and which category does it belong to?",
+      "expected_answer": "Esomeprazole 40mg Tablets 14s — category Antacid.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q3",
+      "dataset": "sales",
+      "question": "What were the quantity and the total amount of SALE-10660?",
+      "expected_answer": "Quantity = 3; Total_Amount = 600 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q4",
+      "dataset": "sales",
+      "question": "What discount was applied to SALE-10863?",
+      "expected_answer": "0 PKR (no discount was applied).",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q5",
+      "dataset": "sales",
+      "question": "Which product has the highest unit price in the sales data, and what is that price?",
+      "expected_answer": "Glucometer Test Strips 50s at 1,250 PKR per unit.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q6",
+      "dataset": "sales",
+      "question": "What were the earliest and the latest sales in the dataset?",
+      "expected_answer": "Earliest: SALE-10001 on 2026-01-02. Latest: SALE-12327 on 2026-12-30.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q7",
+      "dataset": "sales",
+      "question": "Which sales were made on 2026-08-18?",
+      "expected_answer": "4 sales on 2026-08-18: SALE-11454, SALE-11455, SALE-11456, SALE-11457.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q8",
+      "dataset": "sales",
+      "question": "What was the total amount of SALE-99999?",
+      "expected_answer": "Not found in the available data.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q9",
+      "dataset": "sales",
+      "question": "Which products did Imran Zaidi purchase, and how many transactions did they make?",
+      "expected_answer": "Imran Zaidi made 6 transactions: SALE-10139 (Calamine Lotion 120ml); SALE-10294 (Glucometer Test Strips 50s); SALE-10322 (Glucometer Test Strips 50s); SALE-10516 (Mebeverine 135mg Tablets 20s); SALE-11248 (Lactulose Syrup 120ml); SALE-12041 (Dextromethorphan Cough Syrup 120ml).",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q10",
+      "dataset": "sales",
+      "question": "What was Yasmin Baig’s total spending, number of purchases and average spend per purchase?",
+      "expected_answer": "Total = 1,760 PKR; purchases = 4; average = 440 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q11",
+      "dataset": "sales",
+      "question": "Which product did Talha Awan purchase most frequently (by number of transactions), and how many times?",
+      "expected_answer": "Mefenamic Acid 500mg Tablets 20s — 4 transactions (next highest: Multivitamin Drops 30ml with 3).",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q12",
+      "dataset": "sales",
+      "question": "Which Antacid sales at Saddar Central Pharmacy have a Quantity greater than 5?",
+      "expected_answer": "4 sales: SALE-10248, SALE-10765, SALE-12002, SALE-12197. (Quantity exactly 5 is NOT included.)",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q13",
+      "dataset": "sales",
+      "question": "Which Antibiotic sales at Cantt Family Pharmacy had a discount greater than 100 PKR?",
+      "expected_answer": "4 sales: SALE-10299, SALE-11292, SALE-11493, SALE-12287. (Discount exactly 100 PKR is NOT included.)",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q14",
+      "dataset": "sales",
+      "question": "Which sales had a Total_Amount of exactly 2,280 PKR?",
+      "expected_answer": "3 sales: SALE-10439, SALE-10730, SALE-11585.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q15",
+      "dataset": "sales",
+      "question": "For Glucometer Test Strips 50s at DHA Wellness Pharmacy in February 2026, what was the total quantity, the total sales amount and the average transaction value?",
+      "expected_answer": "Quantity = 38 units; total sales = 43,000 PKR; transactions = 7; average = 6,142.86 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q16",
+      "dataset": "sales",
+      "question": "Which sales occurred from 2026-07-07 through 2026-07-08, inclusive?",
+      "expected_answer": "14 sales (4 on 2026-07-07 and 10 on 2026-07-08).",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q17",
+      "dataset": "sales",
+      "question": "How many sales were recorded in May 2026 and what was their combined Total_Amount?",
+      "expected_answer": "177 sales; combined Total_Amount = 120,860 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q18",
+      "dataset": "sales",
+      "question": "What sale was made by customer “Sameer Lakhani” on 15 December 2026?",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q19",
+      "dataset": "sales",
+      "question": "Compare the total sales of DHA Wellness Pharmacy and Saddar Central Pharmacy, including the number of transactions and the average transaction value of each.",
+      "expected_answer": "DHA Wellness Pharmacy = 710,670 PKR (620 sales, average 1,146.24 PKR); Saddar Central Pharmacy = 472,480 PKR (399 sales, average 1,184.16 PKR). Difference = 238,190 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q20",
+      "dataset": "sales",
+      "question": "Which sale had the highest Total_Amount, and which sale received the highest Discount?",
+      "expected_answer": "Highest Total_Amount: SALE-10079 (15,000 PKR), SALE-10281 (15,000 PKR). Highest Discount: SALE-11302 (3,000 PKR).",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q21",
+      "dataset": "sales",
+      "question": "Which sales at Saddar Central Pharmacy in the Supplements category had Quantity greater than 4 AND Discount greater than 0?",
+      "expected_answer": "3 sales: SALE-10619, SALE-10992, SALE-11895.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q22",
+      "dataset": "sales",
+      "question": "Compare the total spending of customers Adeel Dar and Bilal Yousaf.",
+      "expected_answer": "Adeel Dar = 52,125 PKR (35 purchases); Bilal Yousaf = 51,680 PKR (41 purchases). Difference = 445 PKR.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q23",
+      "dataset": "sales",
+      "question": "What percentage of the total sales amount of all branches was generated by DHA Wellness Pharmacy?",
+      "expected_answer": "28.94%",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q24",
+      "dataset": "sales",
+      "question": "Which branch has the highest average transaction value (average Total_Amount per sale)?",
+      "expected_answer": "Saddar Central Pharmacy with 1,184.16 PKR per sale.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D1-Q25",
+      "dataset": "sales",
+      "question": "List all purchases made by Kamran Shah at Cantt Family Pharmacy.",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_sales_test_01.csv"
+    },
+    {
+      "id": "D2-Q1",
+      "dataset": "inventory",
+      "question": "What is the current stock of INV-21989?",
+      "expected_answer": "100 units (Tobramycin Eye Drops 5ml, Sundar Industrial Warehouse).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q2",
+      "dataset": "inventory",
+      "question": "Which supplier provides INV-21010 and when does it expire?",
+      "expected_answer": "Supplier: Sapphire Drug House; Expiry_Date: 2029-05-31.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q3",
+      "dataset": "inventory",
+      "question": "In which warehouse is INV-22109 stored and what is its unit cost?",
+      "expected_answer": "Ravi Road Depot; Unit_Cost = 343 PKR.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q4",
+      "dataset": "inventory",
+      "question": "Is INV-20277 below, exactly at, or above its reorder level?",
+      "expected_answer": "Exactly at reorder level: Stock = 135, Reorder_Level = 135 (not below).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q5",
+      "dataset": "inventory",
+      "question": "Which item has the earliest expiry date and which has the latest?",
+      "expected_answer": "Earliest: INV-20012 (Folic Acid 5mg Tablets 28s, Multan Road Central Store) on 2026-01-12. Latest: INV-20026 (Chlorhexidine Mouthwash 250ml, Sundar Industrial Warehouse) on 2029-12-15.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q6",
+      "dataset": "inventory",
+      "question": "Give all details recorded for INV-21246.",
+      "expected_answer": "Valacyclovir 500mg Tablets 10s | Antiviral | Supplier Indus Medico Traders | Stock 46 | Reorder_Level 15 | Unit_Cost 940 PKR | Expiry 2026-07-01 | Kot Lakhpat Cold Chain Hub",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q7",
+      "dataset": "inventory",
+      "question": "Which items are out of stock (Stock = 0)?",
+      "expected_answer": "8 items: INV-20142, INV-20190, INV-20434, INV-20629, INV-21128, INV-21860, INV-21968, INV-22108.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q8",
+      "dataset": "inventory",
+      "question": "What is the stock of INV-29999?",
+      "expected_answer": "Not found in the available data.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q9",
+      "dataset": "inventory",
+      "question": "Which Women’s Health items in Sundar Industrial Warehouse have Stock exactly equal to Reorder_Level?",
+      "expected_answer": "2 items: INV-20728, INV-20904.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q10",
+      "dataset": "inventory",
+      "question": "Which items are supplied by Lahore Biotrade, and what is their total stock?",
+      "expected_answer": "9 items; total stock = 4,570 units.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q11",
+      "dataset": "inventory",
+      "question": "Which items expire before 2026-02-01?",
+      "expected_answer": "5 items: INV-20012, INV-21865, INV-22118, INV-20938, INV-21743. (Items expiring exactly on 2026-02-01 are NOT included.)",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q12",
+      "dataset": "inventory",
+      "question": "Which items expire between 2028-03-19 and 2028-03-28, inclusive?",
+      "expected_answer": "14 items: INV-20156, INV-20091, INV-20352, INV-20182, INV-21167, INV-21980, INV-20636, INV-20762, INV-20389, INV-21311, INV-22019, INV-20570, INV-21578, INV-22101.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q13",
+      "dataset": "inventory",
+      "question": "What is the total stock of Tranexamic Acid 500mg Capsules 20s in Multan Road Central Store?",
+      "expected_answer": "728 units across 7 records.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q14",
+      "dataset": "inventory",
+      "question": "What is the combined inventory value (Stock × Unit_Cost) of INV-21890, INV-22123 and INV-20649?",
+      "expected_answer": "132,180 PKR",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q15",
+      "dataset": "inventory",
+      "question": "What is the highest Unit_Cost in the inventory, and which records have it?",
+      "expected_answer": "Highest Unit_Cost = 987 PKR; 7 records (Valacyclovir 500mg Tablets 10s).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q16",
+      "dataset": "inventory",
+      "question": "What percentage of all inventory records are below their reorder level?",
+      "expected_answer": "15.22% (329 of 2,162 records).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q17",
+      "dataset": "inventory",
+      "question": "Which items have Stock greater than 3701?",
+      "expected_answer": "5 items: INV-20702, INV-21149, INV-20060, INV-20327, INV-20344. (Stock exactly 3701 is NOT included.)",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q18",
+      "dataset": "inventory",
+      "question": "Which products are supplied by Zafar Medico Traders?",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q19",
+      "dataset": "inventory",
+      "question": "Which items are below reorder level, stored in Kot Lakhpat Cold Chain Hub, and have an expiry date before 31 December 2026?",
+      "expected_answer": "8 items: INV-20082, INV-20775, INV-21851, INV-22103, INV-20401, INV-20901, INV-21719, INV-21025.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q20",
+      "dataset": "inventory",
+      "question": "Compare Sundar Industrial Warehouse and Kot Lakhpat Cold Chain Hub by total stock units and by total inventory value (Stock × Unit_Cost).",
+      "expected_answer": "Stock: Sundar Industrial Warehouse = 185,324 units, Kot Lakhpat Cold Chain Hub = 88,772 units (difference 96,552). Inventory value: Sundar Industrial Warehouse = 28,968,032 PKR, Kot Lakhpat Cold Chain Hub = 14,607,213 PKR (difference 14,360,819 PKR).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q21",
+      "dataset": "inventory",
+      "question": "Which single inventory record has the highest inventory value (Stock × Unit_Cost)?",
+      "expected_answer": "INV-21204 (Celecoxib 200mg Capsules 10s, Shahdara Bulk Storage) = 455,270 PKR.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q22",
+      "dataset": "inventory",
+      "question": "For every warehouse, how many items are below reorder level, and which warehouse has the most and the highest share?",
+      "expected_answer": "Most items below reorder level: Ravi Road Depot (225). Highest share: Ravi Road Depot (52.82%).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q23",
+      "dataset": "inventory",
+      "question": "Compare Safa Medical Wholesalers and Al-Shifa Wholesale by total stock held and by number of inventory records.",
+      "expected_answer": "Safa Medical Wholesalers = 149,120 units (283 records); Al-Shifa Wholesale = 104,170 units (189 records). Difference = 44,950 units.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q24",
+      "dataset": "inventory",
+      "question": "Which Anti-inflammatory items are supplied by Indus Medico Traders?",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D2-Q25",
+      "dataset": "inventory",
+      "question": "What is the average stock of Chlorhexidine Mouthwash 250ml in Sundar Industrial Warehouse, and which record has the lowest stock?",
+      "expected_answer": "Average = 300.57 units over 7 records; lowest stock: INV-21306 (75 units).",
+      "source_note": "pharmacy_inventory_test_02.csv"
+    },
+    {
+      "id": "D3-Q1",
+      "dataset": "purchases",
+      "question": "Which supplier and which product are recorded in PUR-30623?",
+      "expected_answer": "Supplier: Shalimar Drug Agency; Product: Feeding Bottle 250ml.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q2",
+      "dataset": "purchases",
+      "question": "What quantity and unit cost are recorded for PUR-30587?",
+      "expected_answer": "Quantity = 250; Unit_Cost = 134 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q3",
+      "dataset": "purchases",
+      "question": "What is the Invoice_Total of PUR-31480?",
+      "expected_answer": "75,600 PKR",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q4",
+      "dataset": "purchases",
+      "question": "What is the payment status of PUR-30601?",
+      "expected_answer": "Partially Paid",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q5",
+      "dataset": "purchases",
+      "question": "On what date and for which branch was PUR-30425 recorded?",
+      "expected_answer": "Date: 2026-03-21; Branch: Satellite Town Pharmacy.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q6",
+      "dataset": "purchases",
+      "question": "What are the earliest and the latest purchase dates, and which purchases fall on them?",
+      "expected_answer": "Earliest date 2026-01-03: PUR-30001, PUR-30002, PUR-30003, PUR-30004. Latest date 2026-12-29: PUR-31981, PUR-31982.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q7",
+      "dataset": "purchases",
+      "question": "Which purchases were made on 2026-04-03?",
+      "expected_answer": "5 purchases: PUR-30490, PUR-30491, PUR-30492, PUR-30493, PUR-30494.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q8",
+      "dataset": "purchases",
+      "question": "What is the supplier of PUR-39999?",
+      "expected_answer": "Not found in the available data.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q9",
+      "dataset": "purchases",
+      "question": "Show all purchases from Rehmat Pharma Traders with their total quantity and total value.",
+      "expected_answer": "14 purchases; total quantity = 3,415; total value = 773,260 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q10",
+      "dataset": "purchases",
+      "question": "Which purchases have an Invoice_Total greater than 297,360 PKR?",
+      "expected_answer": "9 purchases: PUR-31549, PUR-31181, PUR-31967, PUR-31041, PUR-31859, PUR-30725, PUR-30835, PUR-31682, PUR-31132. (Exactly 297,360 PKR is NOT included.)",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q11",
+      "dataset": "purchases",
+      "question": "How many purchases occurred from 1 March 2026 through 15 March 2026, inclusive, and what was their combined Invoice_Total?",
+      "expected_answer": "96 purchases; combined Invoice_Total = 6,380,236 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q12",
+      "dataset": "purchases",
+      "question": "How many purchases were made in September 2026 and what was their total value?",
+      "expected_answer": "178 purchases; total value = 12,863,028 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q13",
+      "dataset": "purchases",
+      "question": "What was the average unit cost paid for Decongestant Cold Tablets 20s to Orion Medical Supplies, and the total quantity purchased?",
+      "expected_answer": "Average Unit_Cost = 82.43 PKR; total quantity = 7,200 units (7 purchases).",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q14",
+      "dataset": "purchases",
+      "question": "Show the Partially Paid Cough & Cold purchases at Model Town Health Point.",
+      "expected_answer": "5 purchases: PUR-30069, PUR-30622, PUR-31179, PUR-31614, PUR-31705.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q15",
+      "dataset": "purchases",
+      "question": "How many purchases are Pending, what is their total value, and what percentage of all purchases are Pending?",
+      "expected_answer": "641 Pending purchases; total value 47,082,966 PKR; 32.34% of all purchases.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q16",
+      "dataset": "purchases",
+      "question": "Which purchases have an Invoice_Total of exactly 41,480 PKR?",
+      "expected_answer": "2 purchases: PUR-30088, PUR-31606.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q17",
+      "dataset": "purchases",
+      "question": "How many purchases of Knee Support Brace were made at Iqbal Town Medical Hub, and what total quantity was bought?",
+      "expected_answer": "6 purchases; total quantity = 255 units.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q18",
+      "dataset": "purchases",
+      "question": "What is the total purchase value from Al-Noor Medical Wholesale?",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q19",
+      "dataset": "purchases",
+      "question": "Compare Orion Medical Supplies and Kohsar Pharma Link by total purchase value, total quantity and number of purchases.",
+      "expected_answer": "Orion Medical Supplies: 35,032,840 PKR, 202,358 units, 394 purchases. Kohsar Pharma Link: 17,141,779 PKR, 112,725 units, 245 purchases. Value difference = 17,891,061 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q20",
+      "dataset": "purchases",
+      "question": "Compare the average unit cost of Hydrocolloid Dressing 10s between Orion Medical Supplies and Kohsar Pharma Link. Which supplier was cheaper?",
+      "expected_answer": "Orion Medical Supplies = 751.10 PKR (10 purchases); Kohsar Pharma Link = 720.80 PKR (5 purchases). Kohsar Pharma Link was cheaper by 30.30 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q21",
+      "dataset": "purchases",
+      "question": "Which purchases were made from Hilal Healthcare Wholesale at Allama Iqbal Road Pharmacy with Quantity greater than 300 and Payment_Status = Pending?",
+      "expected_answer": "4 purchases: PUR-31280, PUR-31349, PUR-31828, PUR-31924.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q22",
+      "dataset": "purchases",
+      "question": "Which branch has the highest total purchase value, and what share of all purchases is that?",
+      "expected_answer": "Gulberg Care Pharmacy with 40,969,285 PKR = 28.75% of the overall 142,484,145 PKR.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q23",
+      "dataset": "purchases",
+      "question": "Give the number and total value of Zam Zam Pharma Distributors purchases for each payment status, and the percentage of its total value that is fully Paid.",
+      "expected_answer": "Paid 175 (14,147,245 PKR); Pending 134 (10,828,020 PKR); Partially Paid 52 (4,469,791 PKR). Paid share of value = 48.05%.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q24",
+      "dataset": "purchases",
+      "question": "List all purchases of Nebulizer Machine Compact from Noor Drug House.",
+      "expected_answer": "No matching records were found in the available data.",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    },
+    {
+      "id": "D3-Q25",
+      "dataset": "purchases",
+      "question": "Which three purchases have the highest Invoice_Total?",
+      "expected_answer": "PUR-31549 (387,240 PKR); PUR-31181 (361,000 PKR); PUR-31041 (341,140 PKR).",
+      "source_note": "pharmacy_purchases_test_03.csv"
+    }
+  ]
+}

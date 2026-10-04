@@ -1,6 +1,7 @@
 import re
 from datetime import date, timedelta
 from typing import Dict, Any, Optional
+from app.rag.intent import is_dataset_question_suggestion_request, is_knowledge_question, is_procedural_how_to_question
 from app.core.config import get_default_domain
 from app.schema.domain import get_domain_pack
 from app.language.roman_urdu import normalize_roman_urdu_intent
@@ -42,6 +43,21 @@ def is_advice_question(question: str) -> bool:
         or (re.search(r"\b(affect|affecting)\b", q) and re.search(r"\b(sales?|profit|karobar|pharmacy|maslay|problems?)\b", q))
     )
 
+MONTH_ALIASES = {
+    1: ["january", "jan", "januray", "janury", "janurary", "jann", "janwari", "janwary", "janwry"],
+    2: ["february", "feb", "febuary", "februrary", "febrary", "feburary", "feburay", "farwari", "febwari"],
+    3: ["march", "mar", "marchh", "marc", "maarch", "maarc"],
+    4: ["april", "apr", "aprl", "appril", "aprail", "aprel"],
+    5: ["may", "mai", "maey"],
+    6: ["june", "jun", "junn", "joon"],
+    7: ["july", "jul", "julyy", "julai", "joolai"],
+    8: ["august", "aug", "agust", "augest", "agst", "agast", "augst"],
+    9: ["september", "sep", "sept", "septembr", "sepember", "septembar", "septm", "sitambar", "sitambr", "septemba"],
+    10: ["october", "oct", "octomber", "octobr", "octb", "aktubar", "aktoobar", "octoba"],
+    11: ["november", "nov", "novmber", "novembar", "novm", "navambar", "navambr", "novemba"],
+    12: ["december", "dec", "decembr", "decembar", "decm", "disambar", "disambr", "decemba"],
+}
+
 MONTHS = {
     "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
     "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
@@ -49,33 +65,74 @@ MONTHS = {
     "november": 11, "nov": 11, "december": 12, "dec": 12
 }
 
+NON_MONTH_WORDS = {
+    "day", "days", "din", "dino", "month", "months", "mahina", "mahine", "mahiney",
+    "year", "years", "saal", "week", "weeks", "hafte", "hafta", "sale", "sales",
+    "tareekh", "tarikh", "tareeq", "tarekh", "date", "dates", "item", "items",
+    "unit", "units", "bill", "bills", "order", "orders", "rupee", "rupees", "pkr", "rs"
+}
+
+def parse_month_token(word: Optional[str]) -> Optional[int]:
+    """Extract month number (1-12) from word with typo-tolerance and phonetic aliases."""
+    if not word:
+        return None
+    import difflib
+    w = word.strip().lower()
+    w = re.sub(r"[^a-z]", "", w)
+    if not w or w in NON_MONTH_WORDS:
+        return None
+    for m_num, aliases in MONTH_ALIASES.items():
+        if w in aliases:
+            return m_num
+    if len(w) >= 4:
+        all_aliases = [alias for aliases in MONTH_ALIASES.values() for alias in aliases if len(alias) >= 4]
+        candidates = difflib.get_close_matches(w, all_aliases, n=1, cutoff=0.78)
+        if candidates:
+            matched_alias = candidates[0]
+            for m_num, aliases in MONTH_ALIASES.items():
+                if matched_alias in aliases:
+                    return m_num
+    return None
+
 def parse_date_token(token: str, default_year: int = 2026) -> Any:
+    """Parse any date string (ISO, DMY, MDY, conversational, with typos)."""
     token = token.strip().lower()
     token = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', token)
-    token = re.sub(r'[^\w\s\-]', '', token).strip()
+    token = re.sub(r'[^\w\s\-\/\.]', '', token).strip()
     
-    # ISO date: YYYY-MM-DD
-    m_iso = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', token)
+    # ISO date: YYYY-MM-DD or YYYY/MM/DD
+    m_iso = re.match(r'^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$', token)
     if m_iso:
-        return f"{int(m_iso.group(1)):04d}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
+        yr, mo, dy = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        if 1 <= mo <= 12 and 1 <= dy <= 31:
+            return f"{yr:04d}-{mo:02d}-{dy:02d}"
+
+    # Formatted numeric date: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    m_dmy = re.match(r'^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$', token)
+    if m_dmy:
+        d, m, y = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
+        if m > 12 and d <= 12:
+            d, m = m, d
+        if 1 <= m <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{m:02d}-{d:02d}"
     
-    # Day Month [Year] e.g. "20 jan", "20 jan 2026"
-    m_dm = re.match(r'^(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?$', token)
+    # Day Month [Year] e.g. "20 jan", "20 jan 2026", "15 septembr", "15th of sep 2024"
+    m_dm = re.match(r'^(\d{1,2})(?:\s+of|\s+tarikh|\s+tareekh|\s+tareeq)?\s+([a-z]+)(?:\s+(\d{4}))?$', token)
     if m_dm:
         day = int(m_dm.group(1))
-        m_name = m_dm.group(2)
+        m_num = parse_month_token(m_dm.group(2))
         yr = int(m_dm.group(3)) if m_dm.group(3) else default_year
-        if m_name in MONTHS:
-            return f"{yr:04d}-{MONTHS[m_name]:02d}-{day:02d}"
+        if m_num and 1 <= day <= 31:
+            return f"{yr:04d}-{m_num:02d}-{day:02d}"
             
-    # Month Day [Year] e.g. "jan 20", "january 20 2026"
+    # Month Day [Year] e.g. "jan 20", "january 20 2026", "septembr 15 2024"
     m_md = re.match(r'^([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?$', token)
     if m_md:
-        m_name = m_md.group(1)
+        m_num = parse_month_token(m_md.group(1))
         day = int(m_md.group(2))
         yr = int(m_md.group(3)) if m_md.group(3) else default_year
-        if m_name in MONTHS:
-            return f"{yr:04d}-{MONTHS[m_name]:02d}-{day:02d}"
+        if m_num and 1 <= day <= 31:
+            return f"{yr:04d}-{m_num:02d}-{day:02d}"
     return None
 
 def classify_route(question: str, last_route: Optional[str] = None) -> str:
@@ -85,21 +142,109 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     Route to Analytics if question asks for numbers, aggregates, margins, counts.
     Default to RAG (record lookup).
     """
+    # Example-question requests ask for grounded retrieval guidance, even when
+    # they include a number such as "give me 4 questions". They are not KPI asks.
+    if is_dataset_question_suggestion_request(question):
+        return RouteType.RAG
+    if is_procedural_how_to_question(question):
+        return RouteType.RAG
+
+    # An exact invoice key plus a numeric tax field is a bounded analytics
+    # lookup even when the wording is phrased as "was any tax recorded".
+    exact_invoice_tax_lookup = (
+        re.search(r"\b(?:invoice|receipt|bill)\s*(?:no\.?|number|#)?\s*[:#-]?\s*[a-z0-9/-]*\d[a-z0-9/-]*\b", question, re.I)
+        and re.search(r"\b(tax|gst|vat)\b", question, re.I)
+        and re.search(r"\b(recorded|charged|amount|value|how much|any)\b", question, re.I)
+    )
+    if exact_invoice_tax_lookup:
+        return RouteType.ANALYTICS
+
+    # Whole-scope on-hand calculations need structured inventory rows even
+    # when the wording resembles a descriptive lookup request.
+    early_question = normalize_pharmacy_vocabulary(question or "").casefold()
+    if (
+        re.search(r"\b(total|combined|sum|overall)\b", early_question)
+        and re.search(r"\b(stock|inventory|on[- ]hand|quantity|units?)\b", early_question)
+        and re.search(r"\b(across|all|selected|product|item|sku)\b", early_question)
+    ):
+        return RouteType.ANALYTICS
+
     # Normalize pharmacy shorthand before applying the distinct analytics vs
     # record-lookup rules. Keep the original for language-sensitive patterns.
+    if is_knowledge_question(question):
+        return RouteType.RAG
+
     normalized_question = normalize_pharmacy_vocabulary(question or "")
     original_lower = normalized_question.casefold()
     q_lower = normalize_roman_urdu_intent(normalized_question).casefold()
+
+    # Questions about what can be asked are grounded in the active dataset:
+    # derive examples from its retrieved schema/records instead of generic chat.
+    if re.search(
+        r"\bwhat (?:type|kind|kinds) of questions? can you answer\b|"
+        r"\bwhat questions? can you answer\b|\bwhat can you help (?:me )?with\b|"
+        r"\b(?:give|suggest|list|show) me (?:(?:some|a few|example|sample) )?questions?\b.{0,100}\b(?:ask|related to|about|based on|from)\b",
+        q_lower,
+    ):
+        return RouteType.RAG
+
+    clean_q = re.sub(r"\b(sales?\s+records?|sales?\s+invoices?|sales?\s+bills?|sales?\s+receipts?|all\s+sales\s+records)\b", "record", q_lower)
+    clean_orig = re.sub(r"\b(sales?\s+records?|sales?\s+invoices?|sales?\s+bills?|sales?\s+receipts?|all\s+sales\s+records)\b", "record", original_lower)
 
     analytics_language = (
         r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|discount|gst|tax|p&l|"
         r"revenue|sales?|turnover|takings|earnings|income|purchases?|expenses?|spend|spent|costs?|"
         r"cash flow|refunds?|returns?|units sold|quantity sold|stock sold|most|highest|lowest|top|trend|performance|"
+        r"more expensive|cheaper|price change|price trend|cost trend|increas\w*|decreas\w*|savings?|save costs?|dependen\w*|"
         r"kitna|kitni|kitne|kul|bikri|bikree|farukht|farokht|frokt|frokht|munafa|nafa|faida|nuqsan|nuksan|kharcha|aamdani|kamai|"
         r"udhar|udhari|naqad|naqd|rokra|baqaya|rasid|raseed|parchi|hisab|hisaab|khata|khaata|wasooli|bachat|khasara|laagat|lagat|adaigi|"
         r"ziada|zyada|zayada|sab se|sabse|kam stock|dawai ki sale|dawa ki sale)\b"
     )
-    has_analytics_language = bool(re.search(analytics_language, q_lower) or re.search(analytics_language, original_lower))
+    has_analytics_language = bool(re.search(analytics_language, clean_q) or re.search(analytics_language, clean_orig))
+
+    # Historical price movement and savings questions are data calculations,
+    # even when phrasing contains no conventional KPI noun or comparison word.
+    if re.search(r"\b(over time|histor(?:y|ical)|price movement|became? more expensive|got more expensive|cheaper|increas\w*|decreas\w*)\b", q_lower) and re.search(r"\b(price|cost|expensive|purchase|supplier|product)\b", q_lower):
+        return RouteType.ANALYTICS
+
+    # A direct inquiry for a named product price (e.g. "Panadol ki qeemat batao", "Price of Panadol")
+    if re.search(r"\b(qeemat|keemat|kimat|price|rate)\b", q_lower) and not re.search(r"\b(average|avg|total|highest|lowest|margin|cost|profit|trend|breakdown|purchase|purchases|purchasing|sale|sales|sold|last time|pichli baar|kab)\b", q_lower):
+        if re.search(r"\b(panadol|brufen|disprin|augmentin|arinate|rigix|cardivas|calamox|dawa|dawai|medicine|product)\b", q_lower):
+            return RouteType.RAG
+
+    # Full-table inventory operations need the structured planner even when
+    # the wording is an item/location request rather than a KPI noun.
+    if re.search(r"\b(below|under|equal to|exactly equal to)\b.{0,35}\breorder\b|\b(each|every|per) warehouse\b.{0,60}\b(below|reorder|stock)\b|\bexpire\w* between\b", q_lower):
+        return RouteType.ANALYTICS
+    # A single explicit record key denotes a bounded row lookup even when the
+    # question contains record identifiers. Metric operations such as invoice
+    # totals and discounts still use analytics while preserving that exact ID.
+    #
+    # Accept both compact and conversational forms: INV-123 and "invoice 123".
+    record_ids = re.findall(
+        r"\b(?:sale|sales|pur|purchase|inv|invoice|bill|receipt|inventory|sku|batch|lot|rx)(?:[-_/]|\s+(?:number|no\.?|#)?\s*)[a-z0-9-]*\d[a-z0-9-]*\b",
+        clean_q,
+    )
+    if len(set(record_ids)) == 1:
+        return RouteType.ANALYTICS if has_analytics_language else RouteType.RAG
+
+    if re.search(r"\b(list all|show me all)\s+sales?\s+records?\b", q_lower):
+        return RouteType.RAG
+
+    if re.search(r"\b(lead[- ]time|delivery time|days? to deliver|take to deliver|how long.{0,40}(?:take|deliver|arrive))\b", q_lower):
+        return RouteType.ANALYTICS
+    if re.search(r"\b(suppliers?|vendors?|distributors?)\b", q_lower) and re.search(r"\b(bonus|free quantity|free units?)\b", q_lower):
+        return RouteType.ANALYTICS
+    if re.search(r"\b(same one|same item|it|that one|those|them)\b", q_lower) and re.search(r"\b(how many|how much|left|remaining|stock)\b", q_lower):
+        return RouteType.ANALYTICS
+
+    # Full-table inventory operations need the structured planner even when
+    # the wording is an item/location request rather than a KPI noun. Apply
+    # after exact-ID handling so "find lot B-99" remains a bounded lookup.
+    if re.search(r"\b(below|under|equal to|exactly equal to)\b.{0,35}\breorder\b|\b(each|every|per) warehouse\b.{0,60}\b(below|reorder|stock)\b|\bexpire\w* between\b", q_lower):
+        return RouteType.ANALYTICS
+    if re.search(r"\b(batch|batches|lot|lots|rack|shelf|shelves|stock|inventory)\b", q_lower) and re.search(r"\b(show|list|find|which|where|how many|count|expire|expiry|reorder|stock)\b", q_lower):
+        return RouteType.ANALYTICS
 
     # Chit-chat & assistant capability keywords (checked when not asking for metric data or specific entities)
     chitchat_patterns = [
@@ -142,6 +287,30 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         if any(re.search(p, q_lower) for p in chitchat_patterns) or any(re.search(p, original_lower) for p in chitchat_patterns):
             return RouteType.CHITCHAT
 
+    # Location lookups are structured inventory facts and should use the full
+    # selected table, not an embedding-ranked handful of product variants.
+    if (re.search(r"\b(racks?|shelves|shelf|bins?|stock locations?)\b", q_lower) and re.search(r"\b(where|which|located|stored|holds?|kept)\b", q_lower)) or re.search(r"\bwhere\b.{0,80}\b(stored|located|kept|placed)\b", q_lower):
+        return RouteType.ANALYTICS
+
+    # Structured business measurements should not fall through to semantic
+    # top-k retrieval just because an entity such as branch, pharmacist, batch,
+    # or payment method is the grammatical subject. This vocabulary-based
+    # guard is deliberately general across file and SQL schemas.
+    structured_subject = re.search(
+        r"\b(transactions?|sales?|revenue|amount|value|units?|quantity|products?|medicines?|drugs?|"
+        r"therapeutic classes?|manufacturers?|branches?|months?|days?|prices?|cost|margin|profit|"
+        r"prescriptions?|otc|payment methods?|cash|insurance|pharmacists?|doctors?|batches?|lots?|"
+        r"racks?|shelves|locations?)\b", q_lower,
+    )
+    structured_operation = re.search(
+        r"\b(total|sum|average|avg|how much|how many|count|number of|most|highest|lowest|top|bottom|"
+        r"fewest|least|largest|smallest|compare|trend|frequently|often|each|per|by|revenue|sales|"
+        r"price|cost|margins?|profits?|percentage|percent|share|value|sold|selling|stored|associated|generated)\b", q_lower,
+    )
+    unspecified_entity = re.search(r"\b(particular|specific|this|that)\s+(?:medicine|product|drug|batch|rack)\b", q_lower)
+    if not is_advice_question(q_lower) and ((structured_subject and structured_operation) or unspecified_entity):
+        return RouteType.ANALYTICS
+
     # Prefer the operation asked for over a broad noun. Owner questions about
     # policy, workflow, customers, staff, and medicine attributes are record or
     # knowledge lookups even when words like "stock", "medicine", or "how" occur.
@@ -165,8 +334,8 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         return RouteType.ANALYTICS
     if re.search(r"\b(total|combined|sum|how many)\b.{0,35}\b(quantity|units?|purchases?|sales?)\b", q_lower) and re.search(r"\b(bought|purchased|sold|did they|did he|did she|did we|did i)\b", q_lower):
         return RouteType.ANALYTICS
-    if re.search(r"\b(lead time|delivery time|days? to deliver|how long.*deliver|how many days.*take.*deliver)\b", q_lower):
-        return RouteType.RAG
+    if re.search(r"\b(lead time|delivery time|days? to deliver|how long.{0,40}(?:take|deliver|arrive)|how many days.*take.*deliver)\b", q_lower):
+        return RouteType.ANALYTICS
     if re.search(r"\b[a-z]{1,8}-\d{2,}[a-z0-9-]*\b", q_lower) and re.search(r"\b(batch|expiry|expires?|stock)\b", q_lower):
         return RouteType.RAG
     if len(set(record_ids)) == 1 and not re.search(r"\b(compare|versus|\bvs\b|difference|combined value|total stock across|sum of)\b", q_lower):
@@ -229,8 +398,13 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         catalog_question = re.search(r"\bwhat products? do i sell\b", q_lower)
         if named_batch_supplier or ((explicit_record_list or named_invoice or catalog_question) and not metric_operator):
             return RouteType.RAG
-        if re.search(r"\b(conflict|conflicting|disagree|different reports?|report\s+[a-z]\s+says?)\b", q_lower):
-            return RouteType.RAG
+    if re.search(r"\b(conflict|conflicting|disagree|different reports?|report\s+[a-z]\s+says?)\b", q_lower):
+        return RouteType.RAG
+
+    # Questions choosing what to replenish need joined demand and stock facts,
+    # even when they omit KPI words such as "sales velocity".
+    if re.search(r"\b(what|which)\b.{0,45}\b(restock|reorder|re-stock|re-order)\b.{0,35}\b(first|next|now|priorit(?:y|ies))\b|\bshould i\s+(?:restock|reorder|re-stock|re-order)\b", q_lower):
+        return RouteType.ANALYTICS
 
         # Product attributes remain lookups unless the owner asks to compare or
         # aggregate them (e.g. strength is context in a price/stock comparison).
@@ -340,7 +514,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\b(sales?|sold|revenue|turnover|takings|earnings|stock|inventory|"
         r"profit|profitabilit(?:y|ies)|loss|margin|discount|cost|price|rate|mehngi|daam|qeemat|"
         r"tax|gst|expiry|expire|expired|expiring|bonus|reorder|"
-        r"restock|foran|reorder(?:ed)?|out of stock|low stock|running low|remaining|overstocked|overstock|"
+        r"restock|foran|reorder(?:ed)?|out of stock|low stock|running low|remaining|overstocked|overstock|understocked|understock|stored|kept|located|"
         r"run out|running out|order today|consider ordering|fast-selling|fastest-moving|slowest-moving|"
         r"best-selling|top-selling|sold together|sales history|stock value|"
         r"fast[- ]moving|slow[- ]moving|capital tied up|dead stock|below 10|fewer than 10|fewer than 5|units remaining|"
@@ -353,7 +527,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         q_lower,
     )
     pos_question_form = re.search(
-        r"\b(what|which|who|how|show|list|compare|give|based on|when|has|have|are|is|were|kya|konsi|kaunsi|kon\s+si|kin|kis|kaun|kon|mera|meri|mere|konse|kaunse|kon\s+se)\b",
+        r"\b(what|which|who|how|where|show|list|compare|give|based on|when|has|have|are|is|were|kya|konsi|kaunsi|kon\s+si|kin|kis|kaun|kon|mera|meri|mere|konse|kaunse|kon\s+se)\b",
         q_lower,
     )
     if pos_metric and pos_question_form:
@@ -421,7 +595,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
     data_description_question = (
         re.search(r"\b(dataset|file|data source|table|tables|columns?|fields?)\b", q_lower)
         and re.search(r"\b(which|what|list|show|tell|name|available|included)\b", q_lower)
-        and not re.search(r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|profit|margin|highest|lowest|largest|smallest|greatest|top|price|amount|purchase|expenditure|percentage|percent)\b", q_lower)
+        and not re.search(r"\b(total|sum(?:med)?|aggregate|average|avg|how much|how many|count|forecast|predict|profit|margin|highest|lowest|largest|smallest|greatest|top|price|amount|purchase|expenditure|percentage|percent)\b", q_lower)
     )
     if data_description_question:
         return RouteType.RAG
@@ -459,7 +633,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
         r"\bdata\s*source\b",
     ]
     numeric_or_inventory_guard = (
-        r"\b(total|sum|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|revenue|sales?|"
+        r"\b(total|sum(?:med)?|aggregate|average|avg|how much|how many|count|forecast|predict|margin|profit|loss|revenue|sales?|"
         r"turnover|takings|earnings|income|purchases?|expenses?|spend|spent|costs?|cash flow|p&l|"
         r"units sold|quantity sold|stock sold|"
         r"expire|expiry|expired|expiring|expire ho|expire hone|expire ho chuk|expire ho gaya|percentage|percent|"
@@ -479,7 +653,7 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
 
     # Analytics / Numeric / Inventory Intelligence keywords
     analytics_patterns = [
-        r"\btotal\b", r"\bhow much\b", r"\bhow many\b", r"\bsum\b",
+        r"\btotal\b", r"\bhow much\b", r"\bhow many\b", r"\bsum(?:med)?\b", r"\baggregate\b",
         r"\baverage\b", r"\bavg\b", r"\bkitna\b", r"\bkitne\b", r"\bprofit\b",
         r"\bmargin\b", r"\bexpiring\b", r"\bexpire\b", r"\bexpiry\b", r"\bexpired\b",
         r"\bcount\b", r"\bmehngi\b", r"\bsasti\b", r"\bexpensive\b", r"\bcheap\b",
@@ -535,12 +709,23 @@ def classify_route(question: str, last_route: Optional[str] = None) -> str:
 
 def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, Any]:
     """
-    Extract exact-match filters, date intervals, and inventory threshold options from the question.
+    Extract exact-match filters, single calendar dates, date intervals, and inventory threshold options from the question.
+    Typo-tolerant and aware of all standard, abbreviated, Roman Urdu, and colloquial date notations.
     """
     effective_domain = domain or get_default_domain()
     filters: Dict[str, Any] = {}
     options: Dict[str, Any] = {}
     q_lower = normalize_roman_urdu_intent(question).casefold()
+
+    # An explicit expiry cutoff is a field predicate, not a sales transaction
+    # date filter. Leave the cutoff in the question for the inventory planner.
+    if (re.search(r"\b(expiry|expire|expires|expired|expiring)\b", q_lower)
+            and re.search(r"\b(before|prior to|earlier than|after|later than|on or before|by)\b", q_lower)
+            and re.search(r"\b20\d{2}\b", q_lower)
+            and not re.search(r"\b(sales?|revenue|transactions?|invoices?)\b", q_lower)):
+        if options:
+            filters["options"] = options
+        return filters
 
     # Apply categorical intent before any date-window early return so compound
     # questions such as "cardiac medicines this month" keep both filters.
@@ -558,11 +743,11 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
             options["category"] = cat_name
             filters["options"] = options
             break
-    
-    # 1. Date range detection e.g. "from 20 jan to 15 feb", "between 1st jan and 31st march", "from 2026-01-20 to 2026-02-15"
-    date_token_pattern = r'(\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+(?:\s+\d{4})?|[a-zA-Z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?|\d{4}-\d{2}-\d{2})'
+
+    # 1. Date range detection e.g. "from 20 jan to 15 feb", "between 1st jan and 31st march", "from 2026-01-20 to 2026-02-15", "15 se 20 sep tak"
+    date_token_pattern = r'(\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+[a-zA-Z]+(?:\s+\d{4})?|[a-zA-Z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?|\d{4}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}[./-]\d{1,2}(?:[./-]\d{4})?)'
     range_pattern = re.compile(
-        rf'(?:from|between|since)\s+{date_token_pattern}\s+(?:to|till|until|and|-)\s+{date_token_pattern}',
+        rf'(?:from|between|since|se)\s+{date_token_pattern}\s+(?:to|till|until|and|-|se|tak)\s+{date_token_pattern}',
         re.IGNORECASE
     )
     m_range = range_pattern.search(q_lower)
@@ -573,6 +758,94 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
             filters["date_from"] = d1
             filters["date_to"] = d2
             return filters
+
+    # 2. Single Explicit Calendar Date Detection (Day + Month + Year or Day + Month)
+    # Formatted numeric ISO: YYYY-MM-DD
+    m_iso = re.search(r'\b(\d{4})[./-](\d{1,2})[./-](\d{1,2})\b', q_lower)
+    if m_iso:
+        yr, mo, dy = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        if 1 <= mo <= 12 and 1 <= dy <= 31:
+            filters["year"] = yr
+            filters["month"] = mo
+            filters["day"] = dy
+            filters["date_from"] = f"{yr:04d}-{mo:02d}-{dy:02d}"
+            filters["date_to"] = f"{yr:04d}-{mo:02d}-{dy:02d}"
+            return filters
+
+    # Formatted numeric date: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    m_dmy = re.search(r'\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b', q_lower)
+    if m_dmy:
+        dy, mo, yr = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
+        if mo > 12 and dy <= 12: # Handle MM/DD/YYYY
+            dy, mo = mo, dy
+        if 1 <= mo <= 12 and 1 <= dy <= 31:
+            filters["year"] = yr
+            filters["month"] = mo
+            filters["day"] = dy
+            filters["date_from"] = f"{yr:04d}-{mo:02d}-{dy:02d}"
+            filters["date_to"] = f"{yr:04d}-{mo:02d}-{dy:02d}"
+            return filters
+
+    # Day Month [Year] e.g. "15 september", "15th september 2024", "15 sep", "15th of septembr"
+    m_dm = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of|\s+tarikh|\s+tareekh|\s+tareeq|\s+tarekh)?\s+([a-zA-Z]+)(?:\s*,?\s*(\d{4}))?\b', q_lower)
+    if m_dm:
+        m_num = parse_month_token(m_dm.group(2))
+        day = int(m_dm.group(1))
+        if m_num and 1 <= day <= 31:
+            filters["month"] = m_num
+            filters["day"] = day
+            yr = int(m_dm.group(3)) if m_dm.group(3) else None
+            if yr:
+                filters["year"] = yr
+                filters["date_from"] = f"{yr:04d}-{m_num:02d}-{day:02d}"
+                filters["date_to"] = f"{yr:04d}-{m_num:02d}-{day:02d}"
+            else:
+                filters["date_from"] = f"2026-{m_num:02d}-{day:02d}"
+                filters["date_to"] = f"2026-{m_num:02d}-{day:02d}"
+            return filters
+
+    # Month Day [Year] e.g. "september 15", "september 15th, 2024", "sep 15", "septembr 15"
+    m_md = re.search(r'\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b', q_lower)
+    if m_md:
+        m_num = parse_month_token(m_md.group(1))
+        day = int(m_md.group(2))
+        if m_num and 1 <= day <= 31:
+            filters["month"] = m_num
+            filters["day"] = day
+            yr = int(m_md.group(3)) if m_md.group(3) else None
+            if yr:
+                filters["year"] = yr
+                filters["date_from"] = f"{yr:04d}-{m_num:02d}-{day:02d}"
+                filters["date_to"] = f"{yr:04d}-{m_num:02d}-{day:02d}"
+            else:
+                filters["date_from"] = f"2026-{m_num:02d}-{day:02d}"
+                filters["date_to"] = f"2026-{m_num:02d}-{day:02d}"
+            return filters
+
+    # Explicit day in Roman Urdu (e.g. "15 tareekh ko kitni sale thi", "25 tarikh")
+    m_tareekh = re.search(r'\b(\d{1,2})\s*(?:st|nd|rd|th)?\s*(?:tareekh|tarikh|tareeq|tarekh)\b', q_lower)
+    if m_tareekh:
+        day_val = int(m_tareekh.group(1))
+        if 1 <= day_val <= 31:
+            filters["day"] = day_val
+
+    # Quarters: Q1, Q2, Q3, Q4, First quarter, etc.
+    if re.search(r'\b(q1|1st\s+quarter|first\s+quarter)\b', q_lower):
+        filters["date_from"] = "2026-01-01"
+        filters["date_to"] = "2026-03-31"
+        return filters
+    if re.search(r'\b(q2|2nd\s+quarter|second\s+quarter)\b', q_lower):
+        filters["date_from"] = "2026-04-01"
+        filters["date_to"] = "2026-06-30"
+        return filters
+    if re.search(r'\b(q3|3rd\s+quarter|third\s+quarter)\b', q_lower):
+        filters["date_from"] = "2026-07-01"
+        filters["date_to"] = "2026-09-30"
+        return filters
+    if re.search(r'\b(q4|4th\s+quarter|fourth\s+quarter)\b', q_lower):
+        filters["date_from"] = "2026-10-01"
+        filters["date_to"] = "2026-12-31"
+        return filters
 
     # Arbitrary N days ago e.g. "4 days ago", "char din pehle"
     m_n_days_ago = re.search(r"\b(\d{1,3})\s+(?:days?|din)\s+ago\b", q_lower)
@@ -598,7 +871,7 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
         return filters
 
     # This week / Current week
-    if re.search(r"\b(this|current)\s+week\b", q_lower):
+    if re.search(r"\b(this|current|is|iss)\s+(?:week|hafte|hafta)\b", q_lower):
         today = date.today()
         start_of_week = today - timedelta(days=today.weekday())
         filters["date_from"] = start_of_week.isoformat()
@@ -606,7 +879,7 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
         return filters
 
     # Last week / Previous week
-    if re.search(r"\b(last|previous|prior)\s+week\b", q_lower):
+    if re.search(r"\b(last|previous|prior|pichlay|pichle|guzashta)\s+(?:week|hafte|hafta)\b", q_lower):
         today = date.today()
         start_of_last_week = today - timedelta(days=today.weekday() + 7)
         end_of_last_week = start_of_last_week + timedelta(days=6)
@@ -614,29 +887,28 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
         filters["date_to"] = end_of_last_week.isoformat()
         return filters
 
-    # Yesterday is a calendar date filter. A misspelling is corrected in
-    # RAGChat._normalize_question, and also accepted here for direct callers.
-    if re.search(r"\b(yesterday|yestarday)\b", q_lower):
+    # Yesterday is a calendar date filter (typo-tolerant).
+    if re.search(r"\b(yesterday|yestarday|yesteday|yesturday|yest)\b", q_lower):
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         filters["date_from"] = yesterday
         filters["date_to"] = yesterday
         return filters
-    if re.search(r"\b(today|today's|todays)\b", q_lower):
+    if re.search(r"\b(today|today's|todays|todday|tooday|aaj)\b", q_lower):
         today = date.today().isoformat()
         filters["date_from"] = today
         filters["date_to"] = today
         return filters
-    if re.search(r"\b(this|current)\s+month\b|\bmonth\s+to\s+date\b", q_lower):
+    if re.search(r"\b(this|current|is|iss)\s+(?:month|mahine|mahina)\b|\bmonth\s+to\s+date\b", q_lower):
         today = date.today()
         filters["date_from"] = today.replace(day=1).isoformat()
         filters["date_to"] = today.isoformat()
-    if re.search(r"\b(last|previous|prior)\s+(?:calendar\s+)?month\b", q_lower):
+    if re.search(r"\b(last|previous|prior|pichlay|pichle|guzashta)\s+(?:calendar\s+)?(?:month|mahine|mahina)\b", q_lower):
         first_this_month = date.today().replace(day=1)
         last_month_end = first_this_month - timedelta(days=1)
         filters["date_from"] = last_month_end.replace(day=1).isoformat()
         filters["date_to"] = last_month_end.isoformat()
         return filters
-    if re.search(r"\b(this|current)\s+year\b|\byear\s+to\s+date\b", q_lower):
+    if re.search(r"\b(this|current|is|iss)\s+(?:year|saal)\b|\byear\s+to\s+date\b", q_lower):
         today = date.today()
         filters["date_from"] = today.replace(month=1, day=1).isoformat()
         filters["date_to"] = today.isoformat()
@@ -657,8 +929,8 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
     )
     if m_recent_days:
         filters["relative_days"] = int(m_recent_days.group(1))
-    elif re.search(r"\b(?:last|past|previous)\s+(\d{1,2})\s+months?\b", q_lower):
-        m_m = re.search(r"\b(?:last|past|previous)\s+(\d{1,2})\s+months?\b", q_lower)
+    elif re.search(r"\b(?:last|past|previous|pichlay|pichle|guzishta|aakhri)\s+(\d{1,2})\s+(?:months?|mahine|mahina)\b", q_lower):
+        m_m = re.search(r"\b(?:last|past|previous|pichlay|pichle|guzishta|aakhri)\s+(\d{1,2})\s+(?:months?|mahine|mahina)\b", q_lower)
         filters["relative_days"] = int(m_m.group(1)) * 30
 
     # Cash and Credit are payment labels, not sale/purchase transaction types.
@@ -670,18 +942,22 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
     ):
         filters["payment_label"] = "Credit" if has_credit else "Cash"
 
-    # 2. Single month detection if no range
+    # 3. Single month detection with typo recovery if no single date matched
     expiry_as_of = bool(
         re.search(r"\b(expired|expiry|expiring|expires?)\b", q_lower)
         and re.search(r"\b(by|as of|on or before)\b", q_lower)
     )
     if not expiry_as_of:
-        for m_name, m_num in MONTHS.items():
-            if re.search(rf"\b{m_name}\b", q_lower):
-                filters["month"] = m_num
-                break
+        # Search for month names or typos in words
+        words = re.findall(r'[a-zA-Z]+', q_lower)
+        for w in words:
+            if len(w) >= 3:
+                m_num = parse_month_token(w)
+                if m_num and w not in ["may", "march"] or (w in ["march"] and not re.search(r"\b(march|marchh)\s+forward\b", q_lower)) or (w == "may" and not re.search(r"\bmay\s+(?:sales?|i|we|it)\b", q_lower)):
+                    filters["month"] = m_num
+                    break
 
-    # 3. Year detection (e.g. 2024, 2025, 2026, 2027)
+    # 4. Year detection (e.g. 2024, 2025, 2026, 2027)
     years = set(re.findall(r'\b(202[0-9])\b', q_lower))
     m_yr = re.search(r'\b(202[0-9])\b', q_lower) if len(years) == 1 else None
     if m_yr and expiry_as_of:
@@ -689,13 +965,13 @@ def extract_filters(question: str, domain: Optional[str] = None) -> Dict[str, An
     if m_yr:
         filters["year"] = int(m_yr.group(1))
 
-    # 4. Expiry horizon extraction (e.g., "next 60 days", "in 30 days", "60 days", "60 din")
+    # 5. Expiry horizon extraction (e.g., "next 60 days", "in 30 days", "60 days", "60 din")
     m_exp_days = re.search(r'(\d{1,3})\s*(?:day|days|din|d)\b', q_lower)
     if m_exp_days and re.search(r'\b(expir|expire|expired|expiring|expiry|near|short|miyad|meyad|liquidat)\b', q_lower):
         options["expiry_days"] = int(m_exp_days.group(1))
         options["horizon_days"] = int(m_exp_days.group(1))
 
-    # 5. Days-of-supply threshold extraction (e.g., "below a 3-day supply", "3 days supply", "3-day supply", "< 3 days")
+    # 6. Days-of-supply threshold extraction (e.g., "below a 3-day supply", "3 days supply", "3-day supply", "< 3 days")
     m_supply_days = re.search(r'\b(?:below|under|<|less than)?\s*(?:a\s*)?(\d{1,2})(?:-|\s*)(?:day|days|din)\s*(?:of\s*)?supply\b', q_lower)
     if m_supply_days:
         options["days_supply_threshold"] = float(m_supply_days.group(1))

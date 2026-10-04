@@ -1,0 +1,1135 @@
+{
+  "dataset": "pharmacy_compliant_master_dataset.xlsx",
+  "source": "user-provided 100-question evaluation set",
+  "tuning_data": false,
+  "cases": [
+    {
+      "id": 1,
+      "question": "What are my total sales?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 2,
+      "question": "How many transactions are in the dataset?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 3,
+      "question": "How many units of medicine have been sold?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 4,
+      "question": "What is my average transaction value?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "amount",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 5,
+      "question": "Which product generated the highest sales revenue?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "product_revenue_ranking"
+    },
+    {
+      "id": 6,
+      "question": "Which product generated the lowest sales revenue?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 7,
+      "question": "What are my top 10 products by revenue?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "product_revenue_ranking"
+    },
+    {
+      "id": 8,
+      "question": "What are my top 10 products by quantity sold?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "product_unit_ranking"
+    },
+    {
+      "id": 9,
+      "question": "Which medicine has sold the most units?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "product_unit_ranking"
+    },
+    {
+      "id": 10,
+      "question": "Which medicine has sold the fewest units?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 11,
+      "question": "How much revenue did each product generate?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 12,
+      "question": "What is the average selling value per transaction?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "amount",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 13,
+      "question": "Which products are generating most of my revenue?",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "product_id",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "product_revenue_ranking"
+    },
+    {
+      "id": 14,
+      "question": "Show me the highest-value transactions.",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "transaction_id",
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 15,
+      "question": "Show me the lowest-value transactions.",
+      "intended_meaning": "sales_and_transaction_metrics",
+      "expected_evidence": [
+        "transaction_id",
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 16,
+      "question": "Which therapeutic class generates the most revenue?",
+      "intended_meaning": "therapeutic_class_analysis",
+      "expected_evidence": [
+        "category",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 17,
+      "question": "Which therapeutic class sells the most units?",
+      "intended_meaning": "therapeutic_class_analysis",
+      "expected_evidence": [
+        "category",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 18,
+      "question": "What are the top five therapeutic classes by sales?",
+      "intended_meaning": "therapeutic_class_analysis",
+      "expected_evidence": [
+        "category",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 19,
+      "question": "Which therapeutic classes have the lowest sales?",
+      "intended_meaning": "therapeutic_class_analysis",
+      "expected_evidence": [
+        "category",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 20,
+      "question": "How many different medicines have been sold?",
+      "intended_meaning": "therapeutic_class_analysis",
+      "expected_evidence": [
+        "product_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 21,
+      "question": "Which manufacturer generates the most revenue?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "manufacturer_revenue_ranking"
+    },
+    {
+      "id": 22,
+      "question": "Which manufacturer's products sell the most units?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 23,
+      "question": "Show me the top 10 manufacturers by sales.",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "manufacturer_revenue_ranking"
+    },
+    {
+      "id": 24,
+      "question": "Which manufacturers have the fewest sales?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 25,
+      "question": "How many different manufacturers are represented?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 26,
+      "question": "What products from AstraZeneca have been sold?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "product_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 27,
+      "question": "How much revenue came from AstraZeneca products?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 28,
+      "question": "Which manufacturer's products have the highest average retail price?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 29,
+      "question": "Which manufacturer has the largest number of products?",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "product_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 30,
+      "question": "Compare sales between the major manufacturers.",
+      "intended_meaning": "manufacturer_analysis",
+      "expected_evidence": [
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 31,
+      "question": "What are my total sales by branch?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 32,
+      "question": "Which pharmacy branch has the highest sales?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "branch_revenue_ranking"
+    },
+    {
+      "id": 33,
+      "question": "Which branch has sold the most units?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 34,
+      "question": "Which branch has the highest average transaction value?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "amount",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 35,
+      "question": "What are the top-selling products at each branch?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 36,
+      "question": "Which therapeutic class performs best at each branch?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "category",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 37,
+      "question": "Which manufacturer performs best at each branch?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 38,
+      "question": "Compare revenue across all pharmacy branches.",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": "branch_revenue_ranking"
+    },
+    {
+      "id": 39,
+      "question": "Which branch has the most transactions?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 40,
+      "question": "Which branch has the lowest sales?",
+      "intended_meaning": "branch_analysis",
+      "expected_evidence": [
+        "branch",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 41,
+      "question": "What were my sales today according to the dataset?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "use_latest_available_dataset_date_and_answer",
+      "paraphrase_group": null
+    },
+    {
+      "id": 42,
+      "question": "What were my sales in January?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 43,
+      "question": "What were my total monthly sales?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 44,
+      "question": "Which month had the highest sales?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 45,
+      "question": "Which month had the lowest sales?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 46,
+      "question": "How have sales changed over time?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 47,
+      "question": "Which day had the highest revenue?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 48,
+      "question": "Which day had the most transactions?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 49,
+      "question": "What are my average daily sales?",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 50,
+      "question": "Show me the monthly sales trend.",
+      "intended_meaning": "date_trend_analysis",
+      "expected_evidence": [
+        "date",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 51,
+      "question": "What is the cost price of Betaloc 50mg Extended-Release?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "cost"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 52,
+      "question": "What is the maximum retail price of Betaloc 50mg Extended-Release?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 53,
+      "question": "Which products have the highest maximum retail prices?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 54,
+      "question": "Which products have the lowest maximum retail prices?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 55,
+      "question": "Which products have the biggest difference between cost price and maximum retail price?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 56,
+      "question": "Which products have the smallest margin between cost and maximum retail price?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 57,
+      "question": "Which medicines potentially provide the highest gross margin per unit?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 58,
+      "question": "What is the estimated gross margin for each product based on the recorded prices?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 59,
+      "question": "Which high-selling products also have strong margins?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "product_id",
+        "quantity",
+        "amount",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "report_each_metric_separately_and_state_margin_basis",
+      "paraphrase_group": null
+    },
+    {
+      "id": 60,
+      "question": "Which therapeutic class has the highest estimated gross margin?",
+      "intended_meaning": "pricing_and_margin",
+      "expected_evidence": [
+        "category",
+        "quantity",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 61,
+      "question": "How many prescription-required transactions are there?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 62,
+      "question": "How many OTC sales are there?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 63,
+      "question": "What percentage of transactions required a prescription?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 64,
+      "question": "Which prescription-required medicines sell the most?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 65,
+      "question": "Which OTC medicines sell the most?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "product_id",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 66,
+      "question": "What is the total revenue from prescription-required medicines?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 67,
+      "question": "What is the total revenue from OTC sales?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 68,
+      "question": "Which therapeutic classes are most commonly sold with prescriptions?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "category",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 69,
+      "question": "Which manufacturers have the most prescription-required sales?",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "manufacturer",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 70,
+      "question": "Compare prescription and OTC transaction values.",
+      "intended_meaning": "prescription_and_otc_analysis",
+      "expected_evidence": [
+        "prescription_required",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 71,
+      "question": "Which payment method is used most often?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 72,
+      "question": "How much revenue was received through cash?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 73,
+      "question": "How much revenue was processed through insurance?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 74,
+      "question": "Which payment method generates the most revenue?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 75,
+      "question": "What percentage of transactions use each payment method?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 76,
+      "question": "What is the average transaction value for each payment method?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 77,
+      "question": "Which branches receive the most cash transactions?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "branch",
+        "payment_method",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 78,
+      "question": "Which branches process the most insurance transactions?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "branch",
+        "payment_method",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 79,
+      "question": "Which products are most commonly purchased through insurance?",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "product_id",
+        "payment_method",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 80,
+      "question": "Compare cash and insurance sales.",
+      "intended_meaning": "payment_analysis",
+      "expected_evidence": [
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 81,
+      "question": "Which pharmacist handled the most transactions?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "pharmacist_name",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 82,
+      "question": "Which pharmacist handled the highest total sales value?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "pharmacist_name",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 83,
+      "question": "What is the average transaction value handled by each pharmacist?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "pharmacist_name",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 84,
+      "question": "Which pharmacist sold the most units?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "pharmacist_name",
+        "quantity"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 85,
+      "question": "How many transactions did Dr. Hina Mukhtar handle?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "pharmacist_name",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 86,
+      "question": "Which prescribing doctor appears most frequently?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "doctor_name",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 87,
+      "question": "Which doctor is associated with the highest transaction value?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "doctor_name",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 88,
+      "question": "What medicines are most frequently associated with each prescribing doctor?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "doctor_name",
+        "product_id",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 89,
+      "question": "Which therapeutic classes are most frequently associated with each doctor?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "doctor_name",
+        "category",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 90,
+      "question": "How many different prescribing doctors appear in the records?",
+      "intended_meaning": "staff_and_prescriber_analysis",
+      "expected_evidence": [
+        "doctor_name"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 91,
+      "question": "What batch numbers are associated with a particular medicine?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "product_id",
+        "batch_no"
+      ],
+      "expected_answer_behavior": "clarify_missing_product",
+      "paraphrase_group": null
+    },
+    {
+      "id": 92,
+      "question": "Which products were sold from Batch BTH-2025-1000?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "batch_no",
+        "product_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 93,
+      "question": "How many units were sold from each batch?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "batch_no",
+        "quantity"
+      ],
+      "expected_answer_behavior": "report total distinct groups, a bounded ranked sample, and disclose that the full list needs a narrower filter or export",
+      "paraphrase_group": null
+    },
+    {
+      "id": 94,
+      "question": "Which batch generated the most revenue?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "batch_no",
+        "amount"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 95,
+      "question": "Where is a particular medicine located in the pharmacy?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "product_id",
+        "rack_location"
+      ],
+      "expected_answer_behavior": "clarify_missing_product",
+      "paraphrase_group": null
+    },
+    {
+      "id": 96,
+      "question": "Which products are stored on Rack-A-Shelf-1?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "rack_location",
+        "product_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 97,
+      "question": "Which rack contains the most frequently sold products?",
+      "intended_meaning": "batch_and_location_analysis",
+      "expected_evidence": [
+        "rack_location",
+        "product_id",
+        "transaction_id"
+      ],
+      "expected_answer_behavior": "answer_with_source_rows",
+      "paraphrase_group": null
+    },
+    {
+      "id": 98,
+      "question": "What are my best-performing products based on both quantity and revenue?",
+      "intended_meaning": "cross_dimension_analysis",
+      "expected_evidence": [
+        "product_id",
+        "quantity",
+        "amount",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "report_each_metric_separately_and_state_margin_basis",
+      "paraphrase_group": null
+    },
+    {
+      "id": 99,
+      "question": "Which products have high sales volume but relatively low margins?",
+      "intended_meaning": "cross_dimension_analysis",
+      "expected_evidence": [
+        "product_id",
+        "quantity",
+        "cost",
+        "mrp"
+      ],
+      "expected_answer_behavior": "report_each_metric_separately_and_state_margin_basis",
+      "paraphrase_group": null
+    },
+    {
+      "id": 100,
+      "question": "Give me an overall summary of sales performance by branch, product, therapeutic class, manufacturer, and payment method.",
+      "intended_meaning": "cross_dimension_analysis",
+      "expected_evidence": [
+        "branch",
+        "product_id",
+        "category",
+        "manufacturer",
+        "payment_method",
+        "amount"
+      ],
+      "expected_answer_behavior": "separate_top_breakdowns_by_requested_dimension",
+      "paraphrase_group": null
+    }
+  ]
+}

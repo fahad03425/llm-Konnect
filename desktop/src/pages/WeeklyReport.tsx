@@ -23,6 +23,7 @@ import {
 import { useFilePath } from '../context/FileContext';
 import { useReport } from '../context/ReportContext';
 import { useUser } from '../context/UserContext';
+import { getCustomDbGroups } from '../utils/dbGroups';
 import './ReportExport.css';
 
 interface FileOption {
@@ -341,30 +342,48 @@ export default function WeeklyReport() {
                                 <RefreshCw size={12} /> Refresh
                             </button>
                         </div>
+                        {availableFiles.length > 0 || availableDatabases.length > 0 ? (() => {
+                            const customGroups = getCustomDbGroups(user.domain);
+                            const groupedDbNamesSet = new Set(
+                                customGroups.flatMap(grp => grp.dbNames.map(d => d.toLowerCase().trim()))
+                            );
+                            const ungroupedDatabases = availableDatabases.filter(
+                                (database) => !groupedDbNamesSet.has(database.database_name.toLowerCase().trim())
+                            );
 
-                        {availableFiles.length > 0 || availableDatabases.length > 0 ? (
-                            <select
-                                className="re-select"
-                                value={selectedFile}
-                                onChange={(e) => setSelectedFile(e.target.value)}
-                                disabled={isGenerating}
-                            >
-                                <optgroup label="Whole POS databases">
-                                    {availableDatabases.map((database) => (
-                                        <option key={`db-${database.database_name}`} value={`db://${database.database_name}`}>
-                                            {database.database_name} — Entire database
-                                        </option>
-                                    ))}
-                                </optgroup>
-                                <optgroup label="Individual files">
-                                {availableFiles.map((file, idx) => (
-                                    <option key={`file-${idx}`} value={file.file_path}>
-                                        {file.filename} ({file.file_size_formatted})
-                                    </option>
-                                ))}
-                                </optgroup>
-                            </select>
-                        ) : (
+                            return (
+                                <select
+                                    className="re-select"
+                                    value={selectedFile}
+                                    onChange={(e) => setSelectedFile(e.target.value)}
+                                    disabled={isGenerating}
+                                >
+                                    {(customGroups.length > 0 || ungroupedDatabases.length > 0) && (
+                                        <optgroup label="Whole POS databases">
+                                            {customGroups.map((grp) => (
+                                                <option key={`custom-${grp.id}`} value={`db://${grp.dbNames.join(',')}`}>
+                                                    {grp.name} ({grp.dbNames.join(' + ')})
+                                                </option>
+                                            ))}
+                                            {ungroupedDatabases.map((database) => (
+                                                <option key={`db-${database.database_name}`} value={`db://${database.database_name}`}>
+                                                    {database.database_name} — Entire database
+                                                </option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                    {availableFiles.length > 0 && (
+                                        <optgroup label="Individual files">
+                                            {availableFiles.map((file, idx) => (
+                                                <option key={`file-${idx}`} value={file.file_path}>
+                                                    {file.filename} ({file.file_size_formatted})
+                                                </option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                </select>
+                            );
+                        })() : (
                             <div className="re-loading-sources">
                                 Loading data sources...
                             </div>

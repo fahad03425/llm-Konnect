@@ -79,7 +79,7 @@ const stepNames: Record<number, string> = {
 const UploadedFiles: React.FC = () => {
     const navigate = useNavigate();
     const { user, activeDomainMeta } = useUser();
-    const { setActivePath, step: wizardStep, fileName: wizardFileName, filePath: wizardFilePath, resetConnectSession } = useConnectSession();
+    const { setActivePath, setFilePath, setFileName, setStep, step: wizardStep, fileName: wizardFileName, filePath: wizardFilePath, resetConnectSession } = useConnectSession();
 
     const domainKey = user?.domain || 'pharmacy';
 
@@ -296,6 +296,14 @@ const UploadedFiles: React.FC = () => {
 
             const data = await res.json();
             showToast(data.message || `Ingesting ${file.filename} in background...`, 'info');
+            if (data.status === 'mapping_required') {
+                resetConnectSession('file');
+                setFilePath(file.file_path);
+                setFileName(file.filename);
+                setStep(1);
+                navigate('/connect');
+                return;
+            }
             await fetchFiles(true);
         } catch (err: any) {
             showToast(err.message || 'Ingestion error', 'error');
@@ -313,7 +321,7 @@ const UploadedFiles: React.FC = () => {
 
             setFilesData(prev => ({
                 ...prev,
-                files: prev.files.map(f => f.file_path === file.file_path ? {
+                files: prev.files.map(f => (f.file_path === file.file_path || f.file_id === file.file_id || f.filename === file.filename) ? {
                     ...f,
                     is_processing: false,
                     status: 'not_ingested',
@@ -323,16 +331,24 @@ const UploadedFiles: React.FC = () => {
             }));
 
             try {
-                sessionStorage.removeItem('llm_konnect_files_cache');
+                const toRemove: string[] = [];
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    if (key && (key.startsWith('llm_konnect_files_cache') || key.startsWith('llm_konnect_dashboard_cache'))) {
+                        toRemove.push(key);
+                    }
+                }
+                toRemove.forEach(k => sessionStorage.removeItem(k));
             } catch (_) {}
 
-            const params = new URLSearchParams();
-            if (file.file_path) params.append('file_path', file.file_path);
-            if (file.file_id) params.append('file_id', file.file_id);
-            if (file.filename) params.append('filename', file.filename);
-
-            const res = await fetch(`/api/files/cancel-ingest?${params.toString()}`, {
-                method: 'POST'
+            const res = await fetch('/api/files/cancel-ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_path: file.file_path,
+                    file_id: file.file_id,
+                    filename: file.filename
+                })
             });
 
             if (!res.ok) {
@@ -342,6 +358,16 @@ const UploadedFiles: React.FC = () => {
 
             const data = await res.json();
             showToast(data.message || `Cancelled ingestion for ${file.filename}`, 'info');
+            try {
+                const toRemove: string[] = [];
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    if (key && (key.startsWith('llm_konnect_files_cache') || key.startsWith('llm_konnect_dashboard_cache'))) {
+                        toRemove.push(key);
+                    }
+                }
+                toRemove.forEach(k => sessionStorage.removeItem(k));
+            } catch (_) {}
             markDataChanged();
             await fetchFiles(false);
         } catch (err: any) {

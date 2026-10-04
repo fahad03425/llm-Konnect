@@ -180,6 +180,8 @@ interface ChatContextType {
     input: string;
     setInput: (val: string) => void;
     isLoading: boolean;
+    isGenerating: boolean;
+    generatingSessionId: string | null;
     availableFiles: ScopeFile[];
     setAvailableFiles: React.Dispatch<React.SetStateAction<ScopeFile[]>>;
     selectedFileIds: string[];
@@ -202,6 +204,8 @@ interface ChatContextType {
     handleClearAllSessions: () => Promise<void>;
     handleExportChat: () => void;
     handleSend: (text?: string) => Promise<void>;
+    handleStopGeneration: (targetSessionId?: string) => void;
+    handleRefreshCurrentChat: () => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | null>(null);
@@ -211,7 +215,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
+    const [generatingSessionId, setGeneratingSessionId] = useState<string | null>(null);
     const [availableFiles, setAvailableFiles] = useState<ScopeFile[]>([]);
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
     const [sessionId, setSessionId] = useState<string>(() => `sess-${Math.random().toString(36).substring(2, 10)}`);
@@ -219,6 +223,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const [isLoadingSessions, setIsLoadingSessions] = useState(false);
     const [models, setModels] = useState<string[]>(ORDERED_PRESETS);
     const [activeModel, setActiveModel] = useState<string>('qwen2.5:1.5b');
+
+    // References to keep active state accessible in async callbacks and race-free
+    const activeSessionIdRef = useRef<string>(sessionId);
+    useEffect(() => {
+        activeSessionIdRef.current = sessionId;
+    }, [sessionId]);
+
+    const generatingSessionIdRef = useRef<string | null>(null);
+    useEffect(() => {
+        generatingSessionIdRef.current = generatingSessionId;
+    }, [generatingSessionId]);
+
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const sessionMessagesCacheRef = useRef<Record<string, Message[]>>({});
+
+    // isLoading is true ONLY if the current active sessionId is generating
+    const isLoading = Boolean(generatingSessionId && generatingSessionId === sessionId);
+    // isGenerating is true if ANY chat session is generating in background
+    const isGenerating = Boolean(generatingSessionId);
 
     // Keep active domain ref to prevent race conditions during domain switch
     const currentDomainRef = useRef(user.domain);
@@ -256,7 +279,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (res.ok) {
                 const data = await res.json();
                 const backendModels = (data.models || []).filter((m: string) => !isReasoningModel(m));
-                const merged = Array.from(new Set([...ORDERED_PRESETS, ...backendModels]));
+                const merged = Array.from(new Set<string>(backendModels));
                 const sorted = merged.sort((a, b) => {
                     const idxA = ORDERED_PRESETS.indexOf(a);
                     const idxB = ORDERED_PRESETS.indexOf(b);
@@ -266,16 +289,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     return a.localeCompare(b);
                 });
                 setModels(sorted);
-                if (data.active_model && !isReasoningModel(data.active_model)) {
-                    setActiveModel(data.active_model);
-                } else {
-                    setActiveModel('qwen2.5:1.5b');
-                    fetch('/api/chat/models/select', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ model: 'qwen2.5:1.5b' })
-                    }).catch(() => {});
-                }
+                if (data.active_model) setActiveModel(data.active_model);
             }
         } catch (e) {
             console.error('Could not fetch installed models', e);
@@ -284,15 +298,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     const handleModelChange = async (modelOrEvent: string | React.ChangeEvent<HTMLSelectElement>) => {
         const newModel = typeof modelOrEvent === 'string' ? modelOrEvent : modelOrEvent.target.value;
-        setActiveModel(newModel);
         try {
-            await fetch('/api/chat/models/select', {
+            const response = await fetch('/api/chat/models/select', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model: newModel })
             });
+            if (!response.ok) {
+                const body = await response.json().catch(() => null);
+                throw new Error(body?.detail || 'Failed to update active model');
+            }
+            const result = await response.json();
+            setActiveModel(result.active_model);
         } catch (err) {
             console.error('Failed to update active model', err);
+            await fetchModels();
         }
     };
 
@@ -330,6 +350,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
 
     const handleNewChat = (initialFileIds: string[] = []) => {
+        if (messages.length > 0) {
+            saveCurrentSession(messages, sessionId);
+        }
         const newId = `sess-${Math.random().toString(36).substring(2, 10)}`;
         setSessionId(newId);
         setMessages([]);
@@ -342,12 +365,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        if (messages.length > 0) {
+            saveCurrentSession(messages, sessionId);
+        }
+
         try {
             const res = await fetch(`/api/chat/sessions/${resumeId}`);
             if (res.ok) {
                 const data = await res.json();
                 setSessionId(resumeId);
-                setMessages(data.messages || []);
+                // If this session is actively generating in background and has cached messages:
+                if (generatingSessionIdRef.current === resumeId && sessionMessagesCacheRef.current[resumeId]) {
+                    setMessages(sessionMessagesCacheRef.current[resumeId]);
+                } else {
+                    const loadedMsgs = data.messages || [];
+                    setMessages(loadedMsgs);
+                    sessionMessagesCacheRef.current[resumeId] = loadedMsgs;
+                }
                 setInput('');
                 if (data.selected_file_ids && Array.isArray(data.selected_file_ids)) {
                     setSelectedFileIds(data.selected_file_ids);
@@ -405,6 +439,90 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         URL.revokeObjectURL(url);
     };
 
+    const handleStopGeneration = (targetSessionId?: string) => {
+        const sessIdToStop = targetSessionId || generatingSessionIdRef.current || sessionId;
+
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+
+        setGeneratingSessionId(null);
+        generatingSessionIdRef.current = null;
+
+        const currentActive = activeSessionIdRef.current;
+        if (currentActive === sessIdToStop) {
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                let finalMsgs = prev;
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    if (!lastMsg.content.trim()) {
+                        // Empty assistant bubble before any text generated; remove it, keeping user question intact!
+                        finalMsgs = prev.slice(0, -1);
+                    } else if (!lastMsg.content.includes('(Generation stopped)')) {
+                        finalMsgs = [
+                            ...prev.slice(0, -1),
+                            {
+                                ...lastMsg,
+                                content: lastMsg.content.trim() + '\n\n*(Generation stopped)*'
+                            }
+                        ];
+                    }
+                }
+                sessionMessagesCacheRef.current[sessIdToStop] = finalMsgs;
+                saveCurrentSession(finalMsgs, sessIdToStop);
+                return finalMsgs;
+            });
+        } else {
+            const cached = sessionMessagesCacheRef.current[sessIdToStop];
+            if (cached && cached.length > 0) {
+                const lastMsg = cached[cached.length - 1];
+                let finalMsgs = cached;
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    if (!lastMsg.content.trim()) {
+                        finalMsgs = cached.slice(0, -1);
+                    } else if (!lastMsg.content.includes('(Generation stopped)')) {
+                        finalMsgs = [
+                            ...cached.slice(0, -1),
+                            {
+                                ...lastMsg,
+                                content: lastMsg.content.trim() + '\n\n*(Generation stopped)*'
+                            }
+                        ];
+                    }
+                }
+                sessionMessagesCacheRef.current[sessIdToStop] = finalMsgs;
+                saveCurrentSession(finalMsgs, sessIdToStop);
+            }
+        }
+
+        fetchSessions();
+    };
+
+    const handleRefreshCurrentChat = async () => {
+        if (generatingSessionIdRef.current) {
+            handleStopGeneration();
+            return;
+        }
+
+        try {
+            await fetchSources();
+            if (sessionId) {
+                const res = await fetch(`/api/chat/sessions/${sessionId}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.messages && Array.isArray(data.messages)) {
+                        setMessages(data.messages);
+                        sessionMessagesCacheRef.current[sessionId] = data.messages;
+                    }
+                }
+            }
+            await fetchSessions();
+        } catch (e) {
+            console.error('Error refreshing chat session', e);
+        }
+    };
+
     const handleSend = async (text: string = input) => {
         if (!text.trim() || isLoading) return;
 
@@ -416,12 +534,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             timestamp: new Date().toISOString()
         };
 
+        const currentSessionForRequest = sessionId;
         setInput('');
         const updatedMsgs = [...messages, userMsgObj];
         setMessages(updatedMsgs);
-        setIsLoading(true);
+        sessionMessagesCacheRef.current[currentSessionForRequest] = updatedMsgs;
 
-        const currentSessionForRequest = sessionId;
+        // CRITICAL: Immediately persist the user question so it will NEVER disappear
+        // even if cancelled before assistant responds or user navigates/refreshes.
+        saveCurrentSession(updatedMsgs, currentSessionForRequest);
+
+        // Abort previous request if still running
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        setGeneratingSessionId(currentSessionForRequest);
+        generatingSessionIdRef.current = currentSessionForRequest;
+
         const botMsgId = Date.now().toString() + 'bot';
         const startTime = Date.now();
 
@@ -438,7 +570,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: controller.signal
             });
 
             if (res.ok && res.body) {
@@ -448,67 +581,60 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 let route = 'rag';
                 let sources: any[] = [];
                 let buffer = '';
-                let hasStarted = false;
+
+                const consumeFrame = (raw: string) => {
+                    const trimmed = raw.trim();
+                    if (!trimmed) return;
+
+                    let parsed: any;
+                    try {
+                        parsed = JSON.parse(trimmed);
+                    } catch {
+                        throw new Error('The backend sent an invalid streaming response. Please retry.');
+                    }
+                    if (parsed.error) {
+                        throw new Error(String(parsed.error));
+                    }
+                    if (parsed.chunk !== undefined) fullAnswer += String(parsed.chunk);
+                    if (parsed.route) route = parsed.route;
+                    if (Array.isArray(parsed.sources)) sources = parsed.sources;
+                    if (parsed.active_model) setActiveModel(parsed.active_model);
+
+                    const currentAssistantMsg: Message = {
+                        id: botMsgId,
+                        role: 'assistant',
+                        content: fullAnswer,
+                        route,
+                        sources,
+                        timing: Number(((Date.now() - startTime) / 1000).toFixed(2)),
+                        timestamp: new Date().toISOString()
+                    };
+                    const currentMsgs = [...updatedMsgs, currentAssistantMsg];
+                    sessionMessagesCacheRef.current[currentSessionForRequest] = currentMsgs;
+                    if (activeSessionIdRef.current === currentSessionForRequest) {
+                        setMessages(currentMsgs);
+                    }
+                };
 
                 while (true) {
+                    if (controller.signal.aborted) {
+                        try { await reader.cancel(); } catch {}
+                        break;
+                    }
+
                     const { done, value } = await reader.read();
+                    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
                     if (done) break;
 
-                    buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
-
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed) continue;
-                        try {
-                            const parsed = JSON.parse(trimmed);
-                            if (parsed.error) {
-                                throw new Error(parsed.error);
-                            }
-                            if (parsed.chunk !== undefined) {
-                                fullAnswer += parsed.chunk;
-                            }
-                            if (parsed.route) {
-                                route = parsed.route;
-                            }
-                            if (parsed.sources && parsed.sources.length > 0) {
-                                sources = parsed.sources;
-                            }
-                            if (parsed.active_model) {
-                                setActiveModel(parsed.active_model);
-                            }
-
-                            if (!hasStarted) {
-                                hasStarted = true;
-                                setIsLoading(false);
-                            }
-
-                            const currentAssistantMsg: Message = {
-                                id: botMsgId,
-                                role: 'assistant',
-                                content: fullAnswer,
-                                route: route,
-                                sources: sources,
-                                timing: Number(((Date.now() - startTime) / 1000).toFixed(2)),
-                                timestamp: new Date().toISOString()
-                            };
-                            setMessages([...updatedMsgs, currentAssistantMsg]);
-                        } catch (e: any) {
-                            if (e.message && !e.message.includes('JSON')) {
-                                throw e;
-                            }
-                        }
-                    }
+                    for (const line of lines) consumeFrame(line);
                 }
 
-                if (buffer.trim()) {
-                    try {
-                        const parsed = JSON.parse(buffer.trim());
-                        if (parsed.chunk) fullAnswer += parsed.chunk;
-                        if (parsed.route) route = parsed.route;
-                        if (parsed.sources) sources = parsed.sources;
-                    } catch {}
+                if (controller.signal.aborted) return;
+                consumeFrame(buffer);
+                if (!fullAnswer.trim()) {
+                    throw new Error('The backend closed the stream without returning an answer. Please retry.');
                 }
 
                 const finalAssistantMsg: Message = {
@@ -521,14 +647,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     timestamp: new Date().toISOString()
                 };
                 const allFinalMsgs = [...updatedMsgs, finalAssistantMsg];
-                setMessages(allFinalMsgs);
+                sessionMessagesCacheRef.current[currentSessionForRequest] = allFinalMsgs;
+
+                if (activeSessionIdRef.current === currentSessionForRequest) {
+                    setMessages(allFinalMsgs);
+                }
                 saveCurrentSession(allFinalMsgs, currentSessionForRequest);
+            } else if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.detail || body.error || `Chat server returned ${res.status}.`);
             } else {
-                // Non-streaming fallback
+                // Older browsers or proxies may not expose a response stream.
                 const nonStreamRes = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
                 });
 
                 if (nonStreamRes.ok) {
@@ -543,7 +677,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         timestamp: new Date().toISOString()
                     };
                     const allFinalMsgs = [...updatedMsgs, assistantMsg];
-                    setMessages(allFinalMsgs);
+                    sessionMessagesCacheRef.current[currentSessionForRequest] = allFinalMsgs;
+
+                    if (activeSessionIdRef.current === currentSessionForRequest) {
+                        setMessages(allFinalMsgs);
+                    }
                     saveCurrentSession(allFinalMsgs, currentSessionForRequest);
                 } else {
                     const errData = await nonStreamRes.json().catch(() => ({ detail: `Error ${nonStreamRes.status}` }));
@@ -551,6 +689,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 }
             }
         } catch (err: any) {
+            if (err?.name === 'AbortError' || err?.message?.includes('aborted') || controller.signal.aborted) {
+                // Stopped intentionally by user - do not display error message bubble
+                return;
+            }
+
             const errorDetail = err?.message && !err.message.includes('object Object')
                 ? err.message
                 : "Local AI engine encountered an issue. Please make sure Ollama and the backend are running.";
@@ -561,10 +704,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 timestamp: new Date().toISOString()
             };
             const allFinalMsgs = [...updatedMsgs, errorMsg];
-            setMessages(allFinalMsgs);
+            sessionMessagesCacheRef.current[currentSessionForRequest] = allFinalMsgs;
+
+            if (activeSessionIdRef.current === currentSessionForRequest) {
+                setMessages(allFinalMsgs);
+            }
             saveCurrentSession(allFinalMsgs, currentSessionForRequest);
         } finally {
-            setIsLoading(false);
+            if (generatingSessionIdRef.current === currentSessionForRequest) {
+                setGeneratingSessionId(null);
+                generatingSessionIdRef.current = null;
+            }
+            if (abortControllerRef.current === controller) {
+                abortControllerRef.current = null;
+            }
             fetchSessions();
         }
     };
@@ -572,11 +725,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // Initialize models and domain data on mount and domain change
     useEffect(() => {
         fetchModels();
+        window.addEventListener('models:updated', fetchModels);
+        return () => window.removeEventListener('models:updated', fetchModels);
     }, []);
 
     useEffect(() => {
         fetchSources();
         fetchSessions();
+
+        // Auto-refresh when window gains focus or custom event fires
+        const handleFocus = () => {
+            fetchSources();
+            fetchSessions();
+        };
+
+        const handleSourcesUpdated = () => {
+            fetchSources();
+        };
+
+        window.addEventListener('focus', handleFocus);
+        window.addEventListener('kb:sources-updated', handleSourcesUpdated);
+
+        // Lightweight background poll (every 8 seconds) to detect newly ingested files
+        const pollInterval = setInterval(() => {
+            fetchSources();
+        }, 8000);
+
+        return () => {
+            window.removeEventListener('focus', handleFocus);
+            window.removeEventListener('kb:sources-updated', handleSourcesUpdated);
+            clearInterval(pollInterval);
+        };
     }, [user.domain]);
 
     return (
@@ -587,6 +766,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 input,
                 setInput,
                 isLoading,
+                isGenerating,
+                generatingSessionId,
                 availableFiles,
                 setAvailableFiles,
                 selectedFileIds,
@@ -608,7 +789,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 handleDeleteSession,
                 handleClearAllSessions,
                 handleExportChat,
-                handleSend
+                handleSend,
+                handleStopGeneration,
+                handleRefreshCurrentChat
             }}
         >
             {children}

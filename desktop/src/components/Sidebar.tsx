@@ -19,27 +19,38 @@ import { useChat } from '../context/ChatContext';
 const Sidebar = () => {
     const { openSettings, activeDomainMeta } = useUser();
     const { weeklyIsGenerating } = useReport();
-    const { isLoading: chatIsLoading } = useChat();
-    const [ollamaActive, setOllamaActive] = useState<boolean>(true);
+    const { isLoading, isGenerating } = useChat();
+    const chatIsLoading = Boolean(isGenerating || isLoading);
+    const [ollamaActive, setOllamaActive] = useState<boolean>(false);
 
     useEffect(() => {
+        let isMounted = true;
+        let timerId: ReturnType<typeof setTimeout>;
+
         const checkOllama = async () => {
+            let active = false;
             try {
                 const res = await fetch('/api/chat/models');
                 if (res.ok) {
                     const data = await res.json();
-                    setOllamaActive(Array.isArray(data.models) && data.models.length > 0);
-                } else {
-                    setOllamaActive(false);
+                    active = data.ollama?.available === true;
                 }
             } catch {
-                setOllamaActive(false);
+                active = false;
+            }
+
+            if (isMounted) {
+                setOllamaActive(active);
+                // When offline (e.g. while starting up), poll quickly (3s) to show Active ASAP; when active, poll every 10s
+                timerId = setTimeout(checkOllama, active ? 10000 : 3000);
             }
         };
 
         checkOllama();
-        const interval = setInterval(checkOllama, 10000);
-        return () => clearInterval(interval);
+        return () => {
+            isMounted = false;
+            clearTimeout(timerId);
+        };
     }, []);
 
     return (

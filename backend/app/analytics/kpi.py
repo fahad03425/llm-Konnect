@@ -271,12 +271,9 @@ def _amount_series(df: pd.DataFrame) -> Tuple[Optional[pd.Series], List[str], Li
 
     Returns (series_or_None, columns_used, notes).
     """
-    if "amount" in df.columns:
-        return pd.to_numeric(df["amount"], errors="coerce"), ["amount"], []
-    if "total_amount" in df.columns:
-        return pd.to_numeric(df["total_amount"], errors="coerce"), ["total_amount"], []
-    if "total" in df.columns:
-        return pd.to_numeric(df["total"], errors="coerce"), ["total"], []
+    for col in ["amount", "total_amount", "total", "sales_subtotal", "sale_amount", "net_amount", "invoice_total", "line_total"]:
+        if col in df.columns and df[col].notna().any():
+            return pd.to_numeric(df[col], errors="coerce"), [col], []
     if "unit_price" in df.columns and "quantity" in df.columns:
         series = pd.to_numeric(df["unit_price"], errors="coerce") * pd.to_numeric(
             df["quantity"], errors="coerce"
@@ -285,6 +282,15 @@ def _amount_series(df: pd.DataFrame) -> Tuple[Optional[pd.Series], List[str], Li
             series,
             ["unit_price", "quantity"],
             ["canonical 'amount' column is absent; amount derived as unit_price x quantity"],
+        )
+    if "mrp" in df.columns and "quantity" in df.columns:
+        series = pd.to_numeric(df["mrp"], errors="coerce") * pd.to_numeric(
+            df["quantity"], errors="coerce"
+        )
+        return (
+            series,
+            ["mrp", "quantity"],
+            ["canonical 'amount' column is absent; amount derived as mrp x quantity"],
         )
     return None, [], []
 
@@ -297,16 +303,24 @@ def _cogs_series(df: pd.DataFrame) -> Tuple[Optional[pd.Series], List[str], List
     when a quantity is available; otherwise `cost` is taken as the line cost.
     Whichever rule applied is recorded in the result's formula and assumptions.
     """
-    if "cost" not in df.columns:
+    if "line_cost" in df.columns and df["line_cost"].notna().any():
+        return pd.to_numeric(df["line_cost"], errors="coerce"), ["line_cost"], [
+            "Recorded line cost used directly; no pack-size assumption"]
+    cost_col = None
+    for c in ["cost", "unit_cost", "cost_price", "purchase_price", "purchase_rate", "buying_price", "cogs", "item_cost", "product_cost", "unit_purchase_price"]:
+        if c in df.columns and df[c].notna().any():
+            cost_col = c
+            break
+    if cost_col is None:
         return None, [], []
-    cost = pd.to_numeric(df["cost"], errors="coerce")
+    cost = pd.to_numeric(df[cost_col], errors="coerce")
     if "quantity" in df.columns:
         qty = pd.to_numeric(df["quantity"], errors="coerce")
-        return cost * qty, ["cost", "quantity"], []
+        return cost * qty, [cost_col, "quantity"], []
     return (
         cost,
-        ["cost"],
-        ["canonical 'quantity' column is absent; 'cost' treated as a per-row line cost, not a unit cost"],
+        [cost_col],
+        [f"canonical 'quantity' column is absent; '{cost_col}' treated as a per-row line cost, not a unit cost"],
     )
 
 
@@ -598,6 +612,8 @@ def net_profit(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIRe
 def gross_profit(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
     """Gross profit = sale revenue - COGS, over sale rows that have both figures."""
     formula = "sum(amount) - sum(cost x quantity) over sale rows where cost is known"
+    if "line_cost" in df and df["line_cost"].notna().any():
+        formula = "sum(amount) - sum(recorded line_cost) over sale rows where cost is known"
     txn = classify_transactions(df)
 
     amounts, amount_cols, amount_notes = _amount_series(df)
@@ -748,8 +764,9 @@ def transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -
     """
     Number of sale transactions.
 
-    Counts distinct `invoice_id` when that column exists (a multi-line invoice is
-    one transaction); otherwise counts sale rows. The rule used is recorded.
+    Counts distinct invoice/transaction identifiers when available (a multi-line invoice is
+    one transaction); otherwise counts individual sale rows. Handles partial invoice IDs,
+    blank/null strings, and un-invoiced counter sales accurately.
     """
     formula = "count of distinct invoice_id over sale rows"
     txn = classify_transactions(df)
@@ -762,10 +779,36 @@ def transaction_count(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -
             build_provenance(df, _no_rows(df), filters, [], notes),
         )
 
-    if "invoice_id" in df.columns:
-        contributing = txn.sale & df["invoice_id"].notna()
-        columns = ["invoice_id"]
-        value = int(df.loc[contributing, "invoice_id"].astype(str).nunique())
+    # Check for candidate invoice/transaction columns
+    id_col = None
+    for cand in ["transaction_id", "invoice_id", "order_id", "trans_id", "bill_no", "bill_id", "receipt_no", "receipt_id", "sale_id"]:
+        if cand in df.columns and df.loc[txn.sale, cand].notna().any():
+            id_col = cand
+            break
+
+    invalid_id_tokens = {"", "nan", "none", "null", "n/a", "na", "-", "undefined"}
+
+    if id_col is not None:
+        raw_series = df[id_col].astype(str).str.strip()
+        is_valid_id = df[id_col].notna() & ~raw_series.str.lower().isin(invalid_id_tokens)
+        
+        valid_sale_ids = raw_series[txn.sale & is_valid_id]
+        distinct_invoices = int(valid_sale_ids.nunique()) if not valid_sale_ids.empty else 0
+        unidentified_sale_rows = int((txn.sale & ~is_valid_id).sum())
+        
+        total_txns = distinct_invoices + unidentified_sale_rows
+        
+        if total_txns == 0:
+            total_txns = int(txn.sale.sum())
+            formula = "count of sale rows"
+            columns = []
+            notes.append(f"canonical '{id_col}' column contains no valid transaction IDs; each row counted as one transaction")
+        else:
+            formula = f"count of distinct {id_col} over sale rows"
+            columns = [id_col]
+        
+        contributing = txn.sale
+        value = total_txns
     else:
         contributing = txn.sale
         formula = "count of sale rows"
@@ -938,17 +981,24 @@ def expense_breakdown_by_category(df: pd.DataFrame, filters: KPIFilters, domain:
 
 
 def expense_breakdown_by_supplier(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
-    """Expenses grouped by canonical `supplier_id`."""
-    formula = "sum of amount grouped by supplier_id, over expense rows"
+    """Expenses grouped by the supplier identifier/name available in this source."""
     txn = classify_transactions(df)
+    supplier_col = next((col for col in ("supplier_id", "supplier_name", "vendor_name") if col in df and df[col].notna().any()), None)
+    formula = f"sum of amount grouped by {supplier_col}, over expense rows" if supplier_col else "sum of amount grouped by supplier, over expense rows"
     if not txn.has_column:
         return unavailable(
             "expense_breakdown_by_supplier", "Expense Breakdown by Supplier", UNIT_CURRENCY, formula,
             "canonical 'txn_type' column is absent, so expense rows cannot be identified",
             build_provenance(df, _no_rows(df), filters, [], txn.notes),
         )
+    if not supplier_col:
+        return unavailable(
+            "expense_breakdown_by_supplier", "Expense Breakdown by Supplier", UNIT_CURRENCY, formula,
+            "supplier name or identifier is not recorded in the selected data",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
     return _breakdown(
-        df, filters, txn.expense, "supplier_id",
+        df, filters, txn.expense, supplier_col,
         "expense_breakdown_by_supplier", "Expense Breakdown by Supplier", formula, txn.notes,
     )
 
@@ -964,12 +1014,20 @@ def revenue_breakdown_by_category(df: pd.DataFrame, filters: KPIFilters, domain:
 
 
 def revenue_breakdown_by_supplier(df: pd.DataFrame, filters: KPIFilters, domain: str = "") -> KPIResult:
-    """Revenue grouped by canonical `supplier_id`."""
+    """Revenue grouped by the supplier identifier/name available in this source."""
     txn = classify_transactions(df)
+    supplier_col = next((col for col in ("supplier_id", "supplier_name", "vendor_name") if col in df and df[col].notna().any()), None)
+    if not supplier_col:
+        return unavailable(
+            "revenue_breakdown_by_supplier", "Revenue Breakdown by Supplier", UNIT_CURRENCY,
+            "sum of amount grouped by supplier over sale rows",
+            "supplier name or identifier is not recorded in the selected data",
+            build_provenance(df, _no_rows(df), filters, [], txn.notes),
+        )
     return _breakdown(
-        df, filters, txn.sale, "supplier_id",
+        df, filters, txn.sale, supplier_col,
         "revenue_breakdown_by_supplier", "Revenue Breakdown by Supplier",
-        "sum of amount grouped by supplier_id, over sale rows", txn.notes,
+        f"sum of amount grouped by {supplier_col}, over sale rows", txn.notes,
     )
 
 
